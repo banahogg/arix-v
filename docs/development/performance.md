@@ -284,25 +284,55 @@ Next no-format experiments, in order:
    stop-the-world scan under the container's ptrace restrictions — not decoder
    code. Runs that exit cleanly report zero ASan/UBSan errors, so the change
    itself is memory-clean.
-3. **Entropy format, not more micro-tuning.** The coding path is about two
-   thirds of reusable cycles and remains serial because every adaptive bit
-   updates its next probability. A fast optional mode with encoder-supplied
-   static probabilities, or a narrow fixed/global multi-symbol table for
-   only opcode/uint-length fields, is the remaining path to a large gain.
-   Per-file broad rANS tables and four interleaved range streams were already
-   measured and reverted (items 8-9).
+3. **[Implemented on branch `static-opcode-tables`, 2026-07-11 — adoption
+   pending] Entropy format, not more micro-tuning.** The coding path is
+   about two thirds of reusable cycles and remains serial because every
+   adaptive bit updates its next probability. A fast optional mode with
+   encoder-supplied static probabilities, or a narrow fixed/global
+   multi-symbol table for only opcode/uint-length fields, is the remaining
+   path to a large gain. Per-file broad rANS tables and four interleaved
+   range streams were already measured and reverted (items 8-9).
+
+   Both designs were probed and the surviving form is parked on the side
+   branch (two commits; its copy of this file holds the full record):
+
+   - `ee13d1b` codes known-opcode indices with GENERATED corpus-trained
+     static probability trees (order-1 by previous instruction, with
+     (section, prev-class)/section/global fallbacks). Full corpus:
+     encoded bytes 1,041,769 → 990,130 (−4.96%), stateless decode
+     48.31 → 56.57 MiB/s (+16.2%), reusable 55.42 → 62.87 MiB/s (+13.4%).
+     Validated held-out (2.58 vs 3.68 bits/inst) and leave-one-source-out
+     (wins on three of four corpus sources; worst case +3.6% opcode bytes
+     ≈ +0.5% total on smol-v).
+   - `ad3eb6a` adds a per-module fallback flag: a structural adaptive
+     opcode coder (grammar-derived successor states + module/body rank
+     alphabets; −1.4% vs the old coder at its speed) that the encoder
+     selects per module when smaller, bounding any distribution mismatch.
+     Default min-size selection: 984,505 bytes, at a ~4-5% decode
+     throughput give-back on the large files that flip adaptive.
+
+   Adoption is pending a design call: the tables abandon the README's
+   "no corpus-trained tables / nothing table-shaped from the corpus" rule
+   for this one coder. Measured dead ends recorded on the branch: per-file
+   probability snapshots (median file touches 1,562 prob slots ≈ 3x its
+   encoded bytes) and freeze-at-saturation update skipping (+0.9-1.6%
+   speed for +13.6% size) — the per-bit `Update()` was never the cost.
 
 ## Tier B — small format/ratio tradeoffs (path to 100+ MiB/s)
 
-7. **Semi-adaptive probabilities: let the encoder do the adapting.** The
-   design is already asymmetric (offline CLI encode, runtime decode). Push
-   further: the encoder runs the adaptive model as today but *snapshots*
-   converged probabilities for hot contexts into the container (quantized,
-   only contexts actually used). The decoder loads static probabilities and
-   skips `Update()` for those contexts — the update is roughly half the
-   per-bit dependency chain — and static probs enable item 8. Ratio cost:
-   table bytes, mostly amortized on medium/large files; could be optional by
-   file size.
+7. **[Measured dead end — see item 3 of the no-format experiments and
+   branch `static-opcode-tables` (2026-07-11).] Semi-adaptive
+   probabilities: let the encoder do the adapting.** The design was: the
+   encoder runs the adaptive model as today but *snapshots* converged
+   probabilities for hot contexts into the container; the decoder loads
+   static probabilities and skips `Update()` — the update was estimated at
+   roughly half the per-bit dependency chain. Both halves failed
+   measurement: per-file table bytes average ~3x the encoded payload
+   (median file touches 1,562 probability slots carrying ~8.5 coded bits
+   each), and a zero-table freeze-at-saturation prototype showed update
+   skipping is worth only +0.9-1.6% speed while costing +13.6% size. The
+   viable form of the idea — binary-baked corpus-trained static opcode
+   tables, not per-container snapshots — lives on the branch.
 
 8. **[Reverted experiment] Multi-symbol decode instead of bit trees.**
    A prototype added internal mode 3 (`kModeSpirvMulti`) with
@@ -467,6 +497,9 @@ from ~18 to ~50-70 MiB/s (strcmp + allocation + tracker alone are ~40% of
 cycles, and cutting instruction count compounds). Then re-profile: if the
 bit-decode chain is dominant, items 7+8 (encoder-computed static tables +
 multi-symbol decode) are the highest-leverage format change short of the
-Tier C redesign. Prototype item 11 if "within ~2x of zstd's decode speed"
+Tier C redesign. *(2026-07-11: measured — items 7+8 as stated are dead
+ends; the surviving form, corpus-trained static opcode tables at −5.0% size
+and +13-16% decode, is parked on branch `static-opcode-tables` pending a
+design decision.)* Prototype item 11 if "within ~2x of zstd's decode speed"
 becomes the actual requirement — no amount of tuning gets a serial adaptive
 binary coder there.
