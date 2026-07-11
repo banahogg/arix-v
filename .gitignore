@@ -1,0 +1,10 @@
+build/
+__pycache__/
+*.py[cod]
+fuzz-out/
+benchmark-deps/
+grammar-deps/
+corpus/spv/
+corpus/manifest.tsv
+corpus/duplicates.tsv
+corpus/sources.tsv

@@ -1,0 +1,156 @@
+# ARIX-V — SPIR-V arithmetic compressor
+
+ARIX-V (Arithmetic Reduction Intermediate Transform - V) is a standalone,
+purely adaptive SPIR-V compressor: a grammar-driven structural model over an
+adaptive binary range coder. No corpus-trained tables are shipped; all shipped
+knowledge is derived from the pinned SPIR-V grammars plus
+hand-set scalar constants (`src/tuning.h`).
+
+**Results** (2026-07-10, 1070-file decode-verified intersection, 20 decode
+iterations per file, one core of a Ryzen 9 5950X; total = Σout/Σin; decode is
+MiB/s of original SPIR-V output):
+
+| tool | mean | median | total | decode |
+|---|---|---|---|---|
+| smol-v | 0.3865 | 0.3831 | 0.3715 | 692.89 MiB/s |
+| yari-v | 0.3395 | 0.3373 | 0.3367 | 702.36 MiB/s |
+| zstd -19 | 0.3438 | 0.3330 | 0.2756 | 739.15 MiB/s |
+| smol-v + zstd -19 | 0.2647 | 0.2534 | 0.1950 | 463.81 MiB/s |
+| **ARIX-V** | **0.2240** | **0.2136** | **0.1715** | **45.22 MiB/s** |
+
+ARIX-V round-trips all 1080 corpus files (including the three big-endian
+modules the other tools reject) and arbitrary non-SPIR-V bytes (byte-fallback
+model), and the decoder is hardened against hostile input (validated
+container, bounded allocation, fuzzed; see `tools/fuzz/`).
+
+## Usage
+
+The intended setup is asymmetric: compress shaders offline with the CLI as a
+build step, then decompress at runtime by linking the library into your
+application.
+
+### Compressing (build time, CLI)
+
+```bash
+make build/arixv
+build/arixv c shader.spv shader.arixv      # compress
+build/arixv d shader.arixv shader.spv      # decompress
+build/arixv roundtrip <files...>           # verify round-trip, print sizes
+```
+
+### Decompressing at runtime
+
+Use the executable built by the Makefile to compress shaders offline. For
+runtime decompression, the supported distribution model is source integration:
+copy `src/` into your project and compile its five `.cpp` files with C++17 and
+`-Isrc`. There are no runtime dependencies and no package-install or
+ABI-stability promise. The checked-in `grammar_tables.cpp` means consumers do
+not need the optional grammar-source checkout.
+
+Include `arixv.h` from your application:
+
+```cpp
+#include "arixv.h"
+
+std::vector<uint8_t> spirv;
+arixv::Status status = arixv::Decode(blob.data(), blob.size(), spirv);
+if (status != arixv::Status::kOk) {
+  // Corrupt or truncated blob; `spirv` is left empty.
+}
+```
+
+`Decode` treats its input as untrusted: the container is validated, output
+allocation is bounded by the `max_output` argument (default 1 GiB) rather
+than by the untrusted header, and the decoder is fuzzed
+(`tools/fuzz/fuzz_roundtrip.cpp`). `arixv::Encode` is also available in the
+library for in-process compression.
+
+### Container compatibility
+
+Every ARIX-V blob begins with the four ASCII bytes `ARX1`, followed by its mode
+and payload. These four bytes are the entire format-version mechanism: a
+decoder accepts only an exact magic match. Any change that can alter encoded
+bytes must choose a new four-byte magic; ARIX-V makes no compatibility promise
+between different magic values.
+
+The CLI and Makefile are intended for offline compression and development.
+Benchmarks, fuzzers, and scripts are development tools; none are required by
+an integrating application.
+
+## Layout
+
+- `src/` — the ARIX-V library; the only directory a target application needs.
+- `cli/` — the `arixv` command-line tool.
+- `tools/bench/` — local benchmark and coverage-report tools.
+- `tools/fuzz/` — fuzz harnesses.
+- `tests/` — unit tests.
+- `scripts/bench/` and `scripts/fuzz/` — development-only automation.
+- `docs/` — benchmark-corpus, performance, fuzzing, and tuning notes.
+- `deps/` — pinned upstream source lockfiles; fetched inputs are ignored.
+
+## Building and testing
+
+```bash
+make all    # build/arixv, build/arixv_bench, build/arixv_decode_bench, build/fuzz_roundtrip
+make test   # unit + fuzz smoke; also exercises a corpus if one is present
+make asan   # sanitizer build of the test suite
+```
+
+`arixv_bench` prints the TSV benchmark protocol and decode-verifies every
+file; `scripts/bench/benchmark_spv_compressors.py` builds and includes it
+automatically. `ARIXV_STATS=1` dumps per-field-category entropy at exit.
+`scripts/gen_grammar_tables.py` regenerates `src/grammar_tables.cpp` from the
+pinned SPIRV-Headers JSON grammars; the file is checked in and must only be
+changed through the generator. Fetch grammar inputs before running the check:
+
+```bash
+python3 scripts/fetch_pinned_repos.py \
+  --lock deps/grammar-sources.lock.json --dest grammar-deps
+make check-generated
+```
+
+## Design notes
+
+ARIX-V is *purely adaptive*: no probability tables trained offline on the
+corpus are shipped. All shipped knowledge is structural — derived from the
+SPIR-V specification/grammar — plus a small number of hand-set scalar
+constants (adaptation shifts, initial probabilities, rank-list lengths, cap
+sizes), enumerated in `src/tuning.h` so the tuned surface stays auditable.
+
+The tuning rule: scalar defaults come from spec/implementation reasoning
+first; a designated *train split* of the corpus may then be used to choose
+among candidate scalars (`scripts/bench/tune_scalars.py`), while a held-out split
+stays blind for validation. The corpus is a test set, not a design target —
+nothing table-shaped may be derived from it.
+
+## Corpus and benchmarking
+
+The benchmark corpus is generated locally and is not distributed with ARIX-V.
+Its pinned upstream sources and their declared license locations are recorded
+in `deps/benchmark-sources.lock.json`; see
+[`docs/benchmark-corpus.md`](docs/benchmark-corpus.md) before fetching them.
+Create the corpus with:
+
+```bash
+python3 scripts/fetch_pinned_repos.py
+python3 scripts/build_spv_corpus.py
+```
+
+Run the reference benchmark with:
+
+```bash
+python3 scripts/bench/benchmark_spv_compressors.py
+```
+
+It reports mean, median, and total compression ratio plus encode/decode
+throughput for ARIX-V and the fetched baseline tools. Decode throughput is
+averaged over 20 decode iterations per file by default. To add another
+compressor, expose a runner that accepts SPIR-V file paths on the command line
+and prints one TSV line per input in this format:
+
+```text
+<path>\t<input_bytes>\t<output_bytes>\t<encode_ns>\t<decode_ns>
+```
+
+Then add that runner to the `runners` list in
+`scripts/bench/benchmark_spv_compressors.py`.

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "purpose": "Developer-only source used to regenerate checked-in SPIR-V grammar tables.",
+  "sources": [
+    {
+      "name": "spirv-headers",
+      "directory": "spirv-headers",
+      "url": "https://github.com/KhronosGroup/SPIRV-Headers.git",
+      "revision": "02c0394e57af6dfdda7f68973df6aa20fc3f5def",
+      "license": "Khronos MIT-style license",
+      "license_file": "LICENSE"
+    }
+  ]
+}

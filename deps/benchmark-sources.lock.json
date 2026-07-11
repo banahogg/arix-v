@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "purpose": "On-demand sources for the non-distributed SPIR-V benchmark corpus and baseline compressors.",
+  "sources": [
+    {
+      "name": "spirv-tools",
+      "directory": "SPIRV-Tools",
+      "url": "https://github.com/KhronosGroup/SPIRV-Tools.git",
+      "revision": "a14486e06742ee09bc7db68d3afa94ffe2d3f20c",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE"
+    },
+    {
+      "name": "smol-v",
+      "directory": "smol-v",
+      "url": "https://github.com/aras-p/smol-v.git",
+      "revision": "9dd54c379ac29fa148cb1b829bb939ba7381d8f4",
+      "license": "MIT OR Unlicense",
+      "license_file": "license.txt"
+    },
+    {
+      "name": "yari-v",
+      "directory": "yari-v",
+      "url": "https://github.com/sheredom/yari-v.git",
+      "revision": "77dda9dfc3f4f430251126e2e2149c1c328451a7",
+      "license": "Unlicense",
+      "license_file": "LICENSE"
+    },
+    {
+      "name": "spirv-database",
+      "directory": "SPIRV-Database",
+      "url": "https://github.com/LunarG/SPIRV-Database.git",
+      "revision": "7c8b129844d563cb71bbec08dc3c8d0cd5874f46",
+      "selection_path_prefix": "external/SPIRV-Database",
+      "license": "See upstream repository",
+      "license_file": null
+    },
+    {
+      "name": "vulkan-samples",
+      "directory": "Vulkan-Samples",
+      "url": "https://github.com/KhronosGroup/Vulkan-Samples.git",
+      "revision": "383471195757abdd43339c464db60449619d4f84",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE"
+    }
+  ]
+}
