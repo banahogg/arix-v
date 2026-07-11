@@ -70,7 +70,7 @@ const Tracker::IdInfo* Tracker::IdMap::Find(uint32_t id) const {
     return nullptr;
   }
   size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
-  while (keys_[i] != 0) {
+  while (slot_gen_[i] == generation_) {
     if (keys_[i] == id) {
       return &values_[i];
     }
@@ -91,7 +91,7 @@ Tracker::IdInfo& Tracker::IdMap::Ensure(uint32_t id) {
     Rehash(kIdMapMinSlots);
   }
   size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
-  while (keys_[i] != 0) {
+  while (slot_gen_[i] == generation_) {
     if (keys_[i] == id) {
       return values_[i];
     }
@@ -100,21 +100,28 @@ Tracker::IdInfo& Tracker::IdMap::Ensure(uint32_t id) {
   if ((size_ + 1) * 10 >= keys_.size() * 7) {
     Rehash(keys_.size() * 2);
     i = static_cast<size_t>(id * kIdHashMul) & mask_;
-    while (keys_[i] != 0) {
+    while (slot_gen_[i] == generation_) {
       i = (i + 1) & mask_;
     }
   }
   keys_[i] = id;
+  slot_gen_[i] = generation_;
   values_[i] = IdInfo{};
   ++size_;
   return values_[i];
 }
 
 void Tracker::IdMap::Clear() {
-  if (size_ != 0) {
-    std::fill(keys_.begin(), keys_.end(), 0u);
-    size_ = 0;
+  // Bump the generation so every slot's stamp no longer matches: the whole map
+  // reads as empty without touching the key array. Only when the 32-bit
+  // generation wraps back to 0 (after ~4 billion modules through one map) do we
+  // pay a one-time bulk reset to re-establish the "0 => empty" invariant.
+  ++generation_;
+  if (generation_ == 0) {
+    std::fill(slot_gen_.begin(), slot_gen_.end(), 0u);
+    generation_ = 1;
   }
+  size_ = 0;
   has_zero_ = false;
 }
 
@@ -131,19 +138,25 @@ void Tracker::IdMap::Reserve(size_t expected_ids) {
 void Tracker::IdMap::Rehash(size_t slot_count) {
   std::vector<uint32_t> old_keys = std::move(keys_);
   std::vector<IdInfo> old_values = std::move(values_);
+  std::vector<uint32_t> old_gen = std::move(slot_gen_);
   keys_.assign(slot_count, 0u);
   values_.assign(slot_count, IdInfo{});
+  // Fresh stamps are 0; occupied slots below are stamped with generation_.
+  // generation_ is never 0 during use (Clear() skips 0), so nothing else in
+  // the new array reads as occupied.
+  slot_gen_.assign(slot_count, 0u);
   mask_ = slot_count - 1;
   for (size_t from = 0; from < old_keys.size(); ++from) {
-    const uint32_t id = old_keys[from];
-    if (id == 0) {
-      continue;
+    if (old_gen[from] != generation_) {
+      continue;  // slot was empty in the current generation
     }
+    const uint32_t id = old_keys[from];
     size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
-    while (keys_[i] != 0) {
+    while (slot_gen_[i] == generation_) {
       i = (i + 1) & mask_;
     }
     keys_[i] = id;
+    slot_gen_[i] = generation_;
     values_[i] = old_values[from];
   }
 }

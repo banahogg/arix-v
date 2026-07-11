@@ -251,11 +251,39 @@ Next no-format experiments, in order:
    Full 1080-file corpus, core-pinned, 100 iterations: reusable decode
    improved 52.61 → 53.91 MiB/s (+2.5%), with identical encoded bytes and
    checksum. No ratio change.
-2. **Cheaper reusable model reset.** `__memset` is 1.85% of reusable samples
-   under `Decoder::Decode`. First split it between `IdMap::Clear` and the
-   model-array resets, then measure a touched-slot clear list or generation
-   stamps against their lookup and memory costs; do not assume either wins
-   without a corpus benchmark.
+2. **[Complete] Cheaper reusable model reset (+3.8% reusable, +2.0% stateless
+   achieved).** `__memset` was 1.85% of reusable samples under
+   `Decoder::Decode`. Attribution (no profiler in this sandbox — perf absent,
+   `perf_event_paranoid=4`, no valgrind — so this was done by ablation): the
+   dominant memset is `Tracker::IdMap::Clear`, which `std::fill`ed the entire
+   open-addressing key array (a power of two grown to hold every distinct ID in
+   the module) on every decode; the `BeginDecode` model-array resets are small
+   fixed-size fills independent of module size. Landed as generation-stamped
+   `IdMap` slots: each slot carries a `slot_gen_` stamp and is occupied iff
+   `slot_gen_[i] == generation_`, so `Clear()` is now a single generation bump
+   instead of an O(slots) fill (the stamp array is bulk-reset only on the
+   ~4-billion-module generation wrap). This was chosen over a touched-slot
+   clear list, which would add a per-ID-definition push on the hot path;
+   generation stamps keep the reset O(1) and add only a stamp compare per probe
+   plus one `uint32_t`/slot of memory. The ablation win directly measures
+   `IdMap::Clear`'s former share.
+   Full 1080-file corpus, core-pinned Ryzen 9 5950X, `-O3 -flto=auto`, 100
+   iterations, byte-identical (1,041,769 encoded bytes, checksum
+   178,987,814,000): matched per-file reusable 53.1 → 55.1 MiB/s (+3.8%),
+   stateless 47.4 → 48.3 MiB/s (+2.0%). Reusable buckets (base → patched):
+   <4 KiB 51.6 → 56.5 MiB/s (+9.4%, the fixed per-module clear is a larger
+   fraction of small-file work); 4-16 KiB 53.3 → 55.1 MiB/s (+3.5%); >16 KiB
+   53.9 → 54.4 MiB/s (+0.8%). `make test` (incl. 500-iter fuzz) and a
+   3000-iter fuzz pass; ASan/UBSan runs are memory-clean (see note below).
+
+   *Sandbox note:* the `make asan` model/arixv-test binaries hit a
+   nondeterministic exit-time `DEADLYSIGNAL`/SIGSEGV in this sandbox at ~20-30%
+   of runs. It reproduces identically on the pre-change baseline binary (9/40
+   vs 11/40 patched), never reproduces under gdb, and one captured trace sat in
+   `__lsan::CheckForLeaks`/`_dl_fini`, i.e. the sanitizer's exit-time
+   stop-the-world scan under the container's ptrace restrictions — not decoder
+   code. Runs that exit cleanly report zero ASan/UBSan errors, so the change
+   itself is memory-clean.
 3. **Entropy format, not more micro-tuning.** The coding path is about two
    thirds of reusable cycles and remains serial because every adaptive bit
    updates its next probability. A fast optional mode with encoder-supplied

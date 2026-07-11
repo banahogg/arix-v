@@ -135,10 +135,12 @@ class Tracker {
 
  private:
   // Open-addressing hash map from ID to IdInfo. Linear probing over
-  // power-of-two key/value arrays; key 0 marks an empty slot, and ID 0
-  // (invalid SPIR-V, but reachable from corrupt input) gets a dedicated
-  // out-of-table slot. Grows by doubling; Clear() keeps capacity, mirroring
-  // the bucket-retention of the unordered_map it replaced.
+  // power-of-two key/value arrays; a slot is occupied iff its generation
+  // stamp equals the map's current generation, and ID 0 (invalid SPIR-V, but
+  // reachable from corrupt input) gets a dedicated out-of-table slot. Grows by
+  // doubling; Clear() keeps capacity and, instead of zeroing the whole key
+  // array, just bumps the generation so all slots read as empty in O(1). The
+  // stamp array is only bulk-reset on the (practically never) generation wrap.
   class IdMap {
    public:
     const IdInfo* Find(uint32_t id) const;
@@ -153,10 +155,12 @@ class Tracker {
    private:
     void Rehash(size_t slot_count);
 
-    std::vector<uint32_t> keys_;  // size is a power of two; 0 = empty
-    std::vector<IdInfo> values_;  // parallel to keys_
-    size_t size_ = 0;             // nonzero keys stored
-    size_t mask_ = 0;             // keys_.size() - 1 once allocated
+    std::vector<uint32_t> keys_;      // size is a power of two
+    std::vector<IdInfo> values_;      // parallel to keys_
+    std::vector<uint32_t> slot_gen_;  // parallel; == generation_ if occupied
+    uint32_t generation_ = 0;         // bumped by Clear(); 0 => all slots empty
+    size_t size_ = 0;                 // occupied slots in the current generation
+    size_t mask_ = 0;                 // keys_.size() - 1 once allocated
     bool has_zero_ = false;
     IdInfo zero_info_;
   };
