@@ -18,6 +18,7 @@ namespace arixv {
 class BitEncoder {
  public:
   static constexpr bool kEncoding = true;
+  static constexpr bool kRawResidual = false;
 
   explicit BitEncoder(RangeEncoder& enc) : enc_(enc) {}
 
@@ -56,6 +57,7 @@ class BitEncoder {
 class BitDecoder {
  public:
   static constexpr bool kEncoding = false;
+  static constexpr bool kRawResidual = false;
 
   explicit BitDecoder(RangeDecoder& dec) : dec_(dec) {}
 
@@ -87,6 +89,9 @@ struct BitTree {
 
   template <typename Coder>
   uint32_t CodeValue(Coder& coder, uint32_t value) {
+    if constexpr (Coder::kRawResidual) {
+      return coder.CodeBitsDirect(value, kBits);
+    }
     uint32_t node = 1;
     uint32_t out = 0;
     for (int bit_index = kBits - 1; bit_index >= 0; --bit_index) {
@@ -116,6 +121,10 @@ inline uint32_t BitWidth(uint32_t v) {
 
 template <typename Coder>
 uint32_t CodeUint(Coder& coder, UintModel& model, uint32_t v) {
+  if constexpr (Coder::kRawResidual) {
+    (void)model;
+    return coder.CodeUint32(v);
+  }
   uint32_t nbits = Coder::kEncoding ? BitWidth(v) : 0;
   nbits = model.length.CodeValue(coder, nbits);
   if (nbits == 0) {
@@ -167,6 +176,11 @@ inline void BeginByteModelGeneration(ByteModel& model) {
 
 template <typename Coder>
 uint8_t CodeByte(Coder& coder, ByteModel& model, uint8_t prev, uint8_t b) {
+  if constexpr (Coder::kRawResidual) {
+    (void)model;
+    (void)prev;
+    return static_cast<uint8_t>(coder.CodeBitsDirect(b, kByteBits));
+  }
   std::unique_ptr<BitTree<kByteBits>>& tree = model.tree[prev];
   if (!tree) {
     tree = std::make_unique<BitTree<kByteBits>>();

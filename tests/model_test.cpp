@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "arixv.h"
+#include "model.h"
 #include "tuning.h"
 
 namespace {
@@ -99,6 +100,16 @@ void RoundTrip(const std::vector<uint8_t>& input, bool force_coded,
   assert(arixv::Decode(encoded.data(), encoded.size(), decoded) ==
          arixv::Status::kOk);
   assert(decoded == input);
+
+  if (arixv::IsSpirvModelEligible(input.data(), input.size())) {
+    std::vector<uint8_t> raw;
+    arixv::EncodeModuleRawResidual(input.data(), input.size(), raw);
+    std::vector<uint8_t> raw_decoded;
+    assert(arixv::DecodeModuleRawResidual(raw.data(), raw.size(), input.size(),
+                                          raw_decoded) ==
+           arixv::Status::kOk);
+    assert(raw_decoded == input);
+  }
 }
 
 std::vector<std::filesystem::path> CorpusFiles() {
@@ -186,6 +197,41 @@ void HostileModules() {
   std::vector<uint8_t> decoded;
   assert(arixv::Decode(encoded.data(), encoded.size(), decoded) ==
          arixv::Status::kBadContainer);
+}
+
+void RawResidualValidation() {
+  const std::vector<uint8_t> module =
+      Module({Op(19, 2), 1, Op(21, 4), 2, 32, 0, Op(43, 4), 2, 3, 7},
+             0x00010300u, 0, 4);
+  std::vector<uint8_t> raw;
+  arixv::EncodeModuleRawResidual(module.data(), module.size(), raw);
+  assert(!raw.empty());
+
+  for (size_t prefix = 0; prefix < raw.size(); ++prefix) {
+    std::vector<uint8_t> decoded;
+    assert(arixv::DecodeModuleRawResidual(raw.data(), prefix, module.size(),
+                                          decoded) != arixv::Status::kOk);
+    assert(decoded.empty());
+  }
+
+  std::vector<uint8_t> padded = raw;
+  padded.push_back(0);
+  std::vector<uint8_t> decoded;
+  assert(arixv::DecodeModuleRawResidual(padded.data(), padded.size(),
+                                        module.size(), decoded) ==
+         arixv::Status::kBadContainer);
+  assert(decoded.empty());
+
+  arixv::RawResidualModuleDecoder reusable;
+  assert(reusable.Decode(raw.data(), raw.size(), module.size(), decoded) ==
+         arixv::Status::kOk);
+  assert(decoded == module);
+  assert(reusable.Decode(padded.data(), padded.size(), module.size(), decoded) ==
+         arixv::Status::kBadContainer);
+  assert(decoded.empty());
+  assert(reusable.Decode(raw.data(), raw.size(), module.size(), decoded) ==
+         arixv::Status::kOk);
+  assert(decoded == module);
 }
 
 void M3FieldModules() {
@@ -368,6 +414,7 @@ void MutatedCorpusRoundTrips() {
 int main() {
   CorpusMode2RoundTrips();
   HostileModules();
+  RawResidualValidation();
   M3FieldModules();
   M4aModules();
   MutatedCorpusRoundTrips();

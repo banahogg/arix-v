@@ -365,6 +365,16 @@ struct ModelState {
     recent_strings.clear();
   }
 
+  void BeginRawDecode() {
+    // The raw residual format keeps only structural prediction state. None of
+    // the adaptive probability arrays participate in decoding, so resetting
+    // them would distort the ceiling this experiment is intended to measure.
+    AdvanceGeneration();
+    tracker.Reset();
+    prev_result_id = 0;
+    recent_strings.clear();
+  }
+
   Tracker tracker;
   uint32_t generation = 1;
   Prob swapped_flag;
@@ -534,6 +544,142 @@ class DecodeIO {
   bool swapped_ = false;
 };
 
+// A packed decision stream with no entropy coding. Keeping the BitEncoder /
+// BitDecoder-shaped interface lets this exercise the exact same structural
+// traversal as M2 while removing range arithmetic and adaptive updates from
+// the hot path.
+class RawResidualEncoder {
+ public:
+  static constexpr bool kEncoding = true;
+  static constexpr bool kRawResidual = true;
+
+  explicit RawResidualEncoder(std::vector<uint8_t>& out) : out_(out) {}
+
+  bool CodeBit(Prob&, bool bit) {
+    CodeBitsDirect(bit ? 1u : 0u, 1);
+    return bit;
+  }
+
+  uint32_t CodeBitsDirect(uint32_t value, int nbits) {
+    const int original_nbits = nbits;
+    while (nbits > 0) {
+      if (bit_offset_ == 0) {
+        out_.push_back(0);
+      }
+      const int available = 8 - bit_offset_;
+      const int take = std::min(nbits, available);
+      const int source_shift = nbits - take;
+      const uint32_t mask = (1u << take) - 1u;
+      out_.back() |= static_cast<uint8_t>(
+          ((value >> source_shift) & mask) << (available - take));
+      bit_offset_ = (bit_offset_ + take) & 7;
+      nbits -= take;
+    }
+    if (original_nbits == 32) {
+      return value;
+    }
+    return value & ((1u << original_nbits) - 1u);
+  }
+
+  uint32_t CodeUint32(uint32_t value) {
+    uint32_t remaining = value;
+    while (remaining >= 0x80) {
+      CodeBitsDirect((remaining & 0x7fu) | 0x80u, 8);
+      remaining >>= 7;
+    }
+    CodeBitsDirect(remaining, 8);
+    return value;
+  }
+
+  void SetCostSink(double*) {}
+  void Flush() {}
+  bool exhausted() const { return false; }
+
+ private:
+  std::vector<uint8_t>& out_;
+  int bit_offset_ = 0;
+};
+
+class RawResidualDecoder {
+ public:
+  static constexpr bool kEncoding = false;
+  static constexpr bool kRawResidual = true;
+
+  RawResidualDecoder(const uint8_t* data, size_t size)
+      : data_(data), size_(size) {}
+
+  bool CodeBit(Prob&, bool) {
+    return CodeBitsDirect(0, 1) != 0;
+  }
+
+  uint32_t CodeBitsDirect(uint32_t, int nbits) {
+    uint32_t value = 0;
+    while (nbits > 0) {
+      const size_t byte = bit_pos_ >> 3;
+      if (byte >= size_) {
+        exhausted_ = true;
+        // nbits can still be 32 here (a full-width read that exhausts before
+        // consuming any bits), where value is necessarily 0 and a 32-bit
+        // shift would be undefined.
+        value = nbits < 32 ? value << nbits : 0;
+        break;
+      }
+      const int offset = static_cast<int>(bit_pos_ & 7u);
+      const int available = 8 - offset;
+      const int take = std::min(nbits, available);
+      const int source_shift = available - take;
+      const uint32_t mask = (1u << take) - 1u;
+      value = (value << take) | ((data_[byte] >> source_shift) & mask);
+      bit_pos_ += static_cast<size_t>(take);
+      nbits -= take;
+    }
+    return value;
+  }
+
+  uint32_t CodeUint32(uint32_t) {
+    uint32_t value = 0;
+    for (int byte_index = 0; byte_index < 5; ++byte_index) {
+      const uint32_t byte = CodeBitsDirect(0, 8);
+      if (byte_index == 4 && (byte & 0xf0u) != 0) {
+        malformed_ = true;
+      }
+      value |= (byte & 0x7fu) << (byte_index * 7);
+      if ((byte & 0x80u) == 0) {
+        return value;
+      }
+    }
+    malformed_ = true;
+    return value;
+  }
+
+  void SetCostSink(double*) {}
+  bool exhausted() const { return exhausted_; }
+
+  bool AtEndWithZeroPadding() const {
+    if (exhausted_ || malformed_) {
+      return false;
+    }
+    const size_t consumed_bytes = (bit_pos_ + 7u) >> 3;
+    if (consumed_bytes != size_) {
+      return false;
+    }
+    const size_t remaining = (8u - (bit_pos_ & 7u)) & 7u;
+    if (remaining == 0) {
+      return true;
+    }
+    const uint8_t padding_mask =
+        static_cast<uint8_t>((1u << remaining) - 1u);
+    return (data_[size_ - 1] & padding_mask) == 0;
+  }
+
+ private:
+  const uint8_t* data_;
+  size_t size_;
+  size_t bit_pos_ = 0;
+  bool exhausted_ = false;
+  bool malformed_ = false;
+};
+
 template <class Bits>
 uint32_t CodeDirect32(Bits& bits, uint32_t hint) {
   uint32_t value = 0;
@@ -562,6 +708,11 @@ template <class Bits>
 uint32_t CodeGenericOperandWord(Bits& bits, ModelState& model,
                                 std::array<uint8_t, 4>& prev_bytes,
                                 uint32_t hint) {
+  if constexpr (Bits::kRawResidual) {
+    (void)model;
+    (void)prev_bytes;
+    return bits.CodeBitsDirect(hint, 32);
+  }
   if (!model.operand_bytes) {
     // A freshly constructed ByteModel behaves exactly like a generation-
     // bumped one (trees are stamp-guarded), so lazy creation is
@@ -724,6 +875,11 @@ uint32_t CodeRankedId(Bits& bits, Prob& flag, BitTree<6>& tree,
     }
     return Bits::kEncoding ? hint : 0;
   }
+  if constexpr (Bits::kRawResidual) {
+    const uint32_t delta = Bits::kEncoding ? ZigZag32(hint - base) : 0;
+    const uint32_t coded = bits.CodeUint32(delta);
+    return Bits::kEncoding ? hint : base + UnZigZag32(coded);
+  }
   return CodeDelta(bits, EnsureUint(escape), hint, base);
 }
 
@@ -808,10 +964,6 @@ template <class Bits>
 uint32_t CodeValueEnum(Bits& bits, ModelState& model,
                        const OperandCursor::Field& field, uint32_t hint) {
   const OperandKindDesc& kind = GetOperandKind(field.kind);
-  const size_t key = static_cast<size_t>(field.kind) * 16 + Slot16(field.slot);
-  ValueEnumModel& ctx =
-      EnsureStamped(model.value_enums, model.value_enum_stamp, key,
-                    model.generation, ResetValueEnumModel);
   const EnumerantDesc* enumerant =
       Bits::kEncoding ? FindEnumerant(kind, hint) : nullptr;
   uint32_t index = 0;
@@ -825,6 +977,20 @@ uint32_t CodeValueEnum(Bits& bits, ModelState& model,
       }
     }
   }
+  if constexpr (Bits::kRawResidual) {
+    if (bits.CodeBit(model.schema_zero, known)) {
+      index = bits.CodeBitsDirect(index, 8);
+      if (!Bits::kEncoding && index < kind.num_enumerants) {
+        return GetEnumerant(kind, static_cast<uint16_t>(index)).value;
+      }
+      return Bits::kEncoding ? hint : 0;
+    }
+    return bits.CodeUint32(hint);
+  }
+  const size_t key = static_cast<size_t>(field.kind) * 16 + Slot16(field.slot);
+  ValueEnumModel& ctx =
+      EnsureStamped(model.value_enums, model.value_enum_stamp, key,
+                    model.generation, ResetValueEnumModel);
   if (bits.CodeBit(ctx.known, known)) {
     index = ctx.index->CodeValue(bits, index);
     if (!Bits::kEncoding && index < kind.num_enumerants) {
@@ -839,6 +1005,27 @@ template <class Bits>
 uint32_t CodeBitEnum(Bits& bits, ModelState& model,
                      const OperandCursor::Field& field, uint32_t hint) {
   const OperandKindDesc& kind = GetOperandKind(field.kind);
+  if constexpr (Bits::kRawResidual) {
+    uint32_t known_mask = 0;
+    uint32_t value = 0;
+    for (uint16_t i = 0; i < kind.num_enumerants; ++i) {
+      const EnumerantDesc& enumerant = GetEnumerant(kind, i);
+      if (!IsSingleBit(enumerant.value)) {
+        continue;
+      }
+      known_mask |= enumerant.value;
+      const bool present = Bits::kEncoding && ((hint & enumerant.value) != 0);
+      if (bits.CodeBit(model.schema_zero, present)) {
+        value |= enumerant.value;
+      }
+    }
+    const uint32_t residual_hint = hint & ~known_mask;
+    if (bits.CodeBit(model.schema_zero,
+                     Bits::kEncoding && residual_hint != 0)) {
+      value |= bits.CodeUint32(residual_hint);
+    }
+    return Bits::kEncoding ? hint : value;
+  }
   BitEnumModel& ctx =
       EnsureStamped(model.bit_enums, model.bit_enum_stamp, field.kind,
                     model.generation, ResetBitEnumModel);
@@ -876,6 +1063,13 @@ uint32_t CodeLiteralInteger(Bits& bits, ModelState& model,
     model.last_literal_stamp[key] = model.generation;
   }
   const uint32_t base = model.last_literal[key];
+  if constexpr (Bits::kRawResidual) {
+    const uint32_t delta = Bits::kEncoding ? ZigZag32(hint - base) : 0;
+    const uint32_t coded = bits.CodeUint32(delta);
+    const uint32_t value = Bits::kEncoding ? hint : base + UnZigZag32(coded);
+    model.last_literal[key] = value;
+    return Bits::kEncoding ? hint : value;
+  }
   const size_t cls = ClassBucket(desc);
   UintModel& ctx =
       EnsureStamped(model.integer_values, model.integer_value_stamp,
@@ -893,6 +1087,10 @@ uint32_t CodeContextNumber(Bits& bits, ModelState& model, uint32_t hint) {
 
 template <class Bits>
 uint32_t CodeSpecConstantOp(Bits& bits, ModelState& model, uint32_t hint) {
+  if constexpr (Bits::kRawResidual) {
+    (void)model;
+    return bits.CodeUint32(hint);
+  }
   return CodeUint(bits, EnsureUint(model.spec_constant_op), hint);
 }
 
@@ -900,16 +1098,18 @@ template <class Bits>
 uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
                            const ExtInstSetDesc* set, uint32_t hint) {
   if (!set) {
+    if constexpr (Bits::kRawResidual) {
+      return bits.CodeUint32(hint);
+    }
     return CodeUint(bits, EnsureUint(model.ext_inst_unknown), hint);
   }
   const int set_index = FindExtInstSetIndex(set);
   if (set_index < 0) {
+    if constexpr (Bits::kRawResidual) {
+      return bits.CodeUint32(hint);
+    }
     return CodeUint(bits, EnsureUint(model.ext_inst_unknown), hint);
   }
-  ExtInstNumberModel& ctx =
-      EnsureStamped(model.ext_inst_nums, model.ext_inst_num_stamp,
-                    static_cast<size_t>(set_index), model.generation,
-                    ResetExtInstNumberModel);
   const InstructionDesc* inst =
       Bits::kEncoding ? FindExtInstruction(*set, hint) : nullptr;
   uint32_t index = 0;
@@ -923,6 +1123,20 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
       }
     }
   }
+  if constexpr (Bits::kRawResidual) {
+    if (bits.CodeBit(model.schema_zero, known)) {
+      index = bits.CodeBitsDirect(index, 8);
+      if (!Bits::kEncoding && index < set->num_instructions) {
+        return set->instructions[index].opcode;
+      }
+      return Bits::kEncoding ? hint : 0;
+    }
+    return bits.CodeUint32(hint);
+  }
+  ExtInstNumberModel& ctx =
+      EnsureStamped(model.ext_inst_nums, model.ext_inst_num_stamp,
+                    static_cast<size_t>(set_index), model.generation,
+                    ResetExtInstNumberModel);
   if (bits.CodeBit(ctx.known, known)) {
     index = ctx.index->CodeValue(bits, index);
     if (!Bits::kEncoding && index < set->num_instructions) {
@@ -1036,6 +1250,23 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
                                   hint_desc != nullptr);
   uint16_t opcode = hint;
   if (known) {
+    if constexpr (Bits::kRawResidual) {
+      uint32_t index = 0;
+      if (Bits::kEncoding) {
+        const int found = FindInstructionIndex(hint);
+        assert(found >= 0);
+        index = static_cast<uint32_t>(found);
+      }
+      index = bits.CodeBitsDirect(index, 10);
+      if (index >= NumCoreInstructions()) {
+        index = NumCoreInstructions() - 1;
+      }
+      const uint16_t inst_index = static_cast<uint16_t>(index);
+      opcode = GetCoreInstruction(inst_index).opcode;
+      *desc_out = &GetCoreInstruction(inst_index);
+      *inst_index_out = inst_index;
+      return opcode;
+    }
     const uint8_t prev_class =
         prev_known ? model.tracker.prev_opcode_class()
                    : NumInstructionClasses();
@@ -1085,6 +1316,12 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
     *desc_out = &GetCoreInstruction(inst_index);
     *inst_index_out = inst_index;
   } else {
+    if constexpr (Bits::kRawResidual) {
+      opcode = static_cast<uint16_t>(bits.CodeBitsDirect(hint, 16));
+      *desc_out = nullptr;
+      *inst_index_out = NumCoreInstructions();
+      return opcode;
+    }
     opcode = static_cast<uint16_t>(
         EnsureStampedTree(model.unknown_opcode_tree,
                           model.unknown_opcode_tree_stamp, model.generation)
@@ -1102,7 +1339,32 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
   *opaque = true;
   uint32_t count = hint;
   if (!desc) {
+    if constexpr (Bits::kRawResidual) {
+      return bits.CodeUint32(hint) & 0xffffu;
+    }
     count = CodeUint(bits, EnsureUint(model.raw_unknown_count), hint) & 0xffffu;
+    return count;
+  }
+
+  if constexpr (Bits::kRawResidual) {
+    const bool consistent =
+        bits.CodeBit(model.schema_zero, IsGrammarConsistent(desc, hint));
+    if (!consistent) {
+      return bits.CodeUint32(hint) & 0xffffu;
+    }
+    *opaque = false;
+    if (desc->fixed_word_count) {
+      return desc->min_word_count;
+    }
+    const uint32_t last_count = model.last_word_count[inst_index];
+    if (bits.CodeBit(model.schema_zero,
+                     Bits::kEncoding && hint == last_count)) {
+      count = last_count;
+    } else {
+      const uint32_t extra = Bits::kEncoding ? hint - desc->min_word_count : 0;
+      count = (desc->min_word_count + bits.CodeUint32(extra)) & 0xffffu;
+    }
+    model.last_word_count[inst_index] = count;
     return count;
   }
 
@@ -1435,7 +1697,13 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
                    Bits::kEncoding && bound_hint == predicted_bound);
   const uint32_t bound =
       bound_matches ? predicted_bound
-                    : CodeUint(bits, EnsureUint(model.bound_value), bound_hint);
+                    : [&]() {
+                        if constexpr (Bits::kRawResidual) {
+                          return bits.CodeUint32(bound_hint);
+                        }
+                        return CodeUint(bits, EnsureUint(model.bound_value),
+                                        bound_hint);
+                      }();
   io.PatchBound(bound);
 
   if (bits.exhausted()) {
@@ -1459,6 +1727,16 @@ void EncodeModule(const uint8_t* data, size_t size,
   ModelState model;
   RangeEncoder range(out_payload);
   BitEncoder bits(range);
+  EncodeIO io(data, size);
+  const Status status = CodeModule(model, bits, io, size / 4);
+  (void)status;
+  bits.Flush();
+}
+
+void EncodeModuleRawResidual(const uint8_t* data, size_t size,
+                             std::vector<uint8_t>& out_payload) {
+  ModelState model;
+  RawResidualEncoder bits(out_payload);
   EncodeIO io(data, size);
   const Status status = CodeModule(model, bits, io, size / 4);
   (void)status;
@@ -1506,6 +1784,54 @@ Status ModuleDecoder::Decode(const uint8_t* payload, size_t payload_size,
 Status DecodeModule(const uint8_t* payload, size_t payload_size,
                     size_t expected_original_size, std::vector<uint8_t>& out) {
   ModuleDecoder decoder;
+  return decoder.Decode(payload, payload_size, expected_original_size, out);
+}
+
+struct RawResidualModuleDecoder::State {
+  ModelState model;
+};
+
+RawResidualModuleDecoder::RawResidualModuleDecoder()
+    : state_(std::make_unique<State>()) {}
+RawResidualModuleDecoder::~RawResidualModuleDecoder() = default;
+RawResidualModuleDecoder::RawResidualModuleDecoder(
+    RawResidualModuleDecoder&&) noexcept = default;
+RawResidualModuleDecoder& RawResidualModuleDecoder::operator=(
+    RawResidualModuleDecoder&&) noexcept = default;
+
+Status RawResidualModuleDecoder::Decode(const uint8_t* payload,
+                                        size_t payload_size,
+                                        size_t expected_original_size,
+                                        std::vector<uint8_t>& out) {
+  if (expected_original_size < 20 || (expected_original_size % 4) != 0) {
+    return Status::kBadContainer;
+  }
+  out.clear();
+  out.reserve(CappedDecodeReserve(payload_size, expected_original_size));
+  state_->model.BeginRawDecode();
+  RawResidualDecoder bits(payload, payload_size);
+  DecodeIO io(out);
+  const Status status =
+      CodeModule(state_->model, bits, io, expected_original_size / 4);
+  if (status != Status::kOk) {
+    out.clear();
+    return status;
+  }
+  if (out.size() != expected_original_size) {
+    out.clear();
+    return Status::kTruncated;
+  }
+  if (!bits.AtEndWithZeroPadding()) {
+    out.clear();
+    return Status::kBadContainer;
+  }
+  return Status::kOk;
+}
+
+Status DecodeModuleRawResidual(const uint8_t* payload, size_t payload_size,
+                               size_t expected_original_size,
+                               std::vector<uint8_t>& out) {
+  RawResidualModuleDecoder decoder;
   return decoder.Decode(payload, payload_size, expected_original_size, out);
 }
 

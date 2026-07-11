@@ -354,11 +354,99 @@ Next no-format experiments, in order:
     grammar-driven prediction (sequential result IDs, rank-coded refs,
     grammar-consistent word counts). Emit those decisions as a compact
     residual *byte* stream and compress it with zstd (or a static-FSE coder).
-    Decode = zstd (≈700 MiB/s) + a cheap reconstruction pass with no per-bit
-    modeling — essentially "smol-v with a much smarter transform." Ratio
-    lands between current ARIX-V and smol-v+zstd: trade maybe 10-20% ratio
-    for ~10-30x decode speed. If the 100x gap is the headline problem, this
-    is the architecture that closes it.
+    Decode would be a fast back end followed by reconstruction with no
+    adaptive modeling — essentially "smol-v with a much smarter transform."
+    The raw experiment below measures that reconstruction cost directly; it
+    shows that the current state machine is substantially more expensive than
+    originally assumed, so this architecture alone does not close the gap.
+
+    **[Raw residual ceiling prototype, 2026-07-11.]** The internal benchmark
+    now has `--raw-residual`, which runs the same grammar traversal, structural
+    predictions, recency lists, ID/literal deltas, operand cursor, and tracker,
+    but replaces adaptive range coding with packed fixed-width decisions and
+    ULEB128 residuals. It is deliberately not an ARX1 container mode and has no
+    external dependency. Adaptive probability contexts are neither updated nor
+    reset on this path, so the result measures the retained structural machine
+    rather than a no-arithmetic variant of the old bit-model bookkeeping.
+
+    Matched 1078-file word-aligned SPIR-V intersection, core 0 of the same
+    Ryzen 9 5950X sandbox, `-O3 -flto=auto`, 100 iterations per file:
+
+    - reusable M2: 52.53, 52.63, 52.59 MiB/s (median **52.59**);
+      raw residual: 114.08, 115.58, 114.60 MiB/s (median **114.60**, 2.18x);
+    - stateless M2: **46.89 MiB/s**; raw residual: **106.99 MiB/s** (2.28x);
+    - 6,061,452 input bytes became 1,040,929 M2 container bytes (0.1717)
+      versus 1,945,645 raw payload bytes (0.3210, 1.87x the M2 size). Every
+      decode produced the same checksum, 178,987,622,100.
+
+    This puts the current single-stream structural state machine's practical
+    speed of light at roughly **115 MiB/s** before adding a back end. A zstd,
+    LZ4, Huffman, or FSE stage over this exact transform can improve its size,
+    but cannot make end-to-end decode exceed that ceiling; it will normally be
+    somewhat slower. Reaching several hundred MiB/s therefore also requires a
+    materially cheaper reconstruction pass (direct output, fewer generic
+    cursor/tracker operations, or a simpler transform), not just a new entropy
+    codec.
+
+### Raw residual reconstruction TODO
+
+These are the next experiments for raising the roughly 115 MiB/s structural
+ceiling. Keep the raw residual representation fixed while testing them so that
+the result measures reconstruction work, not a simultaneous format change.
+For every item, use the matched 1078-file intersection, reusable and stateless
+decoders, 100 iterations per file, core pinning, output checksum verification,
+and before/after instruction or sampling profiles where available.
+
+- [x] **Emit common decoded words directly instead of staging them in
+  `coded_words`.** Most fields produce exactly one word, but the decoder
+  currently clears a `WordBuffer`, pushes the word into it, clamps its size,
+  copies it into `inst_words`, and then emits it to the output. Add a
+  decode-only single-word path that performs the field decode, appends the
+  result to the instruction state and output, and advances the cursor without
+  constructing `coded_words`. Retain the buffer for strings, multiword
+  context-dependent numbers, and malformed layouts that require span
+  clamping. Measure the common-path coverage as well as throughput; this is
+  successful only if the extra branching does not erase the saved staging
+  work.
+
+- [ ] **Pre-size the output and store words through a direct pointer.** The
+  expected output size is already validated before module decode, yet
+  `DecodeIO` emits a word through four `vector<uint8_t>::push_back` calls.
+  Resize the output once, track a bounded write position, and store the four
+  bytes directly. Preserve big-endian reconstruction and delayed bound
+  patching, and ensure every failure path clears the partially written output.
+  Benchmark this separately from direct word emission so the gain from output
+  storage is distinguishable from the gain from removing `coded_words`.
+
+- [ ] **Generate direct layouts for more instructions and reduce
+  `OperandCursor` traffic.** Fixed required one-word layouts already bypass the
+  cursor, but variable, optional, repeated, composite, and enumerant-parameter
+  operands still spend substantial time in `Next()` and `Consume()`. Extend
+  the generated grammar metadata with compact layout programs or specialized
+  descriptors for common variable shapes, such as a fixed prefix followed by
+  repeated IDs. Record how many instructions and operand words use each path.
+  Keep the general cursor as the correctness fallback for uncommon grammar
+  shapes and malformed instruction counts.
+
+- [ ] **Prototype a cheaper ID-state representation for the tracker.** The
+  current open-addressing map still pays hashing and probing on nearly every ID
+  definition and use. Compare it with a dense table indexed by SPIR-V ID,
+  sized from a validated/clamped bound, with a sparse fallback for hostile or
+  unusually large bounds. A paged or generation-stamped dense table may avoid
+  clearing the full high-water allocation between modules. Measure lookup
+  cost, reset cost, peak retained memory, small-module latency, and corpus
+  throughput; do not trade unbounded allocation for speed.
+
+- [ ] **Build a reconstruction-specific loop instead of routing raw residuals
+  through the generic adaptive `CodeModule` template.** Once the smaller
+  experiments establish which shared abstractions remain expensive, create a
+  decoder specialized for fixed-width/ULEB residual input. It should preserve
+  the same grammar decisions, recency predictions, tracker semantics, hostile
+  input behavior, and byte-exact output, while deleting probability-model
+  parameters, stats hooks, encoder-only branches, and adaptive-format
+  scaffolding from the hot loop. Treat this as the largest and riskiest item:
+  require differential tests against the shared implementation over the full
+  corpus, mutated modules, truncations, trailing data, and sanitizer runs.
 
 12. **Chunked parallel decode.** Reset (or fork) model state every N
     instructions and frame the payload so chunks decode independently →
