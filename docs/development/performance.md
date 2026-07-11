@@ -242,12 +242,15 @@ events are blocked by `perf_event_paranoid=4`.
 
 Next no-format experiments, in order:
 
-1. **Decode-only direct word emission.** `coded_words` is normally a
+1. **[Complete] Decode-only direct word emission.** `coded_words` is normally a
    one-word staging buffer, then copied to `inst_words` and `out`; its
    `push_back` alone is 1.25% of reusable samples. Special-case the common
    single-word fields in the decoder and retain the buffer only for strings
-   and multiword context-dependent numbers. Expect a low-single-digit gain
-   with no ratio change.
+   and multiword context-dependent numbers. Landed as an explicitly inlined
+   `SingleWordStager` for the decode path; the encoder retains the buffer.
+   Full 1080-file corpus, core-pinned, 100 iterations: reusable decode
+   improved 52.61 → 53.91 MiB/s (+2.5%), with identical encoded bytes and
+   checksum. No ratio change.
 2. **Cheaper reusable model reset.** `__memset` is 1.85% of reusable samples
    under `Decoder::Decode`. First split it between `IdMap::Clear` and the
    model-array resets, then measure a touched-slot clear list or generation

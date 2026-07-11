@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "grammar_tables.h"
+#include "platform.h"
 #include "prob.h"
 #include "range_coder.h"
 #include "tracker.h"
@@ -77,6 +78,33 @@ class WordBuffer {
   std::array<uint32_t, kInlineWords> inline_words_{};
   std::vector<uint32_t> spill_;
   size_t size_ = 0;
+};
+
+// Keeps the decode-only direct-word path out of the operand switch while
+// retaining a compile-time split for encoding. The hot call operator is
+// explicitly inlined on the supported GCC/Clang toolchains.
+template <class Bits>
+class SingleWordStager {
+ public:
+  SingleWordStager(WordBuffer<kInlineOperandWords>& coded_words,
+                   uint32_t& direct_word, bool& has_direct_word)
+      : coded_words_(coded_words),
+        direct_word_(direct_word),
+        has_direct_word_(has_direct_word) {}
+
+  ARIXV_FORCE_INLINE void operator()(uint32_t word) {
+    if constexpr (!Bits::kEncoding) {
+      direct_word_ = word;
+      has_direct_word_ = true;
+    } else {
+      coded_words_.push_back(word);
+    }
+  }
+
+ private:
+  WordBuffer<kInlineOperandWords>& coded_words_;
+  uint32_t& direct_word_;
+  bool& has_direct_word_;
 };
 
 uint32_t LoadLe32(const uint8_t* p) {
@@ -1234,32 +1262,43 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
       }
 
       const uint32_t hint0 = io.BodyWord(body_pos + 1 + consumed);
+      // Nearly every operand category produces one word.  On decode, avoid
+      // routing those words through coded_words only to copy them immediately
+      // to inst_words and the output.  Multiword fields (notably strings and
+      // context-dependent numbers) retain the staging buffer below.
+      uint32_t direct_word = 0;
+      bool has_direct_word = false;
       coded_words.clear();
+      SingleWordStager<Bits> stage_single_word(coded_words, direct_word,
+                                                has_direct_word);
       uint32_t consume_span = 1;
 
       if (field.type == OperandCursor::FieldType::kOpaqueWord) {
         stat(kStatOpaque);
-        coded_words.push_back(
+        stage_single_word(
             CodeGenericOperandWord(bits, model, prev_bytes, hint0));
       } else {
         switch (field.category) {
           case OperandCategory::kIdResult:
             stat(kStatResultId);
-            coded_words.push_back(CodeResultId(bits, model, desc, hint0));
+            stage_single_word(CodeResultId(bits, model, desc, hint0));
             break;
-          case OperandCategory::kIdResultType:
+          case OperandCategory::kIdResultType: {
             stat(kStatResultType);
-            coded_words.push_back(CodeResultType(bits, model, desc, hint0));
-            current_result_type = coded_words.back();
+            const uint32_t word = CodeResultType(bits, model, desc, hint0);
+            stage_single_word(word);
+            current_result_type = word;
             break;
+          }
           case OperandCategory::kIdRef:
           case OperandCategory::kIdScope:
           case OperandCategory::kIdMemorySemantics: {
             stat(kStatIdRef);
-            coded_words.push_back(
-                CodeIdRef(bits, model, inst_index, field, hint0));
+            const uint32_t word =
+                CodeIdRef(bits, model, inst_index, field, hint0);
+            stage_single_word(word);
             if (desc && desc->opcode == 12 && field.slot == 2) {
-              const Tracker::IdInfo* info = model.tracker.Find(coded_words.back());
+              const Tracker::IdInfo* info = model.tracker.Find(word);
               current_ext_set = info ? info->ext_set : nullptr;
               cursor.SetExtInstSet(current_ext_set);
             }
@@ -1267,17 +1306,16 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
           }
           case OperandCategory::kValueEnum:
             stat(kStatValueEnum);
-            coded_words.push_back(CodeValueEnum(bits, model, field, hint0));
+            stage_single_word(CodeValueEnum(bits, model, field, hint0));
             break;
           case OperandCategory::kBitEnum:
             stat(kStatBitEnum);
-            coded_words.push_back(CodeBitEnum(bits, model, field, hint0));
+            stage_single_word(CodeBitEnum(bits, model, field, hint0));
             break;
           case OperandCategory::kLiteralInteger:
             stat(kStatLitInt);
-            coded_words.push_back(
-                CodeLiteralInteger(bits, model, desc, field, inst_index,
-                                   hint0));
+            stage_single_word(CodeLiteralInteger(bits, model, desc, field,
+                                                 inst_index, hint0));
             break;
           case OperandCategory::kLiteralContextDependentNumber: {
             stat(kStatLitCdn);
@@ -1287,7 +1325,9 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
                              static_cast<uint32_t>(inst_words.size()),
                              remaining);
             const uint32_t actual_span = std::min(consume_span, remaining);
-            if (actual_span >= 2 &&
+            if (actual_span == 1) {
+              stage_single_word(CodeContextNumber(bits, model, hint0));
+            } else if (actual_span >= 2 &&
                 model.tracker.TypeWidth(current_result_type) > 32) {
               const uint32_t low = CodeContextNumber(bits, model, hint0);
               coded_words.push_back(low);
@@ -1315,7 +1355,7 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
           }
           case OperandCategory::kLiteralExtInstInteger:
             stat(kStatExtNum);
-            coded_words.push_back(
+            stage_single_word(
                 CodeExtInstNumber(bits, model, current_ext_set, hint0));
             break;
           case OperandCategory::kLiteralString: {
@@ -1338,15 +1378,25 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
           }
           case OperandCategory::kLiteralSpecConstantOpInteger:
             stat(kStatSpecOp);
-            coded_words.push_back(CodeSpecConstantOp(bits, model, hint0));
+            stage_single_word(CodeSpecConstantOp(bits, model, hint0));
             break;
           case OperandCategory::kComposite:
           case OperandCategory::kUnknown:
             stat(kStatOpaque);
-            coded_words.push_back(
+            stage_single_word(
                 CodeGenericOperandWord(bits, model, prev_bytes, hint0));
             break;
         }
+      }
+
+      if (has_direct_word) {
+        inst_words.push_back(direct_word);
+        io.EmitBodyWord(direct_word);
+        if (!fixed_layout) {
+          cursor.Consume(cursor_field, 1, direct_word);
+        }
+        ++consumed;
+        continue;
       }
 
       if (coded_words.empty()) {
