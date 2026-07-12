@@ -466,14 +466,17 @@ and before/after instruction or sampling profiles where available.
   generator rules, hot-path branch, and exclusions for instruction-selected
   layouts. Revisit only as part of a broader layout-specialization design.
 
-- [ ] **Prototype a cheaper ID-state representation for the tracker.** The
-  current open-addressing map still pays hashing and probing on nearly every ID
-  definition and use. Compare it with a dense table indexed by SPIR-V ID,
-  sized from a validated/clamped bound, with a sparse fallback for hostile or
-  unusually large bounds. A paged or generation-stamped dense table may avoid
-  clearing the full high-water allocation between modules. Measure lookup
-  cost, reset cost, peak retained memory, small-module latency, and corpus
-  throughput; do not trade unbounded allocation for speed.
+- **[Reverted experiment, 2026-07-12] Dense generation-stamped ID table with
+  sparse fallback.** A prototype used a direct-indexed prefix sized from the
+  clamped module word count (the SPIR-V bound is decoded only at the end) and
+  kept the existing hash map for large/hostile IDs. The raw payload and output
+  stayed byte-identical, but the matched 1078-file raw-residual corpus slowed:
+  reusable median 138.02 → 134.59 MiB/s (−2.5%); stateless 120.96 → 117.65
+  MiB/s (−2.7%). M2 throughput was within noise. At the corpus high-water
+  mark it would retain ~1.22 MiB of dense values+stamps versus ~1.50 MiB for
+  the sparse arrays, only a ~0.28 MiB saving. Reverted: reduced hashing did
+  not offset the denser table's cache footprint. Revisit only with paging or
+  an early-bound format.
 
 - [ ] **Build a reconstruction-specific loop instead of routing raw residuals
   through the generic adaptive `CodeModule` template.** Once the smaller
