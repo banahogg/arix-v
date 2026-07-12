@@ -6,17 +6,21 @@ adaptive binary range coder. No corpus-trained tables are shipped; all shipped
 knowledge is derived from the pinned SPIR-V grammars plus
 hand-set scalar constants (`src/tuning.h`).
 
-**Results** (2026-07-10, 1070-file decode-verified intersection, 20 decode
+**Results** (2026-07-12, 1070-file decode-verified intersection, 20 decode
 iterations per file, one core of a Ryzen 9 5950X; total = Σout/Σin; decode is
 MiB/s of original SPIR-V output):
 
-| tool | mean | median | total | decode |
-|---|---|---|---|---|
-| smol-v | 0.3865 | 0.3831 | 0.3715 | 692.89 MiB/s |
-| yari-v | 0.3395 | 0.3373 | 0.3367 | 702.36 MiB/s |
-| zstd -19 | 0.3438 | 0.3330 | 0.2756 | 739.15 MiB/s |
-| smol-v + zstd -19 | 0.2647 | 0.2534 | 0.1950 | 463.81 MiB/s |
-| **ARIX-V** | **0.2240** | **0.2136** | **0.1715** | **45.22 MiB/s** |
+| tool | mean | median | total | decode | persistent decode |
+|---|---|---|---|---|---|
+| smol-v | 0.3865 | 0.3831 | 0.3715 | 1229.98 MiB/s | — |
+| yari-v | 0.3395 | 0.3373 | 0.3367 | 691.10 MiB/s | — |
+| zstd -19 | 0.3438 | 0.3330 | 0.2756 | 728.23 MiB/s | — |
+| smol-v + zstd -19 | 0.2647 | 0.2534 | 0.1950 | 649.06 MiB/s | — |
+| **ARIX-V** | **0.2240** | **0.2136** | **0.1715** | **46.30 MiB/s** | **57.43 MiB/s** |
+
+`decode` constructs a fresh decoder per module. `persistent decode` reuses one
+caller-owned `arixv::Decoder` for the sequential module stream; it is an
+ARIX-V-specific runtime mode, so no cross-tool value is shown.
 
 ARIX-V round-trips all 1080 corpus files (including the three big-endian
 modules the other tools reject) and arbitrary non-SPIR-V bytes (byte-fallback
@@ -58,6 +62,24 @@ if (status != arixv::Status::kOk) {
   // Corrupt or truncated blob; `spirv` is left empty.
 }
 ```
+
+When decoding many modules on one thread, retain a decoder to reuse its
+internal storage between calls:
+
+```cpp
+arixv::Decoder decoder;
+std::vector<uint8_t> spirv;
+
+for (const Blob& blob : shader_blobs) {
+  arixv::Status status = decoder.Decode(blob.data(), blob.size(), spirv);
+  if (status != arixv::Status::kOk) {
+    // Corrupt or truncated blob; `spirv` is left empty.
+  }
+}
+```
+
+`arixv::Decoder` is not thread-safe; use one instance per concurrent decode
+job. Its internal memory is retained up to the largest input it has seen.
 
 `Decode` treats its input as untrusted: the container is validated, output
 allocation is bounded by the `max_output` argument (default 1 GiB) rather
@@ -154,3 +176,11 @@ and prints one TSV line per input in this format:
 
 Then add that runner to the `runners` list in
 `scripts/bench/benchmark_spv_compressors.py`.
+
+To measure ARIX-V's persistent-decoder mode separately, build the decode
+benchmark and pass `--reuse-decoder`:
+
+```bash
+make build/arixv_decode_bench
+build/arixv_decode_bench --iters=20 --reuse-decoder corpus/spv/*.spv
+```
