@@ -455,15 +455,16 @@ and before/after instruction or sampling profiles where available.
   This is measured separately from the already-landed direct-word-staging
   path.
 
-- [ ] **Generate direct layouts for more instructions and reduce
-  `OperandCursor` traffic.** Fixed required one-word layouts already bypass the
-  cursor, but variable, optional, repeated, composite, and enumerant-parameter
-  operands still spend substantial time in `Next()` and `Consume()`. Extend
-  the generated grammar metadata with compact layout programs or specialized
-  descriptors for common variable shapes, such as a fixed prefix followed by
-  repeated IDs. Record how many instructions and operand words use each path.
-  Keep the general cursor as the correctness fallback for uncommon grammar
-  shapes and malformed instruction counts.
+- **[Reverted experiment, 2026-07-12] Generate direct layouts for more
+  instructions and reduce `OperandCursor` traffic.** A generated fixed-prefix
+  + repeated-ID descriptor covered 37,337 corpus instructions / 178,670
+  operand words (63 instruction forms) while preserving byte-identical raw
+  payloads and M2 size. On the matched 1078-file raw-residual corpus,
+  reusable decode improved 138.37 → 139.82 MiB/s (+1.0%), but stateless
+  decode was neutral within noise (122.06 → 121.49 MiB/s median). Reverted:
+  the small reusable-only gain did not justify the added grammar metadata,
+  generator rules, hot-path branch, and exclusions for instruction-selected
+  layouts. Revisit only as part of a broader layout-specialization design.
 
 - [ ] **Prototype a cheaper ID-state representation for the tracker.** The
   current open-addressing map still pays hashing and probing on nearly every ID
