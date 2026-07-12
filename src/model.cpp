@@ -113,11 +113,11 @@ uint32_t LoadLe32(const uint8_t* p) {
          (static_cast<uint32_t>(p[3]) << 24);
 }
 
-void StoreLe32(uint32_t v, std::vector<uint8_t>& out) {
-  out.push_back(static_cast<uint8_t>(v & 0xffu));
-  out.push_back(static_cast<uint8_t>((v >> 8) & 0xffu));
-  out.push_back(static_cast<uint8_t>((v >> 16) & 0xffu));
-  out.push_back(static_cast<uint8_t>((v >> 24) & 0xffu));
+void StoreLe32(uint32_t v, uint8_t* out) {
+  out[0] = static_cast<uint8_t>(v & 0xffu);
+  out[1] = static_cast<uint8_t>((v >> 8) & 0xffu);
+  out[2] = static_cast<uint8_t>((v >> 16) & 0xffu);
+  out[3] = static_cast<uint8_t>((v >> 24) & 0xffu);
 }
 
 uint32_t ByteSwap32(uint32_t v) {
@@ -507,7 +507,13 @@ class EncodeIO {
 
 class DecodeIO {
  public:
-  explicit DecodeIO(std::vector<uint8_t>& out) : out_(out) {}
+  DecodeIO(std::vector<uint8_t>& out, size_t expected_size) : out_(out) {
+    // The module header has already validated this size.  Allocate it once so
+    // the hot path can write each decoded word directly instead of growing the
+    // vector one byte at a time.
+    out_.resize(expected_size);
+    data_ = out_.data();
+  }
 
   bool SwappedHint() const { return false; }
   uint32_t HeaderWord(size_t) const { return 0; }
@@ -519,6 +525,8 @@ class DecodeIO {
   void EmitHeaderWord(uint32_t word) { Append(word); }
   void EmitBodyWord(uint32_t word) { Append(word); }
 
+  bool Complete() const { return !overflowed_ && write_pos_ == out_.size(); }
+
   void PatchBound(uint32_t word) {
     if (out_.size() < 16) {
       return;
@@ -526,21 +534,26 @@ class DecodeIO {
     if (swapped_) {
       word = ByteSwap32(word);
     }
-    out_[12] = static_cast<uint8_t>(word & 0xffu);
-    out_[13] = static_cast<uint8_t>((word >> 8) & 0xffu);
-    out_[14] = static_cast<uint8_t>((word >> 16) & 0xffu);
-    out_[15] = static_cast<uint8_t>((word >> 24) & 0xffu);
+    StoreLe32(word, data_ + 12);
   }
 
  private:
   void Append(uint32_t word) {
+    if (write_pos_ > out_.size() || out_.size() - write_pos_ < 4) {
+      overflowed_ = true;
+      return;
+    }
     if (swapped_) {
       word = ByteSwap32(word);
     }
-    StoreLe32(word, out_);
+    StoreLe32(word, data_ + write_pos_);
+    write_pos_ += 4;
   }
 
   std::vector<uint8_t>& out_;
+  uint8_t* data_ = nullptr;
+  size_t write_pos_ = 0;
+  bool overflowed_ = false;
   bool swapped_ = false;
 };
 
@@ -1759,18 +1772,17 @@ Status ModuleDecoder::Decode(const uint8_t* payload, size_t payload_size,
     return Status::kBadContainer;
   }
   out.clear();
-  out.reserve(CappedDecodeReserve(payload_size, expected_original_size));
   state_->model.BeginDecode();
   RangeDecoder range(payload, payload_size);
   BitDecoder bits(range);
-  DecodeIO io(out);
+  DecodeIO io(out, expected_original_size);
   const Status status =
       CodeModule(state_->model, bits, io, expected_original_size / 4);
   if (status != Status::kOk) {
     out.clear();
     return status;
   }
-  if (out.size() != expected_original_size) {
+  if (!io.Complete()) {
     out.clear();
     return Status::kTruncated;
   }
@@ -1807,17 +1819,16 @@ Status RawResidualModuleDecoder::Decode(const uint8_t* payload,
     return Status::kBadContainer;
   }
   out.clear();
-  out.reserve(CappedDecodeReserve(payload_size, expected_original_size));
   state_->model.BeginRawDecode();
   RawResidualDecoder bits(payload, payload_size);
-  DecodeIO io(out);
+  DecodeIO io(out, expected_original_size);
   const Status status =
       CodeModule(state_->model, bits, io, expected_original_size / 4);
   if (status != Status::kOk) {
     out.clear();
     return status;
   }
-  if (out.size() != expected_original_size) {
+  if (!io.Complete()) {
     out.clear();
     return Status::kTruncated;
   }

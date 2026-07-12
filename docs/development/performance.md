@@ -439,14 +439,21 @@ and before/after instruction or sampling profiles where available.
   successful only if the extra branching does not erase the saved staging
   work.
 
-- [ ] **Pre-size the output and store words through a direct pointer.** The
+- [x] **Pre-size the output and store words through a direct pointer (+12.5%
+  reusable, +11.1% stateless raw-residual decode achieved, 2026-07-12).** The
   expected output size is already validated before module decode, yet
   `DecodeIO` emits a word through four `vector<uint8_t>::push_back` calls.
-  Resize the output once, track a bounded write position, and store the four
-  bytes directly. Preserve big-endian reconstruction and delayed bound
-  patching, and ensure every failure path clears the partially written output.
-  Benchmark this separately from direct word emission so the gain from output
-  storage is distinguishable from the gain from removing `coded_words`.
+  Landed as one `resize(expected_original_size)` before `CodeModule`, a
+  bounded write position, and direct four-byte stores. Big-endian
+  reconstruction and delayed bound patching remain intact; incomplete or
+  overflowed writes cause the existing error path to clear the output.
+  Matched 1078-file word-aligned corpus, core 0, `-O3 -flto=auto`, 100
+  iterations per file, identical 1,945,645-byte raw payload and checksum
+  178,987,622,100: reusable 123.44, 123.72, 124.03 MiB/s (median **123.72**)
+  → 138.72, 139.21, 139.23 (median **139.21**); stateless 109.26, 109.48,
+  109.69 (median **109.48**) → 121.18, 121.65, 122.59 (median **121.65**).
+  This is measured separately from the already-landed direct-word-staging
+  path.
 
 - [ ] **Generate direct layouts for more instructions and reduce
   `OperandCursor` traffic.** Fixed required one-word layouts already bypass the
