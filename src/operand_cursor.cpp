@@ -82,7 +82,7 @@ void OperandCursor::Begin(const InstructionDesc* inst, uint32_t word_count,
   pending_pos_ = 0;
 }
 
-OperandCursor::Field OperandCursor::Next() {
+OperandCursor::Field OperandCursor::NextSlow() {
   Field field = {FieldType::kEnd, 0, OperandCategory::kUnknown,
                  top_slot_for_context_, false, false, remaining_};
 
@@ -202,8 +202,8 @@ void OperandCursor::Consume(uint32_t words, uint32_t value0) {
   Consume(Next(), words, value0);
 }
 
-void OperandCursor::Consume(const Field& field, uint32_t words,
-                            uint32_t value0) {
+void OperandCursor::ConsumeSlow(const Field& field, uint32_t words,
+                                uint32_t value0) {
   if (field.type == FieldType::kEnd) {
     return;
   }

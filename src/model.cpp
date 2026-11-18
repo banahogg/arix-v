@@ -828,17 +828,16 @@ size_t Slot16(uint8_t slot) {
   return slot < 15 ? slot : 15;
 }
 
+// The previous instruction's core-table index, remembered by the tracker
+// (this used to binary-search the opcode table on every instruction: ~3.8%
+// of decode instructions).
 uint16_t PreviousOpcodeKey(const Tracker& tracker) {
   const uint16_t sentinel = NumCoreInstructions();
-  const uint16_t prev_opcode = tracker.prev_opcode();
   if (tracker.prev_opcode_class() == 0xFF) {
     return sentinel;
   }
-  const int index = FindInstructionIndex(prev_opcode);
-  if (index < 0 || index >= NumCoreInstructions()) {
-    return sentinel;
-  }
-  return static_cast<uint16_t>(index);
+  const uint16_t index = tracker.prev_instruction_index();
+  return index < sentinel ? index : sentinel;
 }
 
 bool IsSingleBit(uint32_t value) {
@@ -1723,7 +1722,8 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
     }
 
     model.tracker.OnInstructionEnd(inst_words.data(),
-                                   static_cast<uint32_t>(inst_words.size()));
+                                   static_cast<uint32_t>(inst_words.size()),
+                                   inst_index);
     body_pos += 1 + operand_words;
   }
 

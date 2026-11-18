@@ -865,6 +865,47 @@ afterwards (below).
   and is unchanged). `make test`, `make asan`, 3000-iteration fuzz, and the
   scalar/SIMD cross-check pass.
 
+### Operand cursor and opcode-context lookup (2026-11-17)
+
+Byte-identical changes, developed with load-independent metrics:
+callgrind decode instructions (reusable decoder, every 4th file, 3
+iterations) and output identity.
+
+| change | decode Ir | Δ |
+|---|---|---|
+| baseline (12ff914) | 1,330.6M | — |
+| cache the previous instruction's table index | 1,276.5M | −4.1% |
+| + inline cursor fast paths | 1,195.9M | −6.3% (−10.1% total) |
+
+- **Previous-opcode key.** The order-1 opcode context (`PreviousOpcodeKey`)
+  binary-searched the core instruction table by the previous opcode on
+  every instruction: ~3.8% of decode, visible in the E11 profile as
+  "inlined grammar-table lookups". The tracker now remembers the previous
+  instruction's index (`OnInstructionEnd` takes it; unknown opcodes keep
+  the sentinel), so the key is a field read.
+- **Cursor fast paths.** `Next()` averaged ~53 instructions per call and
+  `Consume()` ~70, as out-of-line calls on every variable-layout field.
+  Both are now forced-inline wrappers handling the common case — `Next()`:
+  a plain top-level slot with words left, no pending enumerant parameters,
+  no composite; `Consume()`: a plain top-level operand whose value does not
+  steer the walk (not a value/bit enum, ext-inst number, or spec-op
+  opcode) — and fall back to the unchanged `NextSlow()`/`ConsumeSlow()`,
+  leaving identical state. Out-of-line cursor cost fell from ~9.5% to
+  ~1.5% of decode instructions.
+- **Wall time (under moderate load: load average ~6-8, another process
+  using ~4 cores and migrating; core 2 and its sibling mostly free; full
+  corpus, 30 iterations, 9 interleaved A/B rounds):** reusable medians
+  59.9 → 67.6 MiB/s (+12.7%), stateless 52.5 → 57.8 MiB/s (+10.3%); B
+  beat A in 17 of 18 rounds, and the median per-round ratio was 1.14
+  reusable / 1.11 stateless. The load depressed absolute speeds (the
+  quiet-host baseline is ~74 MiB/s reusable) and drifted mid-run, so treat
+  the size of the gain as ±3% until re-timed on a quiet host.
+- **Correctness:** M2, stateless, and raw-residual outputs are byte-identical
+  to 12ff914 (1,021,506 / 1,805,240 bytes, same checksums). `make test`
+  (including `operand_cursor_test`), `make asan`, a 3000-iteration fuzz,
+  and a differential decode of 720 mutated/truncated/padded blobs (old vs
+  new CLI: identical exit status and output in every case) pass.
+
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
 `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest

@@ -311,7 +311,8 @@ void Tracker::OnResultTypeUse(uint32_t id) {
 // reference its result, so touching it here only shifted their ranks.
 void Tracker::OnResultId(uint32_t id) { Ensure(id); }
 
-void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count) {
+void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
+                               uint16_t inst_index) {
   const InstructionDesc* desc = cur_desc_;
   const uint32_t opcode = cur_opcode_;
 
@@ -374,6 +375,7 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count) {
   }
 
   prev_opcode_ = static_cast<uint16_t>(opcode);
+  prev_inst_index_ = inst_index;
   prev_opcode_class_ = desc ? desc->instruction_class : 0xFFu;
   ++instruction_index_;
 }
@@ -381,6 +383,7 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count) {
 void Tracker::Reset() {
   section_ = Section::kCapabilities;
   prev_opcode_ = 0xFFFF;
+  prev_inst_index_ = 0xFFFF;
   prev_opcode_class_ = 0xFF;
   in_function_ = false;
   in_block_ = false;

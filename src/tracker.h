@@ -113,6 +113,9 @@ class Tracker {
   // ---- Context inputs (const queries during coding) --------------------
   Section section() const { return section_; }
   uint16_t prev_opcode() const { return prev_opcode_; }
+  // Core-table index of the previous instruction; meaningful only when
+  // prev_opcode_class() != 0xFF (a known previous instruction).
+  uint16_t prev_instruction_index() const { return prev_inst_index_; }
   uint8_t prev_opcode_class() const { return prev_opcode_class_; }
   bool in_function() const { return in_function_; }
   bool in_block() const { return in_block_; }
@@ -149,7 +152,10 @@ class Tracker {
   // OnIdUse it leaves recent_ids() alone.
   void OnResultTypeUse(uint32_t id);
   void OnResultId(uint32_t id);
-  void OnInstructionEnd(const uint32_t* words, uint32_t count);
+  // inst_index: the instruction's core-table index (NumCoreInstructions()
+  // for an unknown opcode), remembered as prev_instruction_index().
+  void OnInstructionEnd(const uint32_t* words, uint32_t count,
+                        uint16_t inst_index);
 
   void Reserve(size_t word_count);
   void Reset();
@@ -190,6 +196,7 @@ class Tracker {
 
   Section section_ = Section::kCapabilities;
   uint16_t prev_opcode_ = 0xFFFF;
+  uint16_t prev_inst_index_ = 0xFFFF;
   uint8_t prev_opcode_class_ = 0xFF;
   bool in_function_ = false;
   bool in_block_ = false;

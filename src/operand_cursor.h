@@ -13,6 +13,7 @@
 #include <cstdint>
 
 #include "grammar_tables.h"
+#include "platform.h"
 
 namespace arixv {
 
@@ -45,7 +46,26 @@ class OperandCursor {
              bool force_opaque);
 
   // Peek the next field. Idempotent until Consume() is called.
-  Field Next();
+  // Inline fast path for the common case (a plain top-level slot with words
+  // left, no pending enumerant parameters, no composite); everything else
+  // goes through NextSlow(), which leaves identical state.
+  ARIXV_FORCE_INLINE Field Next() {
+    if (pending_pos_ >= pending_count_ && composite_pos_ < 0 && !degraded_ &&
+        remaining_ != 0 && slot_pos_ < num_slots_) {
+      const OperandSlotDesc& slot = slots_[slot_pos_];
+      const OperandCategory category = GetOperandKind(slot.kind).category;
+      if (category != OperandCategory::kUnknown &&
+          category != OperandCategory::kComposite) {
+        pending_pos_ = 0;
+        pending_count_ = 0;
+        top_slot_for_context_ =
+            static_cast<uint8_t>(slot_pos_ < 15 ? slot_pos_ : 15);
+        return Field{FieldType::kOperand, slot.kind, category,
+                     top_slot_for_context_, false, false, remaining_};
+      }
+    }
+    return NextSlow();
+  }
 
   // The current field consumed `words` words (>= 1 except where noted), and
   // `value0` is the value of its first word. value0 drives the walk for:
@@ -57,7 +77,30 @@ class OperandCursor {
   // wide literals) report their total word span. Consuming more words than
   // remain degrades the walk instead of overrunning.
   void Consume(uint32_t words, uint32_t value0);
-  void Consume(const Field& field, uint32_t words, uint32_t value0);
+  // Inline fast path for a plain top-level operand whose value does not
+  // steer the walk (not an enum, ext-inst number, or spec-op opcode); the
+  // rest goes through ConsumeSlow(), which leaves identical state.
+  ARIXV_FORCE_INLINE void Consume(const Field& field, uint32_t words,
+                                  uint32_t value0) {
+    if (field.type == FieldType::kOperand && !field.is_enum_param &&
+        !field.in_composite && words != 0 && words <= remaining_ &&
+        field.category != OperandCategory::kValueEnum &&
+        field.category != OperandCategory::kBitEnum &&
+        field.category != OperandCategory::kLiteralExtInstInteger &&
+        field.category != OperandCategory::kLiteralSpecConstantOpInteger) {
+      remaining_ -= words;
+      if (inst_ && inst_->opcode == 12 &&
+          field.category == OperandCategory::kIdRef && field.slot == 2) {
+        awaiting_ext_number_ = true;
+      }
+      if (slots_[slot_pos_].quantifier != Quantifier::kVariadic ||
+          remaining_ == 0) {
+        ++slot_pos_;
+      }
+      return;
+    }
+    ConsumeSlow(field, words, value0);
+  }
 
   // OpExtInst: when the set-ID operand is consumed the consumer resolves the
   // set (via its ID tracking) and calls this — possibly with nullptr for an
@@ -72,6 +115,9 @@ class OperandCursor {
   bool degraded() const { return degraded_; }
 
  private:
+  Field NextSlow();
+  void ConsumeSlow(const Field& field, uint32_t words, uint32_t value0);
+
   // Schedules enumerant parameter kinds, compacting the drained queue prefix
   // first; degrades on genuine overflow instead of writing out of bounds.
   void AppendPending(const uint16_t* kinds, uint8_t count, uint8_t slot,
