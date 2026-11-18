@@ -972,7 +972,7 @@ uint32_t CodeResultType(Bits& bits, ModelState& model,
                              model.type_escape[cls],
                              model.tracker.recent_types(), hint,
                              model.prev_result_id);
-  model.tracker.OnIdUse(id);
+  model.tracker.OnResultTypeUse(id);
   return Bits::kEncoding ? hint : id;
 }
 

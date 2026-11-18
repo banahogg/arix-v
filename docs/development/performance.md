@@ -826,6 +826,45 @@ produce identical bytes and checksums.
   update rules (a format/ratio trade, ~10% at stake), the cursor's
   variable-layout path, and tracker `Ensure`/`OnInstructionEnd`.
 
+### Recency-list update rules (2026-11-17)
+
+Variants were compared with load-independent metrics (full-corpus encoded
+bytes and callgrind decode instructions: reusable decoder, every 4th file,
+3 iterations) while the host was busy; the landed rule set was timed
+afterwards (below).
+
+| variant | bytes | Δ size | decode Ir | Δ Ir |
+|---|---|---|---|---|
+| baseline (c670473) | 1,032,249 | — | 1,389.9M | — |
+| R1: no recency touch in `OnResultId` | 1,030,875 | −0.13% | 1,366.0M | −1.7% |
+| R2: result-type uses skip `recent_ids` | 1,026,842 | −0.52% | 1,357.8M | −2.3% |
+| **R1 + R2 (landed)** | **1,021,506** | **−1.04%** | **1,330.6M** | **−4.3%** |
+| R1 + R2 + R5: new types skip `recent_ids` | 1,029,088 | −0.31% | — | — |
+| history ring ×16, R1 + R2 | 1,046,060 | +1.34% | 1,274.1M | −8.3% |
+| history ring ×32 (5-bit ranks), R1 + R2 | 1,036,457 | +0.41% | — | — |
+
+- **R1:** result IDs were touched twice: at coding time and again in
+  `OnInstructionEnd`. An instruction's later operands don't reference its
+  own result, so the first touch only shifted their ranks by one.
+- **R2:** result types are coded from `recent_types()`, but `OnIdUse` also
+  pushed them onto `recent_ids()`, crowding out the values that ID operands
+  actually reference. Now `Tracker::OnResultTypeUse` touches only the types
+  list (plus forward refs).
+- The two compound: removing both is worth more than the sum of each alone.
+  `RecencyList::Touch` dropped 139.6M → 95.2M instructions (7.2% of decode).
+- **Rejected:** R5 (type definitions skip `recent_ids()`) — ID operands of
+  type declarations (`OpTypePointer`, struct members, …) reference types
+  through that list. A history ring (rank = touches ago, O(1) touch, the
+  decoder only indexes) saves another ~4% of instructions but costs
+  +1.3-2.4% size, since duplicates crowd useful IDs out of the slots.
+- **Wall time (measured later on a mostly quiet host, core 2 and its SMT
+  sibling idle, full 1080-file corpus, 30 iterations, interleaved A/B
+  medians): reusable 72.1 → 74.1 MiB/s (+2.8%, 7 rounds), stateless
+  63.6 → 64.6 MiB/s (+1.7%, 9 rounds); every round agreed in sign.**
+- Format change within the unreleased `ARX2` (the golden vector has no IDs
+  and is unchanged). `make test`, `make asan`, 3000-iteration fuzz, and the
+  scalar/SIMD cross-check pass.
+
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
 `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest

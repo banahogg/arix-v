@@ -83,6 +83,7 @@ class RecencyList {
   alignas(16) std::array<uint32_t, kRecencyListStorageCap> items_{};  // front = most recent
 };
 
+
 class Tracker {
  public:
   // Coarse classification of a *type* ID's type.
@@ -142,7 +143,11 @@ class Tracker {
   // recency-list definition touches, prev-opcode context.
   void OnInstructionStart(uint32_t opcode, const InstructionDesc* desc,
                           uint32_t word_count);
+  // Use of an ID operand (coded from recent_ids()).
   void OnIdUse(uint32_t id);
+  // Use of an ID in a result-type slot (coded from recent_types()); unlike
+  // OnIdUse it leaves recent_ids() alone.
+  void OnResultTypeUse(uint32_t id);
   void OnResultId(uint32_t id);
   void OnInstructionEnd(const uint32_t* words, uint32_t count);
 

@@ -293,10 +293,23 @@ void Tracker::OnIdUse(uint32_t id) {
   }
 }
 
-void Tracker::OnResultId(uint32_t id) {
-  Ensure(id);
-  recent_ids_.Touch(id);
+// Result types are coded from recent_types(), so touching recent_ids() here
+// only pushed the values that ID operands reference further down the list
+// (removing it: −0.52% corpus size alone, −1.04% with OnResultId below).
+void Tracker::OnResultTypeUse(uint32_t id) {
+  IdInfo& info = Ensure(id);
+  if (!info.defined) {
+    forward_refs_.Touch(id);
+  }
+  if (info.kind == IdKind::kType) {
+    recent_types_.Touch(id);
+  }
 }
+
+// No recency touch: OnInstructionEnd moves the result to the front once the
+// instruction is complete, and an instruction's own later operands do not
+// reference its result, so touching it here only shifted their ranks.
+void Tracker::OnResultId(uint32_t id) { Ensure(id); }
 
 void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count) {
   const InstructionDesc* desc = cur_desc_;
