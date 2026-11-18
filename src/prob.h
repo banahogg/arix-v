@@ -333,20 +333,11 @@ int CodeRank(Coder& coder, Prob slots[kRankCount + 1], int rank) {
 
 using ByteTree = BitTree<kByteBits, kByteSymbolRateCap>;
 
+// Order-1 byte model: one tree per previous byte, created on first use.
 struct ByteModel {
   std::array<ArenaPtr<ByteTree>, kByteContextCount> tree{};
-  std::array<uint32_t, kByteContextCount> stamp{};
-  uint32_t generation = 1;
   Arena arena;  // owns the per-context trees
 };
-
-inline void BeginByteModelGeneration(ByteModel& model) {
-  ++model.generation;
-  if (model.generation == 0) {
-    model.stamp.fill(0);
-    model.generation = 1;
-  }
-}
 
 template <typename Coder>
 uint8_t CodeByte(Coder& coder, ByteModel& model, uint8_t prev, uint8_t b) {
@@ -359,10 +350,7 @@ uint8_t CodeByte(Coder& coder, ByteModel& model, uint8_t prev, uint8_t b) {
   ArenaPtr<ByteTree>& tree = model.tree[prev];
   if (!tree) {
     tree.Make(model.arena);
-  } else if (model.stamp[prev] != model.generation) {
-    *tree = ByteTree{};
   }
-  model.stamp[prev] = model.generation;
   return static_cast<uint8_t>(tree->CodeValue(coder, b));
 }
 

@@ -201,9 +201,7 @@ afl_dec dec-p1 -S dec-p1 -P exploit -- "$BIN/dec-afl"
 afl_dec dec-p2 -S dec-p2 -- "$BIN/dec-afl"
 launch dec-a1 env "${AFL_ENV[@]}" $RUN_WRAP afl-fuzz -i "$SEEDS/dec" \
   -o "$OUT/afl-dec" -m none -t 10000 -G 16384 -S dec-a1 -- "$BIN/dec-afl-asan"
-# Stateful instance: persistent Decoder across inputs. Finds cross-call
-# state bugs; crashes may need the queue sequence to reproduce.
-launch dec-a2 env "${AFL_ENV[@]}" ARIXV_FUZZ_STATEFUL=1 $RUN_WRAP afl-fuzz \
+launch dec-a2 env "${AFL_ENV[@]}" $RUN_WRAP afl-fuzz \
   -i "$SEEDS/dec" -o "$OUT/afl-dec" -m none -t 10000 -G 16384 -S dec-a2 \
   -- "$BIN/dec-afl-asan"
 

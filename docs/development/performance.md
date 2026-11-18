@@ -1038,6 +1038,46 @@ into the benchmark loop, defeating the callgrind toggle).
   checking (both decoder modes and `arixv_test`, which covers the
   byte-fallback model's arena: no errors, all heap blocks freed) pass.
 
+### Reusable decoder removed (2026-11-17)
+
+With the arena, stateless decode runs within ~2% of the reusable
+`arixv::Decoder`, which existed only as a workaround for per-call allocation
+cost. The library now has a single, stateless decode path:
+
+- **Public API:** `arixv::Decoder` is gone from `arixv.h`.
+  `src/arixv_decoder_compat.h` keeps a source-compatible, header-only
+  `arixv::Decoder` (same constructor, move, and `Decode(data, size, out,
+  max_output)` signatures) that forwards to stateless `Decode()`; it holds
+  no state, so the old thread-safety and memory-retention caveats no longer
+  apply. `arixv_test` checks the shim against `Decode()` over byte-fallback
+  payloads, an error path, `max_output`, moves, and corpus modules.
+- **Internals deleted:** `ModuleDecoder` / `RawResidualModuleDecoder`
+  (the free `DecodeModule` / `DecodeModuleRawResidual` build a fresh heap
+  `ModelState` per call), `ModelState::BeginDecode` / `BeginRawDecode` /
+  `AdvanceGeneration` and the `generation` counter, the per-context stamp
+  vectors and `Reset*Model` functions (`EnsureStamped` /
+  `EnsureStampedTree` became create-if-null `EnsureContext`), the order-1
+  opcode context stamp, `ByteModel`'s generation and stamps, and the
+  arena's in-place `reset()`. Byte identity holds because the encoder has
+  always run on a fresh `ModelState`, and every field `BeginDecode` reset
+  already held that value in a fresh model.
+- **Kept:** the per-instruction first-touch guards for the deliberately
+  uninitialized `last_id` / `last_literal` / `last_word_count` arrays, now
+  plain flags (`inst_group_touched`, `last_id_valid`, `last_literal_valid`)
+  instead of generation stamps; the tracker ID map's generation stamp,
+  which is its occupancy mechanism.
+- **Tools:** `arixv_decode_bench --reuse-decoder` and the fuzz harness's
+  `ARIXV_FUZZ_STATEFUL` mode (cross-call state bugs no longer exist) are
+  removed; the overnight fuzz script's stateful AFL instance is now a plain
+  ASan instance.
+- **Result:** byte-identical M2 and raw-residual output; stateless decode
+  instructions 307.7M → 302.7M per pass (−1.6%, fewer per-decode stamp
+  vectors to allocate and zero); wall time +1.4% (8 of 9 interleaved rounds
+  faster, but load rose mid-run, so treat it as "no regression"). `make
+  test`, `make asan`, 3000-iteration fuzz, the 720-case mutated-blob
+  differential against the previous CLI, and valgrind memcheck with full
+  leak checking pass.
+
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
 `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest

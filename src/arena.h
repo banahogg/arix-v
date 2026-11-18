@@ -6,8 +6,7 @@
 // decode used to make ~220 separate heap allocations and as many frees for
 // them; with an arena that is a handful of chunk allocations, and tearing the
 // model down frees chunks instead of walking every context. Objects live as
-// long as the arena: a reusable decoder keeps its high-water contexts exactly
-// as before (they are reset in place by generation stamps, never freed).
+// long as the arena, i.e. for one encode or decode.
 
 #ifndef ARIXV_ARENA_H_
 #define ARIXV_ARENA_H_
@@ -91,13 +90,6 @@ class ArenaPtr {
   T* operator->() const { return p_; }
   T* get() const { return p_; }
   void Make(Arena& arena) { p_ = arena.New<T>(); }
-  // Back to a fresh T{} in place (what dropping and re-creating it would
-  // give), without abandoning arena memory on every reusable decode.
-  void reset() {
-    if (p_ != nullptr) {
-      *p_ = T{};
-    }
-  }
 
  private:
   T* p_ = nullptr;

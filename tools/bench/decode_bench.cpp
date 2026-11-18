@@ -67,17 +67,12 @@ bool ParseIters(const char* arg, int* iters) {
 int main(int argc, char** argv) {
   int iters = 20;
   bool per_file = false;
-  bool reuse_decoder = false;
   bool raw_residual = false;
   std::vector<std::string> paths;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--per-file") {
       per_file = true;
-      continue;
-    }
-    if (arg == "--reuse-decoder") {
-      reuse_decoder = true;
       continue;
     }
     if (arg == "--raw-residual") {
@@ -96,7 +91,7 @@ int main(int argc, char** argv) {
   if (paths.empty()) {
     std::cerr
         << "usage: arixv_decode_bench [--iters=N] [--per-file] "
-           "[--reuse-decoder] [--raw-residual] <files...>\n";
+           "[--raw-residual] <files...>\n";
     return 1;
   }
 
@@ -143,8 +138,6 @@ int main(int argc, char** argv) {
 
   uint64_t checksum = 0;
   int64_t total_ns = 0;
-  arixv::Decoder reusable_decoder;
-  arixv::RawResidualModuleDecoder reusable_raw_decoder;
   if (per_file) {
     std::cout << "path\tinput_bytes\tencoded_bytes\tdecode_ns_per_iter\n";
   }
@@ -153,22 +146,12 @@ int main(int argc, char** argv) {
     const auto start = std::chrono::steady_clock::now();
     for (int iter = 0; iter < iters; ++iter) {
       decoded.clear();
-      arixv::Status status;
-      if (raw_residual) {
-        status = reuse_decoder
-                     ? reusable_raw_decoder.Decode(
-                           c.encoded.data(), c.encoded.size(), c.input.size(),
-                           decoded)
-                     : arixv::DecodeModuleRawResidual(
-                           c.encoded.data(), c.encoded.size(), c.input.size(),
-                           decoded);
-      } else {
-        status = reuse_decoder
-                     ? reusable_decoder.Decode(c.encoded.data(),
-                                               c.encoded.size(), decoded)
-                     : arixv::Decode(c.encoded.data(), c.encoded.size(),
-                                     decoded);
-      }
+      const arixv::Status status =
+          raw_residual
+              ? arixv::DecodeModuleRawResidual(c.encoded.data(),
+                                               c.encoded.size(),
+                                               c.input.size(), decoded)
+              : arixv::Decode(c.encoded.data(), c.encoded.size(), decoded);
       if (status != arixv::Status::kOk ||
           decoded.size() != c.input.size()) {
         std::cerr << "decode failed for " << c.path << "\n";
@@ -191,7 +174,6 @@ int main(int argc, char** argv) {
   const double decoded_mib =
       (static_cast<double>(total_input) * iters) / (1024.0 * 1024.0);
   std::cerr << "files=" << cases.size() << " iterations=" << iters
-            << " reuse_decoder=" << (reuse_decoder ? 1 : 0)
             << " raw_residual=" << (raw_residual ? 1 : 0)
             << " input_bytes=" << total_input
             << " encoded_bytes=" << total_encoded

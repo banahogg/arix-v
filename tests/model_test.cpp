@@ -222,15 +222,9 @@ void RawResidualValidation() {
          arixv::Status::kBadContainer);
   assert(decoded.empty());
 
-  arixv::RawResidualModuleDecoder reusable;
-  assert(reusable.Decode(raw.data(), raw.size(), module.size(), decoded) ==
-         arixv::Status::kOk);
-  assert(decoded == module);
-  assert(reusable.Decode(padded.data(), padded.size(), module.size(), decoded) ==
-         arixv::Status::kBadContainer);
-  assert(decoded.empty());
-  assert(reusable.Decode(raw.data(), raw.size(), module.size(), decoded) ==
-         arixv::Status::kOk);
+  // A rejected decode leaves nothing behind for the next call.
+  assert(arixv::DecodeModuleRawResidual(raw.data(), raw.size(), module.size(),
+                                        decoded) == arixv::Status::kOk);
   assert(decoded == module);
 }
 

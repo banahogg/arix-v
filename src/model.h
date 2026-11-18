@@ -6,7 +6,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <vector>
 
 #include "arixv.h"
@@ -18,23 +17,7 @@ bool IsSpirvModelEligible(const uint8_t* data, size_t size);
 void EncodeModule(const uint8_t* data, size_t size,
                   std::vector<uint8_t>& out_payload);
 
-class ModuleDecoder {
- public:
-  ModuleDecoder();
-  ~ModuleDecoder();
-  ModuleDecoder(ModuleDecoder&&) noexcept;
-  ModuleDecoder& operator=(ModuleDecoder&&) noexcept;
-  ModuleDecoder(const ModuleDecoder&) = delete;
-  ModuleDecoder& operator=(const ModuleDecoder&) = delete;
-
-  Status Decode(const uint8_t* payload, size_t payload_size,
-                size_t expected_original_size, std::vector<uint8_t>& out);
-
- private:
-  struct State;
-  std::unique_ptr<State> state_;
-};
-
+// Each call builds and frees its own model.
 Status DecodeModule(const uint8_t* payload, size_t payload_size,
                     size_t expected_original_size, std::vector<uint8_t>& out);
 
@@ -45,23 +28,6 @@ Status DecodeModule(const uint8_t* payload, size_t payload_size,
 // not an ARX2 container mode.
 void EncodeModuleRawResidual(const uint8_t* data, size_t size,
                              std::vector<uint8_t>& out_payload);
-
-class RawResidualModuleDecoder {
- public:
-  RawResidualModuleDecoder();
-  ~RawResidualModuleDecoder();
-  RawResidualModuleDecoder(RawResidualModuleDecoder&&) noexcept;
-  RawResidualModuleDecoder& operator=(RawResidualModuleDecoder&&) noexcept;
-  RawResidualModuleDecoder(const RawResidualModuleDecoder&) = delete;
-  RawResidualModuleDecoder& operator=(const RawResidualModuleDecoder&) = delete;
-
-  Status Decode(const uint8_t* payload, size_t payload_size,
-                size_t expected_original_size, std::vector<uint8_t>& out);
-
- private:
-  struct State;
-  std::unique_ptr<State> state_;
-};
 
 Status DecodeModuleRawResidual(const uint8_t* payload, size_t payload_size,
                                size_t expected_original_size,

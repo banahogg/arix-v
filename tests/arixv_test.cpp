@@ -5,9 +5,11 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "arixv.h"
+#include "arixv_decoder_compat.h"
 #include "tuning.h"
 
 namespace {
@@ -199,34 +201,34 @@ void HostileInputs() {
          arixv::Status::kBadContainer);
 }
 
-void ExpectReusableDecode(arixv::Decoder& decoder,
-                          const std::vector<uint8_t>& encoded,
-                          const std::vector<uint8_t>& expected) {
-  std::vector<uint8_t> reused;
-  assert(decoder.Decode(encoded.data(), encoded.size(), reused) ==
+// The compatibility shim (arixv_decoder_compat.h) must behave exactly like
+// stateless Decode, however many calls go through one instance.
+void ExpectShimDecode(arixv::Decoder& decoder,
+                      const std::vector<uint8_t>& encoded,
+                      const std::vector<uint8_t>& expected) {
+  std::vector<uint8_t> via_shim;
+  assert(decoder.Decode(encoded.data(), encoded.size(), via_shim) ==
          arixv::Status::kOk);
-  assert(reused == expected);
+  assert(via_shim == expected);
 
-  arixv::Decoder fresh_decoder;
-  std::vector<uint8_t> fresh;
-  assert(fresh_decoder.Decode(encoded.data(), encoded.size(), fresh) ==
+  std::vector<uint8_t> stateless;
+  assert(arixv::Decode(encoded.data(), encoded.size(), stateless) ==
          arixv::Status::kOk);
-  assert(fresh == expected);
-  assert(reused == fresh);
+  assert(via_shim == stateless);
 }
 
-void DecoderReuse() {
+void DecoderCompatShim() {
   arixv::Decoder decoder;
   arixv::EncodeOptions opts;
   opts.force_coded = true;
 
   const std::string text1 =
-      "first reusable decoder byte payload, deliberately repeated repeated";
+      "first shim decoder byte payload, deliberately repeated repeated";
   const std::vector<uint8_t> bytes1(text1.begin(), text1.end());
   const std::vector<uint8_t> encoded1 =
       arixv::Encode(bytes1.data(), bytes1.size(), opts);
   assert(ContainerMode(encoded1) == arixv::kModeCoded);
-  ExpectReusableDecode(decoder, encoded1, bytes1);
+  ExpectShimDecode(decoder, encoded1, bytes1);
 
   std::vector<uint8_t> bad = encoded1;
   bad.push_back(0);
@@ -234,6 +236,14 @@ void DecoderReuse() {
   assert(decoder.Decode(bad.data(), bad.size(), out) ==
          arixv::Status::kBadContainer);
   assert(out.empty());
+  // The shim forwards max_output too.
+  assert(decoder.Decode(encoded1.data(), encoded1.size(), out, 4) ==
+         arixv::Status::kTooLarge);
+  assert(out.empty());
+
+  // Movable like the old reusable decoder.
+  arixv::Decoder moved = std::move(decoder);
+  decoder = std::move(moved);
 
   const std::string text2 =
       "second payload uses the same decoder after an error path";
@@ -241,7 +251,7 @@ void DecoderReuse() {
   const std::vector<uint8_t> encoded2 =
       arixv::Encode(bytes2.data(), bytes2.size(), opts);
   assert(ContainerMode(encoded2) == arixv::kModeCoded);
-  ExpectReusableDecode(decoder, encoded2, bytes2);
+  ExpectShimDecode(decoder, encoded2, bytes2);
 
   const std::filesystem::path dir = "corpus/spv";
   if (!std::filesystem::exists(dir)) {
@@ -257,7 +267,7 @@ void DecoderReuse() {
     const std::vector<uint8_t> encoded =
         arixv::Encode(input.data(), input.size(), opts);
     assert(ContainerMode(encoded) == arixv::kModeSpirv);
-    ExpectReusableDecode(decoder, encoded, input);
+    ExpectShimDecode(decoder, encoded, input);
     if (++count == 2) {
       break;
     }
@@ -274,6 +284,6 @@ int main() {
   CorpusRoundTrips();
   StoredModeForIncompressible();
   HostileInputs();
-  DecoderReuse();
+  DecoderCompatShim();
   return 0;
 }
