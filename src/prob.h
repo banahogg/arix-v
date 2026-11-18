@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "range_coder.h"
+#include "symbol_coder.h"
 #include "tuning.h"
 
 namespace arixv {
@@ -28,6 +29,23 @@ inline int g_stat_cat = -1;
 inline int g_stat_site = kSiteFlag;
 inline uint64_t g_stat_adaptive[kStatMaxCats][kSiteCount];
 inline uint64_t g_stat_direct[kStatMaxCats];
+
+#ifdef ARIXV_TRACE_DECISIONS
+// Diagnostics build only (tools/bench/ans_microbench.cpp): every adaptive
+// encoder decision as (context, bit), in coding order.
+struct TracedDecision {
+  const Prob* ctx;
+  bool bit;
+};
+inline std::vector<TracedDecision>* g_decision_trace = nullptr;
+// Every encoder BitTree value as (tree, depth, value), in coding order.
+struct TracedTree {
+  const void* tree;
+  int bits;
+  uint32_t value;
+};
+inline std::vector<TracedTree>* g_tree_trace = nullptr;
+#endif
 
 // Tags decisions made inside a primitive. Only the outermost primitive wins
 // (CodeUint's length tree counts as uint length, not as a generic bit tree).
@@ -54,6 +72,11 @@ class BitEncoder {
   explicit BitEncoder(RangeEncoder& enc) : enc_(enc) {}
 
   bool CodeBit(Prob& p, bool bit_for_encoder) {
+#ifdef ARIXV_TRACE_DECISIONS
+    if (g_decision_trace != nullptr) {
+      g_decision_trace->push_back({&p, bit_for_encoder});
+    }
+#endif
     if (g_stat_cat >= 0) {
       ++g_stat_adaptive[g_stat_cat][g_stat_site];
     }
@@ -78,16 +101,39 @@ class BitEncoder {
     return value;
   }
 
+  // One symbol of an adaptive kN-symbol CDF, on the rANS stream.
+  template <int kN, int kRateCap>
+  uint32_t CodeSymbol(SymbolCdf& t, uint32_t s) {
+    if (g_stat_cat >= 0) {
+      ++g_stat_adaptive[g_stat_cat][g_stat_site];
+    }
+    uint16_t c[17];
+    (void)SymbolCdfLookup<kN>(t, kSymbolScale, c);
+    const uint32_t lo = c[s];
+    const uint32_t f = static_cast<uint32_t>(c[s + 1]) - lo;
+    if (cost_sink_ != nullptr) {
+      *cost_sink_ -= std::log2(static_cast<double>(f) / kSymbolScale);
+    }
+    rans_.Put(lo, f);
+    SymbolCdfUpdate<kN, kRateCap>(t, static_cast<int>(s));
+    return s;
+  }
+
   // Stats instrumentation (ARIXV_STATS): while set, the entropy cost of
   // every decision is accumulated into *sink. Encoder-only; the decoder's
   // counterpart is a no-op so shared model code can call it unconditionally.
   void SetCostSink(double* sink) { cost_sink_ = sink; }
 
-  void Flush() { enc_.Flush(); }
+  // Range-coder bytes, then the rANS words (see symbol_coder.h).
+  void Flush() {
+    enc_.Flush();
+    rans_.Flush(enc_.out());
+  }
   bool exhausted() const { return false; }
 
  private:
   RangeEncoder& enc_;
+  RansEncoder rans_;
   double* cost_sink_ = nullptr;
 };
 
@@ -96,7 +142,8 @@ class BitDecoder {
   static constexpr bool kEncoding = false;
   static constexpr bool kRawResidual = false;
 
-  explicit BitDecoder(RangeDecoder& dec) : dec_(dec) {}
+  explicit BitDecoder(RangeDecoder& dec)
+      : dec_(dec), rans_(dec.data(), dec.size()) {}
 
   bool CodeBit(Prob& p, bool /*bit_for_encoder*/) {
     return dec_.DecodeBit(p) != 0;
@@ -110,46 +157,106 @@ class BitDecoder {
     return value;
   }
 
-  template <int kBits>
-  uint32_t DecodeTree(Prob* probs) {
-    return dec_.template DecodeTree<kBits>(probs);
-  }
   uint32_t DecodeSequence(Prob* probs, int n) {
     return dec_.DecodeSequence(probs, n);
   }
 
-  bool exhausted() const { return dec_.exhausted(); }
+  template <int kN, int kRateCap>
+  uint32_t CodeSymbol(SymbolCdf& t, uint32_t /*s*/) {
+    return static_cast<uint32_t>(rans_.template DecodeSymbol<kN, kRateCap>(t));
+  }
+
+  // Either stream ran out (decoders stop early on this). Only the forward
+  // range stream running off the end means the payload was cut short; the
+  // backward rANS stream running past the front means it is malformed.
+  bool exhausted() const { return dec_.exhausted() || rans_.exhausted(); }
+  bool range_exhausted() const { return dec_.exhausted(); }
+
+  // The range bytes (from the front) and rANS words (from the back) must
+  // tile the payload exactly, and the rANS state must end where it began.
+  bool ConsumedExactly() const {
+    return dec_.consumed_size() + rans_.consumed_size() == dec_.size() &&
+           rans_.FinishedCleanly();
+  }
 
   // No-op mirror of BitEncoder::SetCostSink so shared model code can call it.
   void SetCostSink(double*) {}
 
  private:
   RangeDecoder& dec_;
+  RansDecoder rans_;
 };
 
-template <int kBits>
+// A kBits-wide value coded MSB-first in <= 4-bit chunks (the first takes
+// kBits % 4, or 4), each chunk one symbol of an adaptive CDF selected by the
+// value prefix above it: the context structure of a binary tree with fewer,
+// wider nodes. Value-initialized (zeroed) tables are uniform.
+template <int kBits, int kRateCap = kSymbolRateCap>
 struct BitTree {
-  static_assert(kBits > 0, "BitTree must contain at least one bit");
-  std::array<Prob, (1u << kBits) - 1> probs{};
+  static_assert(kBits > 0 && kBits <= 16, "BitTree depth must be 1..16");
+  static constexpr int kFirstChunk = kBits % 4 == 0 ? 4 : kBits % 4;
+  static constexpr int NumTables() {
+    int tables = 0;
+    for (int prefix = 0, chunk = kFirstChunk; prefix < kBits;
+         prefix += chunk, chunk = 4) {
+      tables += 1 << prefix;
+    }
+    return tables;
+  }
+  std::array<SymbolCdf, NumTables()> tables{};
 
   template <typename Coder>
   uint32_t CodeValue(Coder& coder, uint32_t value) {
     if constexpr (Coder::kRawResidual) {
       return coder.CodeBitsDirect(value, kBits);
+    } else {
+#ifdef ARIXV_TRACE_DECISIONS
+      if (Coder::kEncoding && g_tree_trace != nullptr) {
+        g_tree_trace->push_back({this, kBits, value});
+      }
+#endif
+      StatSiteScope<Coder> site(kSiteBitTree);
+      const uint32_t out = CodeFrom<0>(coder, value, 0, 0);
+      return Coder::kEncoding ? value : out;
     }
-    if constexpr (!Coder::kEncoding && !Coder::kRawResidual) {
-      return coder.template DecodeTree<kBits>(probs.data());
+  }
+
+  // Steady-rate shadow update along value's path (no coding).
+  void Train(uint32_t value) { TrainFrom<0>(value, 0, 0); }
+
+ private:
+  template <int kPrefix>
+  static constexpr int Chunk() { return kPrefix == 0 ? kFirstChunk : 4; }
+
+  template <int kPrefix, typename Coder>
+  uint32_t CodeFrom(Coder& coder, uint32_t value, uint32_t prefix_value,
+                    uint32_t base) {
+    constexpr int kChunk = Chunk<kPrefix>();
+    constexpr int kShift = kBits - kPrefix - kChunk;
+    const uint32_t want =
+        Coder::kEncoding ? (value >> kShift) & ((1u << kChunk) - 1u) : 0u;
+    const uint32_t s = coder.template CodeSymbol<1 << kChunk, kRateCap>(
+        tables[base + prefix_value], want);
+    const uint32_t next = (prefix_value << kChunk) | s;
+    if constexpr (kPrefix + kChunk < kBits) {
+      return CodeFrom<kPrefix + kChunk>(coder, value, next,
+                                        base + (1u << kPrefix));
+    } else {
+      return next;
     }
-    StatSiteScope<Coder> site(kSiteBitTree);
-    uint32_t node = 1;
-    uint32_t out = 0;
-    for (int bit_index = kBits - 1; bit_index >= 0; --bit_index) {
-      const bool hint = ((value >> bit_index) & 1u) != 0;
-      const bool bit = coder.CodeBit(probs[node - 1], hint);
-      out = (out << 1) | static_cast<uint32_t>(bit);
-      node = (node << 1) | static_cast<uint32_t>(bit);
+  }
+
+  template <int kPrefix>
+  void TrainFrom(uint32_t value, uint32_t prefix_value, uint32_t base) {
+    constexpr int kChunk = Chunk<kPrefix>();
+    constexpr int kShift = kBits - kPrefix - kChunk;
+    const uint32_t s = (value >> kShift) & ((1u << kChunk) - 1u);
+    SymbolCdfTrain<1 << kChunk, kRateCap>(tables[base + prefix_value],
+                                static_cast<int>(s));
+    if constexpr (kPrefix + kChunk < kBits) {
+      TrainFrom<kPrefix + kChunk>(value, (prefix_value << kChunk) | s,
+                                  base + (1u << kPrefix));
     }
-    return Coder::kEncoding ? value : out;
   }
 };
 
@@ -223,8 +330,10 @@ int CodeRank(Coder& coder, Prob slots[kRankCount + 1], int rank) {
   return kRankEscape;
 }
 
+using ByteTree = BitTree<kByteBits, kByteSymbolRateCap>;
+
 struct ByteModel {
-  std::array<std::unique_ptr<BitTree<kByteBits>>, kByteContextCount> tree{};
+  std::array<std::unique_ptr<ByteTree>, kByteContextCount> tree{};
   std::array<uint32_t, kByteContextCount> stamp{};
   uint32_t generation = 1;
 };
@@ -245,11 +354,11 @@ uint8_t CodeByte(Coder& coder, ByteModel& model, uint8_t prev, uint8_t b) {
     return static_cast<uint8_t>(coder.CodeBitsDirect(b, kByteBits));
   }
   StatSiteScope<Coder> site(kSiteByte);
-  std::unique_ptr<BitTree<kByteBits>>& tree = model.tree[prev];
+  std::unique_ptr<ByteTree>& tree = model.tree[prev];
   if (!tree) {
-    tree = std::make_unique<BitTree<kByteBits>>();
+    tree = std::make_unique<ByteTree>();
   } else if (model.stamp[prev] != model.generation) {
-    *tree = BitTree<kByteBits>{};
+    *tree = ByteTree{};
   }
   model.stamp[prev] = model.generation;
   return static_cast<uint8_t>(tree->CodeValue(coder, b));

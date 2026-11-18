@@ -151,6 +151,13 @@ constexpr int kRankListCap = ARIXV_KRANK_LIST_CAP;
 constexpr int kRankListCapIds = ARIXV_KRANK_LIST_CAP_IDS;
 constexpr int kRankListCapTypes = ARIXV_KRANK_LIST_CAP_TYPES;
 
+// Symbol-coded BitTree CDFs (symbol_coder.h): adaptation shift starts at 1
+// and grows with the per-table count up to the tree's cap (also the steady
+// rate used for shadow training). Byte trees (high-entropy string and
+// fallback bytes) adapt more slowly.
+constexpr int kSymbolRateCap = 5;
+constexpr int kByteSymbolRateCap = 7;
+
 // Depth of the rank-coding bit trees for the ID/type/forward-ref recency
 // lists. Must cover every list position, so it tracks the largest cap.
 constexpr int kRankTreeBits = 4;

@@ -190,9 +190,9 @@ Status Decoder::Decode(const uint8_t* data, size_t size,
                   [&out](uint8_t b) { out.push_back(b); });
   if (coder.exhausted()) {
     out.clear();
-    return Status::kTruncated;
+    return coder.range_exhausted() ? Status::kTruncated : Status::kBadContainer;
   }
-  if (range.consumed_size() != size - pos) {
+  if (!coder.ConsumedExactly()) {
     out.clear();
     return Status::kBadContainer;
   }

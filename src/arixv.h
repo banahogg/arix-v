@@ -18,7 +18,7 @@ namespace arixv {
 // Exact four-byte format identifier for blobs produced by this release. This
 // is the complete format-versioning mechanism: a format change must change
 // all four bytes, and a decoder accepts only an exact match.
-inline constexpr uint8_t kContainerMagic[] = {'A', 'R', 'X', '1'};
+inline constexpr uint8_t kContainerMagic[] = {'A', 'R', 'X', '2'};
 inline constexpr size_t kContainerMagicBytes = sizeof(kContainerMagic);
 
 struct EncodeOptions {

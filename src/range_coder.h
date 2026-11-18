@@ -152,6 +152,8 @@ class RangeEncoder {
     }
   }
 
+  std::vector<uint8_t>& out() { return out_; }
+
  private:
   void Normalize() {
     while (range_ < kRangeTop) {
@@ -207,21 +209,6 @@ class RangeDecoder {
     return bit;
   }
 
-  // Decodes a kBits-deep binary tree (probs indexed node-1, MSB first) with
-  // the coder state held in locals for the whole walk, so it stays in
-  // registers instead of round-tripping through *this on every bit.
-  template <int kBits>
-  uint32_t DecodeTree(Prob* probs) {
-    State st = Load();
-    uint32_t node = 1;
-    for (int i = 0; i < kBits; ++i) {
-      node = (node << 1) |
-             static_cast<uint32_t>(DecodeBitLocal(st, probs[node - 1]));
-    }
-    Store(st);
-    return node - (1u << kBits);
-  }
-
   // Decodes n bits MSB first, bit i using its own probs[i].
   uint32_t DecodeSequence(Prob* probs, int n) {
     State st = Load();
@@ -247,6 +234,8 @@ class RangeDecoder {
 
   bool exhausted() const { return exhausted_; }
   size_t consumed_size() const { return pos_; }
+  const uint8_t* data() const { return data_; }
+  size_t size() const { return size_; }
 
  private:
   struct State {

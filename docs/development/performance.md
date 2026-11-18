@@ -595,19 +595,111 @@ produce identical bytes and checksums.
 
 ### ANS
 
-- [ ] **E-A0. Microbenchmark before porting.** Decode a synthetic bit stream
+- [x] **E-A0. Microbenchmark before porting — binary rANS is not faster
+  (2026-11-17).** `build/ans_microbench` (`tools/bench/ans_microbench.cpp`,
+  built with `-DARIXV_TRACE_DECISIONS`) records every adaptive decision of a
+  real corpus encode as (context, bit) and replays it with fresh contexts per
+  module through the range coder (state in locals, as E1), adaptive binary
+  rANS (32-bit state, 16-bit renormalization), and 2-state interleaved rANS.
+  "dep" adds a true data dependency from each decoded bit to the next
+  context index. Full corpus, 14.46M decisions: sizes range 1,027,258,
+  rANS −0.17%, rANS×2 +0.14%. Per decision: range 5.03 (indep) / 5.57 (dep)
+  ns, rANS 5.57 / 5.85, rANS×2 5.62 / 5.92 — rANS 5-10% *slower*, and
+  interleaving doesn't help. A per-decision cost is dominated by instruction
+  throughput (probability update, renormalization), not by the coder's own
+  dependency chain. Original plan text: Decode a synthetic bit stream
   with realistic probabilities using the LZMA-style coder vs adaptive binary
   rANS (32-bit state with 16-bit renorm, or 64/32). Bounds the gain before
   touching the model. Item 9 found the model's dependency chain, not the
   coder, to be the limit, so expect a binary-for-binary swap to be worth
   ~5-15% of the coding share.
-- [ ] **E-A1. Adaptive binary rANS swap.** Same `Prob` contexts. The encoder
+- [ ] **E-A1. Adaptive binary rANS swap.** *Not worth doing on E-A0's
+  numbers; any rANS gain has to come from multi-symbol decode (E-A2).* Same `Prob` contexts. The encoder
   records `(prob, bit)` pairs in the forward pass and encodes them in reverse
   (fine for offline compression); the decoder still adapts as it goes. Gains:
   very cheap renormalization and 2-state interleaving inside one stream
   (alternate states, not streams), simpler than the reverted 4-stream
   framing. Costs: a more complex encoder and a possible small ratio change.
-- [ ] **E-A2. Adaptive multi-symbol rANS for small alphabets.** The LZNA
+- [x] **E-A2. Adaptive multi-symbol rANS for small alphabets — landed
+  (2026-11-17): reusable 64.5 → 72.7 MiB/s (+12.7%), stateless 55.2 → 64.1
+  MiB/s (+16.1%), corpus 1,031,921 → 1,035,489 bytes (+0.35%), container
+  magic `ARX1` → `ARX2`.** Matched 1080-file corpus on a quiet host (the
+  background job was stopped), core 2, `-O3 -flto=auto`, 30 iterations, 7
+  interleaved A/B rounds, medians; every round agreed. Cumulative since the
+  backlog was written: reusable 55.5 → 72.7 (+31%), stateless 49.1 → 64.3
+  (+31%). Adaptive decisions per corpus encode 14.46M → 7.13M (1.18 per
+  output byte).
+
+  *What landed:* every `BitTree<kBits>` is now symbol-coded
+  (`src/symbol_coder.h`): MSB-first ≤4-bit chunks, each a 32-byte adaptive
+  CDF (`SymbolCdf`) chosen by the value prefix above it, on an rANS stream
+  beside the binary range coder. Design points:
+  - *Zero means uniform.* Tables store offsets from the uniform CDF and keep
+    the warm-up count in lane 0 (C[0] is always 0), so value-initialized
+    `BitTree{}` resets, stamped lazy resets, and pooled trees are unchanged.
+  - *Two-ended payload, no length field.* Range bytes run forward from the
+    front; rANS words (LE16) run backward from the end; a stream that coded
+    no symbols emits nothing. Validation: the two must tile the payload
+    exactly and the rANS state must finish at `kRansL`. Exhaustion of
+    either stream still stops decoding early (bounded output on hostile
+    headers); only a forward range-stream overrun reports `kTruncated`, a
+    mis-tiled payload (trailing bytes, rANS overrun) reports
+    `kBadContainer`.
+  - *Shadow training* (`TrainBitTree` → `BitTree::Train`) applies a
+    steady-rate CDF update along the value's path.
+  - *Per-tree adaptation cap:* `kSymbolRateCap = 5` (best for the corpus),
+    but byte trees (`ByteTree`: string, opaque, and byte-fallback bytes) use
+    `kByteSymbolRateCap = 7`. With one global cap 5, forced-coded random
+    bytes expanded +6.67% (was +2.49% with binary trees), breaking the test
+    bound; byte cap 6/7/8 gives +4.32/+3.57/+3.33% for +104/+146/+164 corpus
+    bytes.
+  - SSE2 lookup/update with a portable scalar fallback; the
+    `-DARIXV_NO_SIMD` build produces byte-identical blobs and cross-decodes
+    (54-file check).
+  - The size cost is almost entirely the 4-byte rANS final state per module
+    (~4.3 KB over 1080 modules), which the microbench's tree-only accounting
+    did not charge. *Follow-up:* the range coder's 5-byte flush includes
+    the LZMA dummy leading byte, which is always 0; dropping it would
+    recover ~1 KB.
+  `make test`, `make asan` (clean), a 3000-iteration fuzz run, and a
+  1000-iteration scalar-build fuzz run pass.
+
+  *Microbench record (2026-11-17), before the port:* `build/ans_symbol_microbench` records every `BitTree`
+  value (tree, depth, value) of a real corpus encode and replays the tree
+  events. Each tree is split MSB-first into ≤4-bit chunks, each chunk an
+  adaptive 2-16-symbol CDF chosen by the prefix above it: the bit tree's
+  context structure with fewer, wider nodes. CDF: 15-bit total, stored in
+  coding domain with a +1-per-symbol floor and a 32768 sentinel; SSE2 search
+  (`subs_epu16` compare, `ctz(~mask)` — *not* `popcount`, which is a libgcc
+  call without `-mpopcnt`) and SSE2 update toward 0 / top with a
+  count-warmed shift capped at `--rate-cap` (5 best: 4 is +0.03%, 6 is
+  +0.21% with rANS).
+  - **Coverage is larger than E0's `bit_tree` column:** uint lengths and
+    bytes are bit trees too, so trees are **10.3M of 14.5M decisions
+    (71%)**: depth 4 ×511K events (rank trees), 6 ×437K (uint length),
+    8 ×264K (bytes, enum indices), 10 ×352K (opcode index).
+  - **Size:** binary 672,344 bytes of tree payload; nibble range-coded
+    +0.02%, nibble rANS −0.30%. No ratio cost.
+  - **Speed** (callgrind instructions, every 8th file, net of context
+    reset): binary ~40 per decision ≈ 137 per nibble-equivalent; nibble
+    range coder (one 32-bit division per symbol) ≈ 1.25x faster by wall
+    time; nibble rANS ~110 per symbol; nibble rANS with compile-time chunk
+    walks ("tight") **~83 per symbol, 1.65x fewer**. Reset-adjusted wall
+    time agrees (~36 → ~21 ns per tree event, ~1.7x), but treat wall
+    numbers as ±15%: the host was saturated by an unrelated job.
+  - **Projection:** coding is ~60% of decode time and trees ~71% of
+    decisions, so ~43% of decode; 1.65x there is **~1.2x end to end**.
+  - **Design questions settled by the port:** two-stream layout chosen;
+    shadow training ported; E10 overlap and uint mantissas still open.
+    Originally: (1) stream layout — rANS
+    for symbols plus the range coder for the remaining binary flags as two
+    payloads (encoder buffers symbols and rANS-encodes them in reverse at
+    the end), versus all-rANS (E-A0 says binary rANS is 5-10% slower);
+    (2) an equivalent of `TrainBitTree` shadow training for opcode CDFs;
+    (3) overlap with E10 — the opcode tree is a third of all tree
+    decisions and `static-opcode-tables` replaces it; (4) the uint
+    mantissa runs (~2M decisions) could become nibble symbols too.
+  Original plan text: The LZNA
   approach: adaptive 16-symbol (nibble) frequency tables with a SIMD update.
   With a power-of-two total, rANS gets the slot as `x & mask` and searches
   the cumulative frequencies with no division, which an adaptive

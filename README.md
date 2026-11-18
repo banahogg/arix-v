@@ -89,7 +89,7 @@ library for in-process compression.
 
 ### Container compatibility
 
-Every ARIX-V blob begins with the four ASCII bytes `ARX1`, followed by its mode
+Every ARIX-V blob begins with the four ASCII bytes `ARX2`, followed by its mode
 and payload. These four bytes are the entire format-version mechanism: a
 decoder accepts only an exact magic match. Any change that can alter encoded
 bytes must choose a new four-byte magic; ARIX-V makes no compatibility promise

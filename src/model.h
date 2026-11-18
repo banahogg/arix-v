@@ -42,7 +42,7 @@ Status DecodeModule(const uint8_t* payload, size_t payload_size,
 // of the structural model. The payload is the sequence of structural choices
 // encoded as packed fixed-width fields and ULEB128 residuals: there is no range
 // coding, probability update, or external dependency. This is intentionally
-// not an ARX1 container mode.
+// not an ARX2 container mode.
 void EncodeModuleRawResidual(const uint8_t* data, size_t size,
                              std::vector<uint8_t>& out_payload);
 

@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -930,19 +931,6 @@ uint32_t CodeRankedId(Bits& bits, Prob& flag, BitTree<kRankTreeBits>& tree,
   return CodeDelta(bits, EnsureUint(escape), hint, base);
 }
 
-void TrainProb(Prob& p, bool bit) {
-  p.UpdateSteady(bit);
-}
-
-template <int kBits>
-void TrainBitTree(BitTree<kBits>& tree, uint32_t value) {
-  uint32_t node = 1;
-  for (int bit_index = kBits - 1; bit_index >= 0; --bit_index) {
-    const bool bit = ((value >> bit_index) & 1u) != 0;
-    TrainProb(tree.probs[node - 1], bit);
-    node = (node << 1) | static_cast<uint32_t>(bit);
-  }
-}
 
 template <class Bits>
 uint32_t CodeResultId(Bits& bits, ModelState& model,
@@ -1345,7 +1333,7 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
       if (!order1.tree) {
         order1.tree = std::make_unique<BitTree<10>>();
       }
-      TrainBitTree(*order1.tree, index);
+      order1.tree->Train(index);
     } else {
       if (!order1.tree) {
         order1.tree = std::make_unique<BitTree<10>>();
@@ -1757,6 +1745,11 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
   io.PatchBound(bound);
 
   if (bits.exhausted()) {
+    if constexpr (std::is_same_v<Bits, BitDecoder>) {
+      if (!bits.range_exhausted()) {
+        return Status::kBadContainer;
+      }
+    }
     return Status::kTruncated;
   }
   return Status::kOk;
@@ -1824,7 +1817,7 @@ Status ModuleDecoder::Decode(const uint8_t* payload, size_t payload_size,
     out.clear();
     return Status::kTruncated;
   }
-  if (range.consumed_size() != payload_size) {
+  if (!bits.ConsumedExactly()) {
     out.clear();
     return Status::kBadContainer;
   }
