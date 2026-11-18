@@ -70,7 +70,7 @@ const Tracker::IdInfo* Tracker::IdMap::Find(uint32_t id) const {
   if (id == 0) {
     return has_zero_ ? &zero_info_ : nullptr;
   }
-  if (keys_.empty()) {
+  if (capacity_ == 0) {
     return nullptr;
   }
   size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
@@ -91,7 +91,7 @@ Tracker::IdInfo& Tracker::IdMap::Ensure(uint32_t id) {
     }
     return zero_info_;
   }
-  if (keys_.empty()) {
+  if (capacity_ == 0) {
     Rehash(kIdMapMinSlots);
   }
   size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
@@ -101,8 +101,8 @@ Tracker::IdInfo& Tracker::IdMap::Ensure(uint32_t id) {
     }
     i = (i + 1) & mask_;
   }
-  if ((size_ + 1) * 10 >= keys_.size() * 7) {
-    Rehash(keys_.size() * 2);
+  if ((size_ + 1) * 10 >= capacity_ * 7) {
+    Rehash(capacity_ * 2);
     i = static_cast<size_t>(id * kIdHashMul) & mask_;
     while (slot_gen_[i] == generation_) {
       i = (i + 1) & mask_;
@@ -122,7 +122,7 @@ void Tracker::IdMap::Clear() {
   // pay a one-time bulk reset to re-establish the "0 => empty" invariant.
   ++generation_;
   if (generation_ == 0) {
-    std::fill(slot_gen_.begin(), slot_gen_.end(), 0u);
+    std::fill(slot_gen_.get(), slot_gen_.get() + capacity_, 0u);
     generation_ = 1;
   }
   size_ = 0;
@@ -134,23 +134,26 @@ void Tracker::IdMap::Reserve(size_t expected_ids) {
   while (slots < expected_ids && slots < kIdMapMaxReserveSlots) {
     slots *= 2;
   }
-  if (slots > keys_.size()) {
+  if (slots > capacity_) {
     Rehash(slots);
   }
 }
 
 void Tracker::IdMap::Rehash(size_t slot_count) {
-  std::vector<uint32_t> old_keys = std::move(keys_);
-  std::vector<IdInfo> old_values = std::move(values_);
-  std::vector<uint32_t> old_gen = std::move(slot_gen_);
-  keys_.assign(slot_count, 0u);
-  values_.assign(slot_count, IdInfo{});
-  // Fresh stamps are 0; occupied slots below are stamped with generation_.
-  // generation_ is never 0 during use (Clear() skips 0), so nothing else in
-  // the new array reads as occupied.
-  slot_gen_.assign(slot_count, 0u);
+  const std::unique_ptr<uint32_t[]> old_keys = std::move(keys_);
+  const std::unique_ptr<IdInfo[]> old_values = std::move(values_);
+  const std::unique_ptr<uint32_t[]> old_gen = std::move(slot_gen_);
+  const size_t old_capacity = capacity_;
+  // Keys and values stay uninitialized (written when a slot is claimed);
+  // only the stamps are zeroed. Fresh stamps are 0 and occupied slots below
+  // are stamped with generation_, which is never 0 during use (Clear() skips
+  // 0), so nothing else in the new array reads as occupied.
+  keys_.reset(new uint32_t[slot_count]);
+  values_.reset(new IdInfo[slot_count]);
+  slot_gen_.reset(new uint32_t[slot_count]());
+  capacity_ = slot_count;
   mask_ = slot_count - 1;
-  for (size_t from = 0; from < old_keys.size(); ++from) {
+  for (size_t from = 0; from < old_capacity; ++from) {
     if (old_gen[from] != generation_) {
       continue;  // slot was empty in the current generation
     }
@@ -309,7 +312,15 @@ void Tracker::OnResultTypeUse(uint32_t id) {
 // No recency touch: OnInstructionEnd moves the result to the front once the
 // instruction is complete, and an instruction's own later operands do not
 // reference its result, so touching it here only shifted their ranks.
-void Tracker::OnResultId(uint32_t id) { Ensure(id); }
+// No map insert either: OnInstructionEnd inserts the result, and until then a
+// default entry and a missing one read the same to every consumer (Find ->
+// TypeWidth 0 / no ext set; OnIdUse and Ensure create the default). Only
+// max_seen_id_ must see the ID now.
+void Tracker::OnResultId(uint32_t id) {
+  if (id > max_seen_id_) {
+    max_seen_id_ = id;
+  }
+}
 
 void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
                                uint16_t inst_index) {

@@ -906,6 +906,53 @@ iterations) and output identity.
   and a differential decode of 720 mutated/truncated/padded blobs (old vs
   new CLI: identical exit status and output in every case) pass.
 
+### Tracker ID map (2026-11-17)
+
+Byte-identical changes, developed with load-independent metrics:
+callgrind decode instructions (every 4th file, 3 iterations) for both
+decoder modes, plus output identity.
+
+| change | reusable Ir | Δ | stateless Ir | Δ |
+|---|---|---|---|---|
+| baseline (44f9497) | 1,195.9M | — | 1,358.3M | — |
+| uninitialized ID-map arrays + single result-ID insert | 1,176.0M | −1.7% | 1,316.7M | −3.1% |
+| (+ inline `Ensure` hit path — reverted) | 1,180.4M | +0.4% | 1,321.1M | +0.3% |
+
+- Profile at 44f9497: `Tracker::Ensure` ~1.55M calls per sample run
+  (615K ID-operand uses, 245K result-type uses, 306K `OnResultId`, 383K
+  `OnInstructionEnd`) at ~30 instructions each; `IdMap::Rehash` 1.1% in
+  only 274 calls; `OnInstructionEnd`'s own lines are diffuse — its weight
+  is the recency `Touch` (2.0%) and `Ensure` (0.7%) it calls.
+- **Uninitialized slot arrays.** `Rehash` value-initialized three parallel
+  arrays (24 bytes per slot) although a slot's key and value are written
+  when it is claimed and occupancy is decided by the generation stamp
+  alone. Keys and values are now `new T[n]` without initialization; only
+  the stamps are zeroed. `IdInfo` became a plain aggregate whose all-zero
+  value is the old default (static_assert-checked), always created as
+  `IdInfo{}`. Stateless decode, which builds a fresh map per call, gains
+  the most.
+- **One map insert per result ID.** `OnResultId` inserted the result and
+  `OnInstructionEnd` looked it up again. Every reader treats a default
+  entry and a missing one the same (`TypeWidth` → 0, ext-set lookup →
+  null, `OnIdUse`/`Ensure` create the default), so `OnResultId` now only
+  updates `max_seen_id_` and the insert happens once, at instruction end.
+- **Rejected:** force-inlining the `Ensure` hit path and the
+  `Tracker::Ensure` wrapper added instructions — call overhead was not the
+  cost.
+- **Wall time (idle host, core 2, full corpus, 30 iterations, 9
+  interleaved A/B rounds, medians): reusable 82.3 → 83.4 MiB/s (+1.4%;
+  faster in 7 of 9 rounds, the other two within 0.1 MiB/s), stateless
+  71.3 → 73.0 MiB/s (+2.4%, all 9 rounds).** The same run re-timed the
+  cursor commit (44f9497) at 82.3 MiB/s reusable on an idle host, against
+  74.1 MiB/s for 12ff914 in the earlier quiet run: the cursor gain measured
+  under load (+12.7%) holds at about +11%.
+- **Correctness:** M2, stateless, and raw-residual outputs byte-identical to
+  44f9497 (same bytes and checksums); `make test`, `make asan`,
+  3000-iteration fuzz, the 720-case mutated-blob differential against the
+  previous CLI (0 mismatches), and valgrind memcheck (corpus decodes in
+  both modes plus 40 mutated-blob decodes: 0 errors, so nothing reads an
+  unclaimed slot) pass.
+
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
 `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest

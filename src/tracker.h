@@ -17,6 +17,8 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <type_traits>
 #include <vector>
 
 #include "grammar_tables.h"
@@ -99,14 +101,21 @@ class Tracker {
     kCount,
   };
 
+  // A plain aggregate: IdInfo{} (all zero) is the default — kUnknown, not
+  // defined, kOther, width 0, no ext set — which lets the ID map allocate its
+  // value array uninitialized. Always create one with IdInfo{}.
   struct IdInfo {
-    IdKind kind = IdKind::kUnknown;
-    bool defined = false;   // result ID has been seen
+    IdKind kind;
+    bool defined;   // result ID has been seen
     // For kind==kType: what type this ID declares.
-    TypeClass type_class = TypeClass::kOther;
-    uint32_t width = 0;         // OpTypeInt/OpTypeFloat bit width
-    const ExtInstSetDesc* ext_set = nullptr;  // kind==kExtInstSet
+    TypeClass type_class;
+    uint32_t width;         // OpTypeInt/OpTypeFloat bit width
+    const ExtInstSetDesc* ext_set;  // kind==kExtInstSet
   };
+  static_assert(std::is_trivially_default_constructible_v<IdInfo> &&
+                    static_cast<int>(IdKind::kUnknown) == 0 &&
+                    static_cast<int>(TypeClass::kOther) == 0,
+                "IdInfo{} must be the all-zero default");
 
   Tracker();
 
@@ -182,14 +191,18 @@ class Tracker {
    private:
     void Rehash(size_t slot_count);
 
-    std::vector<uint32_t> keys_;      // size is a power of two
-    std::vector<IdInfo> values_;      // parallel to keys_
-    std::vector<uint32_t> slot_gen_;  // parallel; == generation_ if occupied
+    // Parallel arrays of capacity_ (a power of two) slots. Only slot_gen_ is
+    // initialized: a slot's key and value are written when it is claimed,
+    // and occupancy is decided by the stamp alone.
+    std::unique_ptr<uint32_t[]> keys_;
+    std::unique_ptr<IdInfo[]> values_;
+    std::unique_ptr<uint32_t[]> slot_gen_;  // == generation_ if occupied
+    size_t capacity_ = 0;
     uint32_t generation_ = 0;         // bumped by Clear(); 0 => all slots empty
     size_t size_ = 0;                 // occupied slots in the current generation
-    size_t mask_ = 0;                 // keys_.size() - 1 once allocated
+    size_t mask_ = 0;                 // capacity_ - 1 once allocated
     bool has_zero_ = false;
-    IdInfo zero_info_;
+    IdInfo zero_info_{};
   };
 
   IdInfo& Ensure(uint32_t id);
