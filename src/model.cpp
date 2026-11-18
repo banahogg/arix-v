@@ -143,15 +143,13 @@ struct CountModel {
 struct OpcodeCtx {
   uint32_t stamp = 0;
   uint32_t count = 0;
-  std::unique_ptr<BitTree<10>> tree;
+  ArenaPtr<BitTree<10>> tree;
 };
 
 struct ValueEnumModel {
   Prob known;
-  std::unique_ptr<BitTree<8>> index;
+  BitTree<8> index;
   UintModel escape;
-
-  ValueEnumModel() : index(std::make_unique<BitTree<8>>()) {}
 };
 
 struct BitEnumModel {
@@ -162,17 +160,15 @@ struct BitEnumModel {
 
 struct ExtInstNumberModel {
   Prob known;
-  std::unique_ptr<BitTree<8>> index;
+  BitTree<8> index;
   UintModel escape;
-
-  ExtInstNumberModel() : index(std::make_unique<BitTree<8>>()) {}
 };
 
 void ResetCountModel(CountModel& model) { model = CountModel{}; }
 
 void ResetValueEnumModel(ValueEnumModel& model) {
   model.known = Prob{};
-  *model.index = BitTree<8>{};
+  model.index = BitTree<8>{};
   model.escape = UintModel{};
 }
 
@@ -186,7 +182,7 @@ void ResetBitEnumModel(BitEnumModel& model) {
 
 void ResetExtInstNumberModel(ExtInstNumberModel& model) {
   model.known = Prob{};
-  *model.index = BitTree<8>{};
+  model.index = BitTree<8>{};
   model.escape = UintModel{};
 }
 
@@ -204,13 +200,28 @@ class UninitArray {
   std::unique_ptr<T[]> data_;
 };
 
-UintModel& EnsureUint(std::unique_ptr<UintModel>& model) {
+UintModel& EnsureUint(Arena& arena, ArenaPtr<UintModel>& model) {
   if (!model) {
-    model = std::make_unique<UintModel>();
+    model.Make(arena);
   }
   return *model;
 }
 
+template <typename T, typename Reset>
+T& EnsureStamped(Arena& arena, std::vector<ArenaPtr<T>>& slots,
+                 std::vector<uint32_t>& stamps, size_t key,
+                 uint32_t generation, Reset reset) {
+  ArenaPtr<T>& slot = slots[key];
+  if (!slot) {
+    slot.Make(arena);
+  } else if (stamps[key] != generation) {
+    reset(*slot);
+  }
+  stamps[key] = generation;
+  return *slot;
+}
+
+// For the few context types that own heap storage (BitEnumModel).
 template <typename T, typename Reset>
 T& EnsureStamped(std::vector<std::unique_ptr<T>>& slots,
                  std::vector<uint32_t>& stamps, size_t key,
@@ -226,10 +237,11 @@ T& EnsureStamped(std::vector<std::unique_ptr<T>>& slots,
 }
 
 template <int kBits>
-BitTree<kBits>& EnsureStampedTree(std::unique_ptr<BitTree<kBits>>& tree,
+BitTree<kBits>& EnsureStampedTree(Arena& arena,
+                                  ArenaPtr<BitTree<kBits>>& tree,
                                   uint32_t& stamp, uint32_t generation) {
   if (!tree) {
-    tree = std::make_unique<BitTree<kBits>>();
+    tree.Make(arena);
   } else if (stamp != generation) {
     *tree = BitTree<kBits>{};
   }
@@ -306,6 +318,10 @@ void DumpStats() {
 }
 
 struct ModelState {
+  // Owns every lazily created context (ArenaPtr members below); declared
+  // first so it is destroyed last.
+  Arena arena;
+
   ModelState()
       : opcode_index_trees(
             static_cast<size_t>(Section::kCount) *
@@ -379,13 +395,13 @@ struct ModelState {
     for (BitTree<kRankTreeBits>& tree : *type_rank) {
       tree = BitTree<kRankTreeBits>{};
     }
-    for (std::unique_ptr<UintModel>& model : type_escape) {
+    for (ArenaPtr<UintModel>& model : type_escape) {
       model.reset();
     }
     id_in_list = {};
     id_rank = {};
     for (auto& bucket : id_escape) {
-      for (std::unique_ptr<UintModel>& model : bucket) {
+      for (ArenaPtr<UintModel>& model : bucket) {
         model.reset();
       }
     }
@@ -421,12 +437,12 @@ struct ModelState {
   Prob bound_matches;
 
   std::array<Prob, static_cast<size_t>(Section::kCount) * 2> known_opcode{};
-  std::vector<std::unique_ptr<BitTree<10>>> opcode_index_trees;
+  std::vector<ArenaPtr<BitTree<10>>> opcode_index_trees;
   std::vector<uint32_t> opcode_index_tree_stamp;
-  std::unique_ptr<BitTree<16>> unknown_opcode_tree;
+  ArenaPtr<BitTree<16>> unknown_opcode_tree;
   uint32_t unknown_opcode_tree_stamp = 0;
   std::vector<OpcodeCtx> opcode_contexts;
-  std::vector<std::unique_ptr<CountModel>> count_models;
+  std::vector<ArenaPtr<CountModel>> count_models;
   std::vector<uint32_t> count_model_stamp;
   UninitArray<uint32_t> last_word_count;
   // Two-level stamps for the per-(instruction x slot) caches: one stamp per
@@ -439,9 +455,9 @@ struct ModelState {
   // Models on rare paths (corpus-measured: raw counts 1/1080 files, exact
   // bound mispredictions 27/1080, opaque words 4/1080) are allocated on
   // first use so typical decodes never pay for their construction.
-  std::unique_ptr<UintModel> raw_known_count;
-  std::unique_ptr<UintModel> raw_unknown_count;
-  std::unique_ptr<UintModel> bound_value;
+  ArenaPtr<UintModel> raw_known_count;
+  ArenaPtr<UintModel> raw_unknown_count;
+  ArenaPtr<UintModel> bound_value;
   std::unique_ptr<std::array<ByteModel, 4>> operand_bytes;
 
   uint32_t prev_result_id = 0;
@@ -454,30 +470,30 @@ struct ModelState {
   std::unique_ptr<std::vector<BitTree<kRankTreeBits>>> type_rank;
   // Escape models allocate per slot on first escape: every module escapes
   // somewhere, but through only a handful of the 27/29 slots.
-  std::vector<std::unique_ptr<UintModel>> type_escape;
+  std::vector<ArenaPtr<UintModel>> type_escape;
 
   std::array<std::array<Prob, 9>, 3> id_in_list{};
   std::array<std::array<BitTree<kRankTreeBits>, 9>, 3> id_rank{};
-  std::array<std::array<std::unique_ptr<UintModel>, 9>, 3> id_escape{};
+  std::array<std::array<ArenaPtr<UintModel>, 9>, 3> id_escape{};
   UninitArray<uint32_t> last_id;
   UninitArray<uint32_t> last_id_stamp;  // valid only under inst_group_stamp
 
-  std::vector<std::unique_ptr<ValueEnumModel>> value_enums;
+  std::vector<ArenaPtr<ValueEnumModel>> value_enums;
   std::vector<uint32_t> value_enum_stamp;
   std::vector<std::unique_ptr<BitEnumModel>> bit_enums;
   std::vector<uint32_t> bit_enum_stamp;
 
-  std::vector<std::unique_ptr<UintModel>> integer_values;
+  std::vector<ArenaPtr<UintModel>> integer_values;
   std::vector<uint32_t> integer_value_stamp;
   UninitArray<uint32_t> last_literal;
   UninitArray<uint32_t> last_literal_stamp;  // valid under inst_group_stamp
   UintModel context_number;
   Prob context_high_signext;
-  std::unique_ptr<UintModel> spec_constant_op;  // rare: 16/1080 files
+  ArenaPtr<UintModel> spec_constant_op;  // rare: 16/1080 files
 
-  std::vector<std::unique_ptr<ExtInstNumberModel>> ext_inst_nums;
+  std::vector<ArenaPtr<ExtInstNumberModel>> ext_inst_nums;
   std::vector<uint32_t> ext_inst_num_stamp;
-  std::unique_ptr<UintModel> ext_inst_unknown;  // rare: 4/1080 files
+  ArenaPtr<UintModel> ext_inst_unknown;  // rare: 4/1080 files
 
   Prob string_match;
   BitTree<6> string_rank;
@@ -910,7 +926,7 @@ void TouchString(ModelState& model, const std::string& raw) {
 
 template <class Bits>
 uint32_t CodeRankedId(Bits& bits, Prob& flag, BitTree<kRankTreeBits>& tree,
-                      std::unique_ptr<UintModel>& escape,
+                      Arena& arena, ArenaPtr<UintModel>& escape,
                       const RecencyList& list, uint32_t hint, uint32_t base) {
   const int rank = Bits::kEncoding ? list.Find(hint) : -1;
   const bool in_list = rank >= 0 && rank < (1 << kRankTreeBits);
@@ -927,7 +943,7 @@ uint32_t CodeRankedId(Bits& bits, Prob& flag, BitTree<kRankTreeBits>& tree,
     const uint32_t coded = bits.CodeUint32(delta);
     return Bits::kEncoding ? hint : base + UnZigZag32(coded);
   }
-  return CodeDelta(bits, EnsureUint(escape), hint, base);
+  return CodeDelta(bits, EnsureUint(arena, escape), hint, base);
 }
 
 
@@ -968,7 +984,7 @@ uint32_t CodeResultType(Bits& bits, ModelState& model,
   const size_t cls = ClassBucket(desc);
   uint32_t id = CodeRankedId(bits, (*model.type_in_list)[cls],
                              (*model.type_rank)[cls],
-                             model.type_escape[cls],
+                             model.arena, model.type_escape[cls],
                              model.tracker.recent_types(), hint,
                              model.prev_result_id);
   model.tracker.OnResultTypeUse(id);
@@ -986,7 +1002,7 @@ uint32_t CodeIdRef(Bits& bits, ModelState& model, uint16_t inst_index,
                                                    : model.prev_result_id;
   uint32_t id = CodeRankedId(bits, model.id_in_list[bucket][slot],
                              model.id_rank[bucket][slot],
-                             model.id_escape[bucket][slot],
+                             model.arena, model.id_escape[bucket][slot],
                              model.tracker.recent_ids(), hint, base);
   model.last_id[key] = id;
   model.last_id_stamp[key] = model.generation;
@@ -1023,10 +1039,10 @@ uint32_t CodeValueEnum(Bits& bits, ModelState& model,
   }
   const size_t key = static_cast<size_t>(field.kind) * 16 + Slot16(field.slot);
   ValueEnumModel& ctx =
-      EnsureStamped(model.value_enums, model.value_enum_stamp, key,
+      EnsureStamped(model.arena, model.value_enums, model.value_enum_stamp, key,
                     model.generation, ResetValueEnumModel);
   if (bits.CodeBit(ctx.known, known)) {
-    index = ctx.index->CodeValue(bits, index);
+    index = ctx.index.CodeValue(bits, index);
     if (!Bits::kEncoding && index < kind.num_enumerants) {
       return GetEnumerant(kind, static_cast<uint16_t>(index)).value;
     }
@@ -1106,7 +1122,7 @@ uint32_t CodeLiteralInteger(Bits& bits, ModelState& model,
   }
   const size_t cls = ClassBucket(desc);
   UintModel& ctx =
-      EnsureStamped(model.integer_values, model.integer_value_stamp,
+      EnsureStamped(model.arena, model.integer_values, model.integer_value_stamp,
                     cls * 9 + Slot8(field.slot), model.generation,
                     [](UintModel& value) { value = UintModel{}; });
   const uint32_t value = CodeDelta(bits, ctx, hint, base);
@@ -1125,7 +1141,7 @@ uint32_t CodeSpecConstantOp(Bits& bits, ModelState& model, uint32_t hint) {
     (void)model;
     return bits.CodeUint32(hint);
   }
-  return CodeUint(bits, EnsureUint(model.spec_constant_op), hint);
+  return CodeUint(bits, EnsureUint(model.arena, model.spec_constant_op), hint);
 }
 
 template <class Bits>
@@ -1135,14 +1151,14 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
     if constexpr (Bits::kRawResidual) {
       return bits.CodeUint32(hint);
     }
-    return CodeUint(bits, EnsureUint(model.ext_inst_unknown), hint);
+    return CodeUint(bits, EnsureUint(model.arena, model.ext_inst_unknown), hint);
   }
   const int set_index = FindExtInstSetIndex(set);
   if (set_index < 0) {
     if constexpr (Bits::kRawResidual) {
       return bits.CodeUint32(hint);
     }
-    return CodeUint(bits, EnsureUint(model.ext_inst_unknown), hint);
+    return CodeUint(bits, EnsureUint(model.arena, model.ext_inst_unknown), hint);
   }
   const InstructionDesc* inst =
       Bits::kEncoding ? FindExtInstruction(*set, hint) : nullptr;
@@ -1168,11 +1184,11 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
     return bits.CodeUint32(hint);
   }
   ExtInstNumberModel& ctx =
-      EnsureStamped(model.ext_inst_nums, model.ext_inst_num_stamp,
+      EnsureStamped(model.arena, model.ext_inst_nums, model.ext_inst_num_stamp,
                     static_cast<size_t>(set_index), model.generation,
                     ResetExtInstNumberModel);
   if (bits.CodeBit(ctx.known, known)) {
-    index = ctx.index->CodeValue(bits, index);
+    index = ctx.index.CodeValue(bits, index);
     if (!Bits::kEncoding && index < set->num_instructions) {
       return set->instructions[index].opcode;
     }
@@ -1309,7 +1325,7 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
             (static_cast<size_t>(NumInstructionClasses()) + 1) +
         prev_class;
     BitTree<10>& tree =
-        EnsureStampedTree(model.opcode_index_trees[tree_ctx],
+        EnsureStampedTree(model.arena, model.opcode_index_trees[tree_ctx],
                           model.opcode_index_tree_stamp[tree_ctx],
                           model.generation);
     const uint16_t prev_key = PreviousOpcodeKey(model.tracker);
@@ -1330,12 +1346,12 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
     if (order1.count < kOpcodeOrder1MinCount) {
       index = tree.CodeValue(bits, index);
       if (!order1.tree) {
-        order1.tree = std::make_unique<BitTree<10>>();
+        order1.tree.Make(model.arena);
       }
       order1.tree->Train(index);
     } else {
       if (!order1.tree) {
-        order1.tree = std::make_unique<BitTree<10>>();
+        order1.tree.Make(model.arena);
       }
       index = order1.tree->CodeValue(bits, index);
     }
@@ -1357,7 +1373,7 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
       return opcode;
     }
     opcode = static_cast<uint16_t>(
-        EnsureStampedTree(model.unknown_opcode_tree,
+        EnsureStampedTree(model.arena, model.unknown_opcode_tree,
                           model.unknown_opcode_tree_stamp, model.generation)
             .CodeValue(bits, hint));
     *desc_out = nullptr;
@@ -1376,7 +1392,7 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
     if constexpr (Bits::kRawResidual) {
       return bits.CodeUint32(hint) & 0xffffu;
     }
-    count = CodeUint(bits, EnsureUint(model.raw_unknown_count), hint) & 0xffffu;
+    count = CodeUint(bits, EnsureUint(model.arena, model.raw_unknown_count), hint) & 0xffffu;
     return count;
   }
 
@@ -1403,7 +1419,7 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
   }
 
   CountModel& count_model =
-      EnsureStamped(model.count_models, model.count_model_stamp, inst_index,
+      EnsureStamped(model.arena, model.count_models, model.count_model_stamp, inst_index,
                     model.generation, ResetCountModel);
   const bool hint_consistent = IsGrammarConsistent(desc, hint);
   const bool consistent =
@@ -1430,7 +1446,7 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
       model.last_word_count[inst_index] = count;
     }
   } else {
-    count = CodeUint(bits, EnsureUint(model.raw_known_count), hint) & 0xffffu;
+    count = CodeUint(bits, EnsureUint(model.arena, model.raw_known_count), hint) & 0xffffu;
   }
   return count;
 }
@@ -1739,7 +1755,7 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
                         if constexpr (Bits::kRawResidual) {
                           return bits.CodeUint32(bound_hint);
                         }
-                        return CodeUint(bits, EnsureUint(model.bound_value),
+                        return CodeUint(bits, EnsureUint(model.arena, model.bound_value),
                                         bound_hint);
                       }();
   io.PatchBound(bound);

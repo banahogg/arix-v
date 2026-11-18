@@ -953,6 +953,91 @@ decoder modes, plus output identity.
   both modes plus 40 mutated-blob decodes: 0 errors, so nothing reads an
   unclaimed slot) pass.
 
+### Re-profile after the structural passes (2026-11-17, at 76e5823)
+
+Decode instructions by subsystem (callgrind, `-O3 -flto=auto -g`, every
+4th file, 3 iterations; inlined code attributed to its source):
+
+| subsystem | reusable | stateless |
+|---|---|---|
+| entropy coding (rANS symbols, range-coded flags/mantissas, prob updates) | 49.3% | 44.3% |
+| `model.cpp` field coders + `CodeModule` glue | 18.0% | 14.4% |
+| recency lists | 8.1% | 7.2% |
+| operand cursor | 7.8% | 7.0% |
+| tracker ID map + instruction end | 6.2% | 5.6% |
+| allocation / zeroing (malloc, free, memset) | 3.4% | 12.8% |
+| std library inlines | 4.2% | 5.5% |
+
+Stateless decode additionally spends ~2.9% in `ModelState` construction and
+destruction, so ~15% of its instructions are per-call model setup and
+teardown that the reusable decoder avoids. The adaptation-rate
+bookkeeping (count, `clz`, saturate) is ~3.6% for symbol CDFs and ~3% for
+binary probabilities.
+
+### [Measured dead end] Folding binary flags into adjacent symbols
+
+Remaining binary flags are ~2.15M of 7.13M decisions, most directly in
+front of a symbol they gate. Prototype for the largest group (ID operands
+and result types, ~670K flags): the "in recency list" flag and the 4-bit
+rank tree share contexts, so they were folded into one 16-symbol table
+(ranks 0-14 plus an escape to the delta coder; rank 15 escapes).
+
+- Size: 1,021,506 → 1,023,435 bytes (+0.19%).
+- Decode instructions: reusable 1,176.0M → 1,167.0M (−0.8%), stateless
+  1,316.7M → 1,307.6M (−0.7%): only ~18 instructions saved per folded flag,
+  since a range-coded flag is cheap here and a 16-symbol decode costs more
+  than the flag it absorbs.
+- Wall time (load rose mid-run; quiet rounds only): reusable about +0-1%,
+  stateless neutral. Shortening the serial chain did not show up either.
+- Bound for the whole idea: even folding all ~2.15M flags would save at
+  most ~2.5% of instructions, with a ratio risk at each site. The earlier
+  +5-10% estimate assumed a flag costs as much as a full symbol step; it
+  costs much less. Reverted; not extended to the result-ID, opcode, or
+  word-count flags.
+
+### Stateless model setup/teardown: arena for lazy contexts (2026-11-17)
+
+Byte-identical; developed with load-independent metrics, then timed. Stateless
+instructions are now measured per pass as (Ir at 3 iterations − Ir at 1) / 2
+over every 4th file, which cancels the benchmark's encode and verification
+work and does not depend on symbol names (LTO inlined the free `Decode()`
+into the benchmark loop, defeating the callgrind toggle).
+
+- Before: a stateless decode made **220 heap allocations (544 KB)**, mostly
+  lazily created contexts — 55.6 order-1 opcode trees (2,208 B), 49.2
+  count models (752 B), 45.4 8-bit trees (544 B), 13.6 uint models — each
+  freed individually in `~ModelState`. Setup/teardown (malloc, free,
+  memset, `ModelState` ctor/dtor) was **39.3M instructions per pass, 12.0%
+  of stateless decode**.
+- Change: `src/arena.h` adds a bump allocator owned by `ModelState` (and one
+  inside `ByteModel`, which mode 1 also uses standalone) plus a trivially
+  destructible `ArenaPtr<T>` replacing the `std::unique_ptr` members of
+  lazily created contexts. Arena objects must be trivially destructible
+  (static_assert); `ValueEnumModel`/`ExtInstNumberModel` now hold their
+  always-created `BitTree<8>` inline, and `BitEnumModel` (owns a
+  `std::vector`) stays on `std::unique_ptr`. `BeginDecode`'s drops of rare
+  contexts became in-place `T{}` resets, so a reusable decoder does not
+  abandon arena memory per decode; its high-water pooling is otherwise
+  unchanged.
+- Result: **220 → 56 `operator new` allocations per decode; stateless
+  329.0M → 307.7M instructions per pass (−6.5%)**; setup/teardown 39.3M →
+  17.1M (12.0% → 5.6%). Reusable decode unchanged (1,176.0M → 1,175.5M).
+  The remainder is mostly `memset` zeroing of freshly created contexts
+  (zero is the uniform model) and `ModelState` construction — inherent to
+  the current model layout.
+- **Wall time (idle host, core 2, full corpus, 30 iterations, 9 interleaved
+  A/B rounds, medians): stateless 73.6 → 82.4 MiB/s (+12.0%, all 9
+  rounds); reusable 84.3 → 84.1 MiB/s (−0.2%, within run-to-run spread).**
+  The wall-clock gain is nearly twice the instruction reduction: allocator
+  calls cost more in cache misses and pointer chasing than in instructions.
+  Stateless decode is now within ~2% of the reusable decoder (it was
+  ~11-15% slower).
+- Correctness: M2 (both modes) and raw-residual output byte-identical;
+  `make test`, `make asan`, 3000-iteration fuzz, the 720-case mutated-blob
+  differential (0 mismatches), and valgrind memcheck with full leak
+  checking (both decoder modes and `arixv_test`, which covers the
+  byte-fallback model's arena: no errors, all heap blocks freed) pass.
+
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
 `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest

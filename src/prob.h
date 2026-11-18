@@ -10,6 +10,7 @@
 #include <memory>
 #include <vector>
 
+#include "arena.h"
 #include "range_coder.h"
 #include "symbol_coder.h"
 #include "tuning.h"
@@ -333,9 +334,10 @@ int CodeRank(Coder& coder, Prob slots[kRankCount + 1], int rank) {
 using ByteTree = BitTree<kByteBits, kByteSymbolRateCap>;
 
 struct ByteModel {
-  std::array<std::unique_ptr<ByteTree>, kByteContextCount> tree{};
+  std::array<ArenaPtr<ByteTree>, kByteContextCount> tree{};
   std::array<uint32_t, kByteContextCount> stamp{};
   uint32_t generation = 1;
+  Arena arena;  // owns the per-context trees
 };
 
 inline void BeginByteModelGeneration(ByteModel& model) {
@@ -354,9 +356,9 @@ uint8_t CodeByte(Coder& coder, ByteModel& model, uint8_t prev, uint8_t b) {
     return static_cast<uint8_t>(coder.CodeBitsDirect(b, kByteBits));
   }
   StatSiteScope<Coder> site(kSiteByte);
-  std::unique_ptr<ByteTree>& tree = model.tree[prev];
+  ArenaPtr<ByteTree>& tree = model.tree[prev];
   if (!tree) {
-    tree = std::make_unique<ByteTree>();
+    tree.Make(model.arena);
   } else if (model.stamp[prev] != model.generation) {
     *tree = ByteTree{};
   }
