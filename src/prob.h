@@ -162,7 +162,7 @@ class BitDecoder {
   }
 
   template <int kN, int kRateCap>
-  uint32_t CodeSymbol(SymbolCdf& t, uint32_t /*s*/) {
+  ARIXV_FORCE_INLINE uint32_t CodeSymbol(SymbolCdf& t, uint32_t /*s*/) {
     return static_cast<uint32_t>(rans_.template DecodeSymbol<kN, kRateCap>(t));
   }
 

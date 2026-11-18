@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "platform.h"
 #include "tuning.h"
 
 #if defined(__SSE2__) && !defined(ARIXV_NO_SIMD)
@@ -64,7 +65,7 @@ struct SymbolCdfConst {
 // Coding CDF into c[0..16]; returns the largest s with c[s] <= v (v < 32768),
 // or -1 when called with v = kSymbolScale (no search wanted).
 template <int kN>
-inline int SymbolCdfLookup(const SymbolCdf& t, uint32_t v, uint16_t c[17]) {
+ARIXV_FORCE_INLINE int SymbolCdfLookup(const SymbolCdf& t, uint32_t v, uint16_t c[17]) {
   using K = SymbolCdfConst<kN>;
 #if ARIXV_SYMBOL_SSE2
   const __m128i* d = reinterpret_cast<const __m128i*>(t.d);
@@ -103,7 +104,7 @@ inline int SymbolCdfLookup(const SymbolCdf& t, uint32_t v, uint16_t c[17]) {
 
 // Moves the CDF toward symbol s at the given shift; keeps d[0].
 template <int kN>
-inline void SymbolCdfAdapt(SymbolCdf& t, int s, int rate) {
+ARIXV_FORCE_INLINE void SymbolCdfAdapt(SymbolCdf& t, int s, int rate) {
   using K = SymbolCdfConst<kN>;
   const uint16_t count = t.d[0];
 #if ARIXV_SYMBOL_SSE2
@@ -139,7 +140,7 @@ inline void SymbolCdfAdapt(SymbolCdf& t, int s, int rate) {
 // Count-warmed adaptation: shift 1, 2, 2, 3, ... capped at kRateCap; the
 // count saturates once the cap is reached.
 template <int kN, int kRateCap>
-inline void SymbolCdfUpdate(SymbolCdf& t, int s) {
+ARIXV_FORCE_INLINE void SymbolCdfUpdate(SymbolCdf& t, int s) {
   static_assert(kRateCap >= 1 && kRateCap <= 14, "bad symbol rate cap");
   constexpr uint16_t kSaturation = static_cast<uint16_t>((1u << kRateCap) - 1u);
   const uint16_t count = t.d[0];
@@ -195,7 +196,7 @@ class RansDecoder {
       : begin_(data), end_(data + size), p_(data + size) {}
 
   template <int kN, int kRateCap>
-  int DecodeSymbol(SymbolCdf& t) {
+  ARIXV_FORCE_INLINE int DecodeSymbol(SymbolCdf& t) {
     if (!started_) {
       started_ = true;
       x_ = ReadWord() << 16;

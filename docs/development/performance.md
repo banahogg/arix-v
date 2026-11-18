@@ -589,7 +589,10 @@ produce identical bytes and checksums.
   serial chain without the stream interleaving that already failed (item 9).
 - [ ] **E9. Cheaper bit-enum coding.** Item 10 above: code "mask is zero /
   same as last" before the per-bit loop, if E0 shows it is large.
-- [ ] **E10. Adopt `static-opcode-tables`.** Already measured at −5% size and
+- [ ] **E10. Adopt `static-opcode-tables`.** *Dropped from this
+  investigation (2026-11-17): the project is keeping its no-corpus-trained-
+  tables rule, and after E-A2 the opcode costs 3 symbols rather than 10
+  binary decisions, so the speed case is mostly gone.* Already measured at −5% size and
   +13-16% decode; a decision about the "no corpus tables" rule, not an
   experiment.
 
@@ -730,7 +733,9 @@ produce identical bytes and checksums.
 
 ### Larger structural ideas
 
-- [ ] **E11. Dedicated reconstruction loop** (raw residual TODO above). Also
+- [ ] **E11. Dedicated reconstruction loop** (raw residual TODO above).
+  *Sizing measurements (2026-11-17) are under "Third pass" below; they argue
+  for targeted structural fixes rather than a full rewrite.* Also
   benefits M2 if the generic `CodeModule` template is what keeps coder state
   out of registers (E1).
 - [ ] **E12. Decode 2-4 modules at once in one thread.** Independent
@@ -752,6 +757,74 @@ produce identical bytes and checksums.
   the same output. The scalar fallback alone *raised* instructions 14%
   because GCC didn't vectorize it, for only ~+1.6% wall time; the explicit
   SSE2 path is 58.3 → 64.1 MiB/s.
+
+### Third pass (2026-11-17, quiet host)
+
+- **Force-inline the symbol decode path: kept, neutral.** `DecodeSymbol`
+  and friends were out-of-line calls from every tree walk. With
+  `ARIXV_FORCE_INLINE`: instructions −1.3%, wall time +0.1% reusable /
+  +0.8% stateless (noise). A follow-up that read `C[s]`/`C[s+1]` straight
+  from the table instead of a staged 17-entry stack copy was also neutral
+  (+0.6% / −0.4%) and was reverted.
+- **[Measured dead end] Symbol-coded uint mantissas.** On the corpus, 76% of
+  mantissa bits fall in the first `kUintHighBits = 8` below the leading one
+  (1.52M of 2.01M; uint bit lengths are mostly 2-9). Prototype: that region
+  coded as fixed-width chunks, each `(bit length, chunk index)` with its own
+  CDF (the binary model's context structure); deeper bits stay binary.
+  | chunk | bytes | Δ size | reusable | stateless |
+  |---|---|---|---|---|
+  | 4 bits | 1,035,005 | +0.27% | +1.7% | +1.5% |
+  | 3 bits | 1,032,857 | +0.06% | +0.0% | −0.6% |
+  | 2 bits | 1,032,093 | −0.02% | −4.3% | −7.2% |
+  Rate caps for 4-bit chunks: 3 → 1,041,887, 4 → 1,035,597, 5 → 1,035,005,
+  6 → 1,035,995, 7 → 1,036,861, 8 → 1,037,297 (mantissas want fast
+  adaptation; the size loss is the learning cost of 15 CDF parameters
+  versus 4 per-bit probabilities in sparse contexts). The speed case
+  failed because E1 already made the binary mantissa run a tight
+  register-held loop with no context dependence between its bits, so a
+  symbol costs about as much as the 2-3 bits it replaces; narrower chunks
+  also grow every `UintModel`, which stateless decode pays to zero.
+  Reverted. (The earlier +5-8% estimate for this was wrong.)
+- **E11 step 1: the structural ceiling rose to 164.5 MiB/s reusable /
+  143.7 stateless** (was 139.2 / 121.7 before E1/E6/E14). Matched 1078-file
+  word-aligned set, core 2, 30 iterations, median of 3: M2 72.8 / 63.7
+  MiB/s, raw residual 164.5 / 143.7 MiB/s, identical checksums; raw payload
+  now 1,818,396 bytes (4-bit rank trees). Per MiB, M2 spends 13.7 ms, of
+  which the raw-residual walk is 6.1 ms: structure (including raw
+  bit-unpacking) is **at most ~44% of decode time**, entropy coding plus
+  model work still ~56%. Even an infinitely fast structural pass would
+  only reach ~1.8x.
+- **E11 step 2: line-level profile** (callgrind, `-O3 -flto=auto -g`,
+  every 4th file, 3 iterations, reusable). By function (self, inlined code
+  attributed to its caller):
+  | function | share |
+  |---|---|
+  | `CodeModule` body | 27.0% |
+  | `CodeUint` | 12.0% |
+  | `BitTree<4>` walk (rank trees) | 11.5% |
+  | `RecencyList::Touch` | 10.1% |
+  | `RangeDecoder::DecodeBit` (flags) | 6.9% |
+  | `BitTree<10>` walk (opcode) | 5.8% |
+  | `OperandCursor::Consume` + `Next` | 8.8% |
+  | `Tracker::Ensure` + `OnInstructionEnd` + `OnIdUse` | 7.6% |
+  | `CodeByte` + `BitTree<8>` | 3.7% |
+  Inside the 27% `CodeModule` self cost: 15.7% is `model.cpp` code spread
+  across hundreds of lines (no line above 1.1%: operand dispatch, the
+  fixed-layout path, stamp checks, `WordBuffer`/`DecodeIO::Append`
+  bounds checks), 4.3% is inlined grammar-table lookups, and the rest is
+  inlined range/symbol coding. Lazy-reset work is visible but small
+  (order-1 opcode tree reset 0.64%, count-model `EnsureStamped` + reset
+  ~1.7%). Hottest single coder lines: the symbol rate computation
+  (`clz` on the count) 2.1%, rANS state update 1.3%, range `bound` 1.2% +
+  1.0%.
+  **Reading:** the structural cost is concentrated in identifiable
+  subsystems (recency lists ~10%, operand cursor ~9-11%, tracker ~8%,
+  grammar lookups ~4%), and the generic `CodeModule` glue itself is
+  diffuse. That matches the earlier reverted direct-layout (+1%) and
+  dense-ID (−2.5%) experiments. A wholesale specialized loop would mostly
+  re-home that glue; the better next E11 steps are targeted: recency-list
+  update rules (a format/ratio trade, ~10% at stake), the cursor's
+  variable-layout path, and tracker `Ensure`/`OnInstructionEnd`.
 
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
