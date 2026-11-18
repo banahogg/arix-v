@@ -146,7 +146,13 @@ class RangeEncoder {
     Normalize();
   }
 
+  // Short flush: after the last Normalize, range >= 2^24, so [low,
+  // low + range) contains low rounded up to a multiple of 2^16 together with
+  // every value sharing its top 16 bits. Emitting only the pending cache and
+  // those two bytes (3 instead of LZMA's 5) is enough; the decoder's last
+  // kRangeTailSlack reads are don't-care.
   void Flush() {
+    low_ = (low_ + 0xFFFFu) & ~static_cast<uint64_t>(0xFFFFu);
     for (int i = 0; i < kRangeFlushBytes; ++i) {
       ShiftLow();
     }
@@ -167,8 +173,14 @@ class RangeEncoder {
         static_cast<uint32_t>(low_ >> 32) != 0) {
       uint8_t temp = cache_;
       do {
-        out_.push_back(static_cast<uint8_t>(
-            temp + static_cast<uint8_t>(low_ >> 32)));
+        const uint8_t b =
+            static_cast<uint8_t>(temp + static_cast<uint8_t>(low_ >> 32));
+        // LZMA's first byte sits above the initial 32-bit window and is
+        // always 0; it is not stored.
+        if (started_) {
+          out_.push_back(b);
+        }
+        started_ = true;
         temp = 0xFF;
       } while (--cache_size_ != 0);
       cache_ = static_cast<uint8_t>(static_cast<uint32_t>(low_) >> 24);
@@ -182,12 +194,12 @@ class RangeEncoder {
   uint32_t range_ = 0xFFFFFFFFu;
   uint8_t cache_ = 0;
   uint64_t cache_size_ = 1;
+  bool started_ = false;
 };
 
 class RangeDecoder {
  public:
   RangeDecoder(const uint8_t* data, size_t size) : data_(data), size_(size) {
-    (void)ReadByte();  // LZMA streams start with a dummy byte.
     for (int i = 0; i < 4; ++i) {
       code_ = (code_ << 8) | ReadByte();
     }
@@ -233,7 +245,12 @@ class RangeDecoder {
   }
 
   bool exhausted() const { return exhausted_; }
-  size_t consumed_size() const { return pos_; }
+  // Bytes the encoder actually wrote (reads minus the don't-care tail).
+  size_t consumed_size() const {
+    return pos_ >= static_cast<size_t>(kRangeTailSlack)
+               ? pos_ - static_cast<size_t>(kRangeTailSlack)
+               : 0;
+  }
   const uint8_t* data() const { return data_; }
   size_t size() const { return size_; }
 
@@ -266,24 +283,25 @@ class RangeDecoder {
     p.UpdateFromRaw(raw, bit);
     while (st.range < kRangeTop) {
       st.range <<= 8;
-      uint8_t b = 0;
-      if (st.pos < size_) {
-        b = data_[st.pos++];
-      } else {
-        exhausted_ = true;
-      }
-      st.code = (st.code << 8) | b;
+      st.code = (st.code << 8) | Fetch(st.pos);
     }
     return bit;
   }
 
-  uint8_t ReadByte() {
-    if (pos_ >= size_) {
-      exhausted_ = true;
+  // Up to kRangeTailSlack reads past the end are virtual zeros (the flush's
+  // don't-care tail); anything further means the stream was cut short.
+  uint8_t Fetch(size_t& pos) {
+    if (pos < size_) {
+      return data_[pos++];
+    }
+    if (pos < size_ + static_cast<size_t>(kRangeTailSlack)) {
+      ++pos;
       return 0;
     }
-    return data_[pos_++];
+    exhausted_ = true;
+    return 0;
   }
+  uint8_t ReadByte() { return Fetch(pos_); }
 
   void Normalize() {
     while (range_ < kRangeTop) {

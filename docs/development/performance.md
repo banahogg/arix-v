@@ -658,9 +658,24 @@ produce identical bytes and checksums.
     (54-file check).
   - The size cost is almost entirely the 4-byte rANS final state per module
     (~4.3 KB over 1080 modules), which the microbench's tree-only accounting
-    did not charge. *Follow-up:* the range coder's 5-byte flush includes
-    the LZMA dummy leading byte, which is always 0; dropping it would
-    recover ~1 KB.
+    did not charge.
+  - **[Recovered, 2026-11-17] 3 bytes per module from the range coder:
+    1,035,489 → 1,032,249 bytes, now +328 bytes (+0.03%) over the pre-rANS
+    1,031,921.** (a) LZMA's leading byte lies above the initial 32-bit
+    window and is always 0, so it is no longer stored or read. (b) Short
+    flush: after the final normalization range ≥ 2^24, so the interval
+    contains `low` rounded up to a multiple of 2^16 with every low-16-bit
+    suffix; the encoder emits 3 flush bytes instead of 5, and the decoder's
+    last `kRangeTailSlack = 2` reads are don't-care (the start of the rANS
+    words, or virtual zeros past the payload end; reads beyond that still
+    mark the stream exhausted). The tiling check discounts the slack. Kept
+    the unreleased `ARX2` magic and regenerated its golden vector. Speed
+    neutral within noise. *Not pursued for the rANS state:* range-coding
+    it buys ~4.5 bits (the state is ~log-uniform); byte-wise renormalization
+    with a 3-byte state keeps x close to the 2^15 scale and costs coding
+    efficiency on every symbol; hiding 16 bits of payload in the encoder's
+    initial state needs data the decoder can defer past the last symbol,
+    and the range stream's tail cannot be deferred.
   `make test`, `make asan` (clean), a 3000-iteration fuzz run, and a
   1000-iteration scalar-build fuzz run pass.
 

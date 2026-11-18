@@ -47,7 +47,7 @@
 #define ARIXV_KMAX_SIZE_VARINT_BYTES 5
 #endif
 #ifndef ARIXV_KRANGE_FLUSH_BYTES
-#define ARIXV_KRANGE_FLUSH_BYTES 5
+#define ARIXV_KRANGE_FLUSH_BYTES 3
 #endif
 #ifndef ARIXV_KBYTE_CONTEXT_COUNT
 #define ARIXV_KBYTE_CONTEXT_COUNT 256
@@ -138,6 +138,13 @@ constexpr int kMaxSizeVarintBytes = ARIXV_KMAX_SIZE_VARINT_BYTES;
 
 // Maximum number of bytes emitted by RangeEncoder::Flush().
 constexpr int kRangeFlushBytes = ARIXV_KRANGE_FLUSH_BYTES;
+
+// Bytes the range decoder reads past the encoder's last byte. The flush pins
+// a code value whose low 16 bits are zero, so its last two bytes are left
+// out and whatever the decoder reads there (the start of the rANS words, or
+// virtual zeros past the payload end) cannot change a decision.
+constexpr int kRangeTailSlack = 5 - kRangeFlushBytes;
+static_assert(kRangeTailSlack == 2, "flush/slack must cover a 4-byte window");
 
 // Byte contexts used by the M1 order-1 byte model.
 constexpr int kByteContextCount = ARIXV_KBYTE_CONTEXT_COUNT;

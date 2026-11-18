@@ -31,10 +31,12 @@ void EmptyStream() {
   std::vector<uint8_t> encoded;
   arixv::RangeEncoder enc(encoded);
   enc.Flush();
-  assert(encoded.size() == 5);
-  assert(encoded[0] == 0);
+  // Short flush, no LZMA dummy byte: the flush's leading cache byte is the
+  // dropped dummy, leaving the two pinned bytes.
+  assert(encoded.size() == static_cast<size_t>(arixv::kRangeFlushBytes - 1));
   arixv::RangeDecoder dec(encoded.data(), encoded.size());
   assert(!dec.exhausted());
+  assert(dec.consumed_size() == encoded.size());
 }
 
 void Truncation() {
