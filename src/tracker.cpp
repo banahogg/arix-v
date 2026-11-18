@@ -7,6 +7,10 @@
 #include <cstring>
 #include <string>
 
+#if ARIXV_RECENCY_SSE2
+#include <emmintrin.h>
+#endif
+
 #include "operand_cursor.h"
 
 namespace arixv {
@@ -161,41 +165,86 @@ void Tracker::IdMap::Rehash(size_t slot_count) {
   }
 }
 
-int RecencyList::Find(uint32_t id) const {
-  for (int i = 0; i < size_; ++i) {
-    if (items_[i] == id) {
-      return i;
-    }
+uint32_t RecencyList::MatchMask(uint32_t id) const {
+  // Fixed-width compare over the whole storage (no early-exit branch);
+  // entries past size_ are stale and masked off.
+  uint32_t mask = 0;
+#if ARIXV_RECENCY_SSE2
+  const __m128i key = _mm_set1_epi32(static_cast<int>(id));
+  const __m128i* v = reinterpret_cast<const __m128i*>(items_.data());
+  const __m128i e0 = _mm_cmpeq_epi32(_mm_load_si128(v + 0), key);
+  const __m128i e1 = _mm_cmpeq_epi32(_mm_load_si128(v + 1), key);
+  const __m128i e2 = _mm_cmpeq_epi32(_mm_load_si128(v + 2), key);
+  const __m128i e3 = _mm_cmpeq_epi32(_mm_load_si128(v + 3), key);
+  const __m128i lo = _mm_packs_epi32(e0, e1);
+  const __m128i hi = _mm_packs_epi32(e2, e3);
+  mask = static_cast<uint32_t>(_mm_movemask_epi8(_mm_packs_epi16(lo, hi)));
+#else
+  for (int i = 0; i < kRecencyListStorageCap; ++i) {
+    mask |= static_cast<uint32_t>(items_[static_cast<size_t>(i)] == id) << i;
   }
-  return -1;
+#endif
+  return mask & ((1u << size_) - 1u);
+}
+
+int RecencyList::Find(uint32_t id) const {
+  const uint32_t mask = MatchMask(id);
+  return mask != 0 ? __builtin_ctz(mask) : -1;
 }
 
 void RecencyList::Touch(uint32_t id) {
   if (cap_ <= 0) {
     return;
   }
-  const int rank = Find(id);
-  if (rank == 0) {
-    return;
+  const uint32_t mask = MatchMask(id);
+  // `last` is the slot that the move-to-front overwrites: the touched entry
+  // when present, else the first free slot (or the oldest entry when full).
+  int last;
+  if (mask != 0) {
+    last = __builtin_ctz(mask);
+    if (last == 0) {
+      return;
+    }
+  } else {
+    last = size_ < cap_ ? size_ : cap_ - 1;
+    if (size_ < cap_) {
+      ++size_;
+    }
   }
-  if (rank > 0) {
-    // Move-to-front by shifting only the [0, rank] prefix, instead of an
-    // erase + front insert that each shift the whole vector. Result is
-    // identical: items_[rank] leads, the rest keep their relative order.
-    std::memmove(&items_[1], &items_[0],
-                 static_cast<size_t>(rank) * sizeof(uint32_t));
-    items_[0] = id;
-    return;
-  }
-  const int move_count = size_ < cap_ ? size_ : cap_ - 1;
-  if (move_count > 0) {
-    std::memmove(&items_[1], &items_[0],
-                 static_cast<size_t>(move_count) * sizeof(uint32_t));
+  // Shift [0, last) up by one with a fixed-width select instead of a
+  // variable-length memmove call; slots past `last` keep their value.
+#if ARIXV_RECENCY_SSE2
+  __m128i* v = reinterpret_cast<__m128i*>(items_.data());
+  const __m128i v0 = _mm_load_si128(v + 0);
+  const __m128i v1 = _mm_load_si128(v + 1);
+  const __m128i v2 = _mm_load_si128(v + 2);
+  const __m128i v3 = _mm_load_si128(v + 3);
+  // Whole list moved up one lane, id entering at lane 0.
+  const __m128i s0 = _mm_or_si128(_mm_slli_si128(v0, 4),
+                                  _mm_cvtsi32_si128(static_cast<int>(id)));
+  const __m128i s1 = _mm_or_si128(_mm_slli_si128(v1, 4), _mm_srli_si128(v0, 12));
+  const __m128i s2 = _mm_or_si128(_mm_slli_si128(v2, 4), _mm_srli_si128(v1, 12));
+  const __m128i s3 = _mm_or_si128(_mm_slli_si128(v3, 4), _mm_srli_si128(v2, 12));
+  // Lane i takes the shifted value iff i <= last.
+  const __m128i limit = _mm_set1_epi32(last + 1);
+  const auto blend = [&limit](__m128i shifted, __m128i orig, int base) {
+    const __m128i lane = _mm_setr_epi32(base, base + 1, base + 2, base + 3);
+    const __m128i take = _mm_cmpgt_epi32(limit, lane);
+    return _mm_or_si128(_mm_and_si128(take, shifted),
+                        _mm_andnot_si128(take, orig));
+  };
+  _mm_store_si128(v + 0, blend(s0, v0, 0));
+  _mm_store_si128(v + 1, blend(s1, v1, 4));
+  _mm_store_si128(v + 2, blend(s2, v2, 8));
+  _mm_store_si128(v + 3, blend(s3, v3, 12));
+#else
+  const std::array<uint32_t, kRecencyListStorageCap> old = items_;
+  for (int i = 1; i < kRecencyListStorageCap; ++i) {
+    const size_t u = static_cast<size_t>(i);
+    items_[u] = i <= last ? old[u - 1] : old[u];
   }
   items_[0] = id;
-  if (size_ < cap_) {
-    ++size_;
-  }
+#endif
 }
 
 void RecencyList::Remove(uint32_t id) {

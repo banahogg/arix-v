@@ -268,6 +268,40 @@ void DumpStats() {
                  g_stat_bits[i] / 8, total > 0 ? 100 * g_stat_bits[i] / total : 0);
   }
   std::fprintf(stderr, "  %-14s %12.0f bytes\n", "TOTAL", total / 8);
+
+  static_assert(kStatCount <= kStatMaxCats, "stat category table too small");
+  constexpr const char* kSiteNames[kSiteCount] = {
+      "flag", "bit_tree", "uint_len", "uint_mant", "byte"};
+  uint64_t site_total[kSiteCount] = {};
+  uint64_t adaptive_total = 0;
+  uint64_t direct_total = 0;
+  std::fprintf(stderr,
+               "ARIXV_STATS decisions (adaptive by primitive, direct bits):\n");
+  std::fprintf(stderr, "  %-14s", "category");
+  for (const char* n : kSiteNames) std::fprintf(stderr, " %11s", n);
+  std::fprintf(stderr, " %11s %11s\n", "adaptive", "direct");
+  for (int i = 0; i < kStatCount; ++i) {
+    uint64_t row = 0;
+    std::fprintf(stderr, "  %-14s", kStatNames[i]);
+    for (int s = 0; s < kSiteCount; ++s) {
+      std::fprintf(stderr, " %11llu",
+                   static_cast<unsigned long long>(g_stat_adaptive[i][s]));
+      row += g_stat_adaptive[i][s];
+      site_total[s] += g_stat_adaptive[i][s];
+    }
+    adaptive_total += row;
+    direct_total += g_stat_direct[i];
+    std::fprintf(stderr, " %11llu %11llu\n",
+                 static_cast<unsigned long long>(row),
+                 static_cast<unsigned long long>(g_stat_direct[i]));
+  }
+  std::fprintf(stderr, "  %-14s", "TOTAL");
+  for (uint64_t t : site_total) {
+    std::fprintf(stderr, " %11llu", static_cast<unsigned long long>(t));
+  }
+  std::fprintf(stderr, " %11llu %11llu\n",
+               static_cast<unsigned long long>(adaptive_total),
+               static_cast<unsigned long long>(direct_total));
 }
 
 struct ModelState {
@@ -283,7 +317,7 @@ struct ModelState {
         inst_group_stamp(NumCoreInstructions()),
         type_in_list(std::make_unique<std::vector<Prob>>(
             static_cast<size_t>(NumInstructionClasses()) + 1)),
-        type_rank(std::make_unique<std::vector<BitTree<6>>>(
+        type_rank(std::make_unique<std::vector<BitTree<kRankTreeBits>>>(
             static_cast<size_t>(NumInstructionClasses()) + 1)),
         type_escape(static_cast<size_t>(NumInstructionClasses()) + 1),
         last_id(NumCoreInstructions() * 16u),
@@ -338,11 +372,11 @@ struct ModelState {
     prev_result_id = 0;
     result_next.fill(Prob{});
     result_in_fwd = Prob{};
-    result_fwd_rank = BitTree<6>{};
+    result_fwd_rank = BitTree<kRankTreeBits>{};
     result_delta = {};
     std::fill(type_in_list->begin(), type_in_list->end(), Prob{});
-    for (BitTree<6>& tree : *type_rank) {
-      tree = BitTree<6>{};
+    for (BitTree<kRankTreeBits>& tree : *type_rank) {
+      tree = BitTree<kRankTreeBits>{};
     }
     for (std::unique_ptr<UintModel>& model : type_escape) {
       model.reset();
@@ -412,17 +446,17 @@ struct ModelState {
   uint32_t prev_result_id = 0;
   std::array<Prob, 2> result_next{};
   Prob result_in_fwd;
-  BitTree<6> result_fwd_rank;
+  BitTree<kRankTreeBits> result_fwd_rank;
   std::array<UintModel, 4> result_delta;
 
   std::unique_ptr<std::vector<Prob>> type_in_list;
-  std::unique_ptr<std::vector<BitTree<6>>> type_rank;
+  std::unique_ptr<std::vector<BitTree<kRankTreeBits>>> type_rank;
   // Escape models allocate per slot on first escape: every module escapes
   // somewhere, but through only a handful of the 27/29 slots.
   std::vector<std::unique_ptr<UintModel>> type_escape;
 
   std::array<std::array<Prob, 9>, 3> id_in_list{};
-  std::array<std::array<BitTree<6>, 9>, 3> id_rank{};
+  std::array<std::array<BitTree<kRankTreeBits>, 9>, 3> id_rank{};
   std::array<std::array<std::unique_ptr<UintModel>, 9>, 3> id_escape{};
   UninitArray<uint32_t> last_id;
   UninitArray<uint32_t> last_id_stamp;  // valid only under inst_group_stamp
@@ -875,11 +909,11 @@ void TouchString(ModelState& model, const std::string& raw) {
 }
 
 template <class Bits>
-uint32_t CodeRankedId(Bits& bits, Prob& flag, BitTree<6>& tree,
+uint32_t CodeRankedId(Bits& bits, Prob& flag, BitTree<kRankTreeBits>& tree,
                       std::unique_ptr<UintModel>& escape,
                       const RecencyList& list, uint32_t hint, uint32_t base) {
   const int rank = Bits::kEncoding ? list.Find(hint) : -1;
-  const bool in_list = rank >= 0 && rank < 64;
+  const bool in_list = rank >= 0 && rank < (1 << kRankTreeBits);
   if (bits.CodeBit(flag, in_list)) {
     const uint32_t coded_rank =
         tree.CodeValue(bits, in_list ? static_cast<uint32_t>(rank) : 0);
@@ -920,7 +954,7 @@ uint32_t CodeResultId(Bits& bits, ModelState& model,
   if (!bits.CodeBit(model.result_next[ctx], sequential)) {
     const RecencyList& fwd = model.tracker.forward_refs();
     const int rank = Bits::kEncoding ? fwd.Find(hint) : -1;
-    const bool in_fwd = rank >= 0 && rank < 64;
+    const bool in_fwd = rank >= 0 && rank < (1 << kRankTreeBits);
     if (bits.CodeBit(model.result_in_fwd, in_fwd)) {
       const uint32_t coded_rank =
           model.result_fwd_rank.CodeValue(bits,
@@ -1421,6 +1455,9 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
   const bool stats = StatsEnabled();
   const auto stat = [&bits, stats](StatCat cat) {
     bits.SetCostSink(stats ? &g_stat_bits[cat] : nullptr);
+    if constexpr (Bits::kEncoding && !Bits::kRawResidual) {
+      g_stat_cat = stats ? static_cast<int>(cat) : -1;
+    }
   };
   stat(kStatHeader);
   const bool swapped = bits.CodeBit(model.swapped_flag, io.SwappedHint());
@@ -1743,6 +1780,7 @@ void EncodeModule(const uint8_t* data, size_t size,
   EncodeIO io(data, size);
   const Status status = CodeModule(model, bits, io, size / 4);
   (void)status;
+  g_stat_cat = -1;
   bits.Flush();
 }
 

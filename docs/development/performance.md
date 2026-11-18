@@ -510,28 +510,51 @@ above; none repeats an experiment already measured in this file. Suggested
 order: E0 → E1-E3 → E4 → E6-E8 → E-A0 → E-A2 (E-A1 only if E-A0
 surprises) → E11.
 
+**First pass (2026-11-17): E0, E1, E6 and a new E14 landed — reusable
+55.9 → 64.3 MiB/s (+15.0%), stateless 48.7 → 54.6 MiB/s (+12.2%), corpus
+1,041,769 → 1,031,921 encoded bytes (−0.95%).** Method: full 1080-file
+corpus, `taskset -c 2`, `-O3 -flto=auto`, 30 iterations, 7 interleaved A/B
+rounds, medians (the host was shared with a heavy background job, so
+absolute MiB/s are lower than earlier sections; every A/B round agreed in
+sign). Decode instruction counts from callgrind on every 4th corpus file,
+3 iterations, reusable decoder, collection toggled on `Decoder::Decode`:
+1,597.3M → 1,513.0M. `make test`, `make asan`, and a 1000-iteration fuzz
+run of the `-DARIXV_NO_SIMD` scalar build pass; the scalar and SSE2 builds
+produce identical bytes and checksums.
+
 ### Measure first
 
-- [ ] **E0. Decisions per call site.** Extend `ARIXV_STATS` to report binary
-  decisions per output byte by site (opcode, rank, uint length, uint
-  high/rest, bit-enum, bytes, direct bits). The decoder averages ~2.5
-  decisions per output byte; this shows which sites the items below should
-  target.
+- [x] **E0. Decisions per call site.** `ARIXV_STATS` now also prints adaptive
+  decisions per field category, split by coding primitive (plain flag, bit
+  tree, uint length, uint mantissa, byte), plus direct bits. Counted at
+  encode time, which makes exactly the decoder's decisions. Full corpus
+  (before E6): **15.46M adaptive decisions = 2.55 per output byte, and zero
+  direct bits.** Largest buckets: opcode bit tree 3.52M (23%, the 10-bit
+  index tree for ~352K instructions), id_ref 4.25M (bit tree 1.84M, uint
+  1.94M), result_id 1.69M, string bytes 1.42M, result_type 1.40M (bit tree
+  1.10M). By primitive: bit trees 7.26M, uint length 2.59M, uint mantissa
+  2.01M, plain flags 2.15M, bytes 1.46M.
 
 ### Cost of each decision (no format change)
 
-- [ ] **E1. Keep coder state in registers.** Output goes through a
-  `uint8_t*` (`StoreLe32`), and `uint8_t` stores may alias anything. Because
-  `CodeUint`/`CodeByte` show up as separate functions in profiles, the
-  `RangeDecoder` state (`code_`, `range_`, `pos_`) is probably reloaded from
-  memory around every call and store. Check the assembly, then try copying
-  coder state into locals in the hot loop, `__restrict`, or output through a
-  `uint32_t*` buffer.
-- [ ] **E2. Cheaper renormalization.** Replace the byte-at-a-time `while`
+- [x] **E1. Keep coder state in registers (+4.2% reusable, byte-identical).**
+  Confirmed in the disassembly: `DecodeBit` loaded `range_`/`code_` from
+  `*this` and stored them back on every bit, putting a store→reload on the
+  serial chain. Landed as `RangeDecoder::DecodeTree<kBits>` and
+  `DecodeSequence`, which copy the state into locals for a whole bit-tree
+  walk or uint mantissa run and write it back once; `BitTree::CodeValue` and
+  `CodeUint` use them on the decoder path. That covers ~86% of decisions;
+  plain flags still go through `DecodeBit`. Instructions 1,597M → 1,564M
+  (−2.1%), wall time +4.2% (all 7 rounds faster).
+- [ ] **E2. Cheaper renormalization.** *Deprioritized after E0:* the
+  payload is ~0.53 bits per decision, so a renormalization byte is read only
+  about once per 15 decisions, and the per-bit cost is one predictable
+  compare. Replace the byte-at-a-time `while`
   loop (with a per-byte bounds check in `ReadByte`) with a 64-bit
   `code`/`range` that refills 32 bits at once, and pad the input tail so the
   hot path has no exhausted-input check; detect overrun once at the end.
-- [ ] **E3. Batch direct bits.** `CodeBitsDirect` loops one bit at a time
+- [ ] **E3. Batch direct bits.** *Moot after E0:* M2 makes no direct-bit
+  decisions on the corpus. `CodeBitsDirect` loops one bit at a time
   through `DecodeBitDirect` (8/10/16/32-bit fields, every byte of
   `CodeUint32`). Decode k bits in one step (`range >>= k`, then one
   compare/divide).
@@ -546,13 +569,21 @@ surprises) → E11.
 
 ### Fewer serial decisions (format change, ratio-neutral or close)
 
-- [ ] **E6. Rank coding as a tree instead of unary.** `CodeRank` makes up to
-  9 serial decisions per ID. A 4-bit binary tree, or a "rank 0?" flag then a
-  3-bit tree, caps it at 4. Runs on nearly every operand.
+- [x] **E6. Right-size the rank trees (+2.1% reusable, −0.95% size).** The
+  original description was wrong: unary `CodeRank` is unused, and ranks are
+  coded with `BitTree<6>`. But the ID, type, and forward-ref recency lists
+  are capped at 16 entries, so the top two of the six levels were always 0:
+  two wasted serial decisions per ranked ID, and not free in size either.
+  Landed as `kRankTreeBits = 4` (with a `static_assert` that it covers every
+  list cap) for `id_rank`, `type_rank`, and `result_fwd_rank`;
+  `string_rank` keeps 6 bits because the string list holds 64 entries.
+  Corpus 1,041,769 → 1,031,921 bytes; instructions −2.8%; wall time
+  +2.1%.
 - [ ] **E7. Shorter uint ladder.** A 20-bit value costs 6 length bits plus 19
   adaptive mantissa bits. Code only `kUintHighBits` adaptively and send the
   rest as bypass bits (E8); measure the ratio cost.
-- [ ] **E8. Separate stream for bypass bits.** Route direct bits, uint rest
+- [ ] **E8. Separate stream for bypass bits.** *Only relevant together with
+  E7:* M2 has no bypass bits today (E0). Route direct bits, uint rest
   bits and unknown opcode/literal bytes through a plain bit reader instead of
   the arithmetic coder. It doesn't wait on coder state, so it shortens the
   serial chain without the stream interleaving that already failed (item 9).
@@ -601,6 +632,24 @@ surprises) → E11.
   maybe ~1.3x.
 - [ ] **E13. Chunked parallel decode** (item 12). Cuts latency on large
   modules; does not improve single-core throughput.
+
+### Found while profiling
+
+- [x] **E14. SSE2 recency lists (+9.9% reusable, byte-identical).** After E1
+  and E6, `RecencyList::Touch` was 7.9% of decode instructions: an early-exit
+  scan plus a libc `memmove` call on every ID use. Landed as a fixed-width
+  match mask (four `pcmpeqd` + packs + `movemask`, masked to `size_`, then
+  `ctz`) and a branch-free move-to-front (lane-shift the 16 entries, blend
+  lanes `<= last`). Guarded by `__SSE2__` (baseline on x86-64) with a
+  portable fixed-width scalar fallback (`-DARIXV_NO_SIMD`) that produces
+  the same output. The scalar fallback alone *raised* instructions 14%
+  because GCC didn't vectorize it, for only ~+1.6% wall time; the explicit
+  SSE2 path is 58.3 → 64.1 MiB/s.
+
+Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
+`CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
+`CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest
+remaining decision bucket is the opcode index tree (E10 / E-A2).
 
 ## Suggested attack order
 

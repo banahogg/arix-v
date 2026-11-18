@@ -207,6 +207,33 @@ class RangeDecoder {
     return bit;
   }
 
+  // Decodes a kBits-deep binary tree (probs indexed node-1, MSB first) with
+  // the coder state held in locals for the whole walk, so it stays in
+  // registers instead of round-tripping through *this on every bit.
+  template <int kBits>
+  uint32_t DecodeTree(Prob* probs) {
+    State st = Load();
+    uint32_t node = 1;
+    for (int i = 0; i < kBits; ++i) {
+      node = (node << 1) |
+             static_cast<uint32_t>(DecodeBitLocal(st, probs[node - 1]));
+    }
+    Store(st);
+    return node - (1u << kBits);
+  }
+
+  // Decodes n bits MSB first, bit i using its own probs[i].
+  uint32_t DecodeSequence(Prob* probs, int n) {
+    State st = Load();
+    uint32_t value = 0;
+    for (int i = 0; i < n; ++i) {
+      value = (value << 1) |
+              static_cast<uint32_t>(DecodeBitLocal(st, probs[i]));
+    }
+    Store(st);
+    return value;
+  }
+
   int DecodeBitDirect() {
     range_ >>= 1;
     int bit = 0;
@@ -222,6 +249,45 @@ class RangeDecoder {
   size_t consumed_size() const { return pos_; }
 
  private:
+  struct State {
+    uint32_t code;
+    uint32_t range;
+    size_t pos;
+  };
+
+  State Load() const { return State{code_, range_, pos_}; }
+  void Store(const State& st) {
+    code_ = st.code;
+    range_ = st.range;
+    pos_ = st.pos;
+  }
+
+  // Same arithmetic as DecodeBit/Normalize/ReadByte, on local state.
+  int DecodeBitLocal(State& st, Prob& p) {
+    const uint16_t raw = p.raw();
+    const uint32_t bound = (st.range >> kProbBits) * Prob::ValueFromRaw(raw);
+    int bit = 0;
+    if (st.code < bound) {
+      st.range = bound;
+    } else {
+      st.code -= bound;
+      st.range -= bound;
+      bit = 1;
+    }
+    p.UpdateFromRaw(raw, bit);
+    while (st.range < kRangeTop) {
+      st.range <<= 8;
+      uint8_t b = 0;
+      if (st.pos < size_) {
+        b = data_[st.pos++];
+      } else {
+        exhausted_ = true;
+      }
+      st.code = (st.code << 8) | b;
+    }
+    return bit;
+  }
+
   uint8_t ReadByte() {
     if (pos_ >= size_) {
       exhausted_ = true;

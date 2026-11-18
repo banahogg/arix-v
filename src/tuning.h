@@ -151,6 +151,14 @@ constexpr int kRankListCap = ARIXV_KRANK_LIST_CAP;
 constexpr int kRankListCapIds = ARIXV_KRANK_LIST_CAP_IDS;
 constexpr int kRankListCapTypes = ARIXV_KRANK_LIST_CAP_TYPES;
 
+// Depth of the rank-coding bit trees for the ID/type/forward-ref recency
+// lists. Must cover every list position, so it tracks the largest cap.
+constexpr int kRankTreeBits = 4;
+static_assert((1 << kRankTreeBits) >= kRankListCap &&
+                  (1 << kRankTreeBits) >= kRankListCapIds &&
+                  (1 << kRankTreeBits) >= kRankListCapTypes,
+              "rank trees must address every recency-list position");
+
 // See ARIXV_KMAX_RESERVE_WORDS above.
 constexpr size_t kMaxReserveWords = ARIXV_KMAX_RESERVE_WORDS;
 

@@ -47,6 +47,19 @@ constexpr int MaxRecencyListCap(int a, int b) { return a > b ? a : b; }
 constexpr int kRecencyListStorageCap =
     MaxRecencyListCap(MaxRecencyListCap(kRankListCap, kRankListCapIds),
                       kRankListCapTypes);
+static_assert(kRecencyListStorageCap <= 31,
+              "RecencyList match masks are 32-bit");
+
+// SSE2 (baseline on x86-64) fast path for the 16-entry recency lists.
+#if defined(__SSE2__) && !defined(ARIXV_NO_SIMD)
+#define ARIXV_RECENCY_SSE2 1
+#else
+#define ARIXV_RECENCY_SSE2 0
+#endif
+#if ARIXV_RECENCY_SSE2
+static_assert(kRecencyListStorageCap == 16,
+              "SSE2 recency path handles exactly four 4-lane vectors");
+#endif
 
 // Fixed-capacity move-to-front recency list for rank coding.
 class RecencyList {
@@ -62,9 +75,12 @@ class RecencyList {
   void Clear() { size_ = 0; }
 
  private:
+  // Bit i set iff live entry i equals id.
+  uint32_t MatchMask(uint32_t id) const;
+
   int cap_;
   int size_ = 0;
-  std::array<uint32_t, kRecencyListStorageCap> items_{};  // front = most recent
+  alignas(16) std::array<uint32_t, kRecencyListStorageCap> items_{};  // front = most recent
 };
 
 class Tracker {

@@ -15,6 +15,37 @@
 
 namespace arixv {
 
+// ARIXV_STATS decision counting (encoder-only diagnostics). The encoder makes
+// exactly the decisions the decoder will, so counting them at encode time
+// measures the decoder's serial decision chain. g_stat_cat is the field
+// category (set by CodeModule, -1 = off); g_stat_site is the coding primitive.
+enum StatSite {
+  kSiteFlag = 0, kSiteBitTree, kSiteUintLength, kSiteUintMantissa, kSiteByte,
+  kSiteCount,
+};
+constexpr int kStatMaxCats = 16;
+inline int g_stat_cat = -1;
+inline int g_stat_site = kSiteFlag;
+inline uint64_t g_stat_adaptive[kStatMaxCats][kSiteCount];
+inline uint64_t g_stat_direct[kStatMaxCats];
+
+// Tags decisions made inside a primitive. Only the outermost primitive wins
+// (CodeUint's length tree counts as uint length, not as a generic bit tree).
+// Compiles away for decoders.
+template <typename Coder>
+struct StatSiteScope {
+  int saved = kSiteFlag;
+  explicit StatSiteScope(StatSite site) {
+    if constexpr (Coder::kEncoding) {
+      saved = g_stat_site;
+      if (saved == kSiteFlag) g_stat_site = site;
+    }
+  }
+  ~StatSiteScope() {
+    if constexpr (Coder::kEncoding) g_stat_site = saved;
+  }
+};
+
 class BitEncoder {
  public:
   static constexpr bool kEncoding = true;
@@ -23,6 +54,9 @@ class BitEncoder {
   explicit BitEncoder(RangeEncoder& enc) : enc_(enc) {}
 
   bool CodeBit(Prob& p, bool bit_for_encoder) {
+    if (g_stat_cat >= 0) {
+      ++g_stat_adaptive[g_stat_cat][g_stat_site];
+    }
     if (cost_sink_ != nullptr) {
       const double p0 = static_cast<double>(p.value()) / kProbScale;
       *cost_sink_ -= std::log2(bit_for_encoder ? 1.0 - p0 : p0);
@@ -32,6 +66,9 @@ class BitEncoder {
   }
 
   uint32_t CodeBitsDirect(uint32_t value, int nbits) {
+    if (g_stat_cat >= 0) {
+      g_stat_direct[g_stat_cat] += static_cast<uint64_t>(nbits);
+    }
     if (cost_sink_ != nullptr) {
       *cost_sink_ += nbits;
     }
@@ -73,6 +110,14 @@ class BitDecoder {
     return value;
   }
 
+  template <int kBits>
+  uint32_t DecodeTree(Prob* probs) {
+    return dec_.template DecodeTree<kBits>(probs);
+  }
+  uint32_t DecodeSequence(Prob* probs, int n) {
+    return dec_.DecodeSequence(probs, n);
+  }
+
   bool exhausted() const { return dec_.exhausted(); }
 
   // No-op mirror of BitEncoder::SetCostSink so shared model code can call it.
@@ -92,6 +137,10 @@ struct BitTree {
     if constexpr (Coder::kRawResidual) {
       return coder.CodeBitsDirect(value, kBits);
     }
+    if constexpr (!Coder::kEncoding && !Coder::kRawResidual) {
+      return coder.template DecodeTree<kBits>(probs.data());
+    }
+    StatSiteScope<Coder> site(kSiteBitTree);
     uint32_t node = 1;
     uint32_t out = 0;
     for (int bit_index = kBits - 1; bit_index >= 0; --bit_index) {
@@ -126,16 +175,30 @@ uint32_t CodeUint(Coder& coder, UintModel& model, uint32_t v) {
     return coder.CodeUint32(v);
   }
   uint32_t nbits = Coder::kEncoding ? BitWidth(v) : 0;
-  nbits = model.length.CodeValue(coder, nbits);
+  {
+    StatSiteScope<Coder> site(kSiteUintLength);
+    nbits = model.length.CodeValue(coder, nbits);
+  }
   if (nbits == 0) {
     return 0;
   }
+  StatSiteScope<Coder> site(kSiteUintMantissa);
   // Invalid streams can spell larger lengths; clamp to the modeled uint32
   // domain to avoid out-of-bounds contexts while keeping decoding deterministic.
   if (nbits > 32) {
     nbits = 32;
   }
 
+  if constexpr (!Coder::kEncoding && !Coder::kRawResidual) {
+    const int mantissa = static_cast<int>(nbits) - 1;
+    const int high = mantissa < kUintHighBits ? mantissa : kUintHighBits;
+    uint32_t out = coder.DecodeSequence(model.high[nbits].data(), high);
+    if (mantissa > high) {
+      out = (out << (mantissa - high)) |
+            coder.DecodeSequence(model.rest.data(), mantissa - high);
+    }
+    return (1u << mantissa) | out;
+  }
   uint32_t out = 1u << (nbits - 1);
   for (uint32_t j = 0; j + 1 < nbits; ++j) {
     const uint32_t src_pos = nbits - 2 - j;
@@ -181,6 +244,7 @@ uint8_t CodeByte(Coder& coder, ByteModel& model, uint8_t prev, uint8_t b) {
     (void)prev;
     return static_cast<uint8_t>(coder.CodeBitsDirect(b, kByteBits));
   }
+  StatSiteScope<Coder> site(kSiteByte);
   std::unique_ptr<BitTree<kByteBits>>& tree = model.tree[prev];
   if (!tree) {
     tree = std::make_unique<BitTree<kByteBits>>();
