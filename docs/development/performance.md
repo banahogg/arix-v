@@ -501,6 +501,107 @@ and before/after instruction or sampling profiles where available.
     shaders keep max ratio). The container already has a mode byte, so this
     stages cheaply.
 
+## Experiment backlog (2026-11-17)
+
+Starting point: persistent decode ~57 MiB/s versus the ~139 MiB/s
+raw-residual ceiling, so roughly 60% of decode time is entropy coding plus
+model work. Items are labelled `E*` to avoid clashing with the tier numbering
+above; none repeats an experiment already measured in this file. Suggested
+order: E0 → E1-E3 → E4 → E6-E8 → E-A0 → E-A2 (E-A1 only if E-A0
+surprises) → E11.
+
+### Measure first
+
+- [ ] **E0. Decisions per call site.** Extend `ARIXV_STATS` to report binary
+  decisions per output byte by site (opcode, rank, uint length, uint
+  high/rest, bit-enum, bytes, direct bits). The decoder averages ~2.5
+  decisions per output byte; this shows which sites the items below should
+  target.
+
+### Cost of each decision (no format change)
+
+- [ ] **E1. Keep coder state in registers.** Output goes through a
+  `uint8_t*` (`StoreLe32`), and `uint8_t` stores may alias anything. Because
+  `CodeUint`/`CodeByte` show up as separate functions in profiles, the
+  `RangeDecoder` state (`code_`, `range_`, `pos_`) is probably reloaded from
+  memory around every call and store. Check the assembly, then try copying
+  coder state into locals in the hot loop, `__restrict`, or output through a
+  `uint32_t*` buffer.
+- [ ] **E2. Cheaper renormalization.** Replace the byte-at-a-time `while`
+  loop (with a per-byte bounds check in `ReadByte`) with a 64-bit
+  `code`/`range` that refills 32 bits at once, and pad the input tail so the
+  hot path has no exhausted-input check; detect overrun once at the end.
+- [ ] **E3. Batch direct bits.** `CodeBitsDirect` loops one bit at a time
+  through `DecodeBitDirect` (8/10/16/32-bit fields, every byte of
+  `CodeUint32`). Decode k bits in one step (`range >>= k`, then one
+  compare/divide).
+- [ ] **E4. PGO and compiler comparison.** `-fprofile-generate/-fprofile-use`
+  trained on the corpus, and clang vs GCC. Branchy interpreter-style code
+  often gains 5-15% from PGO; worth knowing even if the source-integration
+  story can't ship it.
+- [ ] **E5. Cache misses.** `perf stat` with L1d/L2 miss counters. The inline
+  model plus its trees is near or above the 32 KB L1; if misses are
+  significant, pack the hot contexts (opcode, rank slots, uint length)
+  together.
+
+### Fewer serial decisions (format change, ratio-neutral or close)
+
+- [ ] **E6. Rank coding as a tree instead of unary.** `CodeRank` makes up to
+  9 serial decisions per ID. A 4-bit binary tree, or a "rank 0?" flag then a
+  3-bit tree, caps it at 4. Runs on nearly every operand.
+- [ ] **E7. Shorter uint ladder.** A 20-bit value costs 6 length bits plus 19
+  adaptive mantissa bits. Code only `kUintHighBits` adaptively and send the
+  rest as bypass bits (E8); measure the ratio cost.
+- [ ] **E8. Separate stream for bypass bits.** Route direct bits, uint rest
+  bits and unknown opcode/literal bytes through a plain bit reader instead of
+  the arithmetic coder. It doesn't wait on coder state, so it shortens the
+  serial chain without the stream interleaving that already failed (item 9).
+- [ ] **E9. Cheaper bit-enum coding.** Item 10 above: code "mask is zero /
+  same as last" before the per-bit loop, if E0 shows it is large.
+- [ ] **E10. Adopt `static-opcode-tables`.** Already measured at −5% size and
+  +13-16% decode; a decision about the "no corpus tables" rule, not an
+  experiment.
+
+### ANS
+
+- [ ] **E-A0. Microbenchmark before porting.** Decode a synthetic bit stream
+  with realistic probabilities using the LZMA-style coder vs adaptive binary
+  rANS (32-bit state with 16-bit renorm, or 64/32). Bounds the gain before
+  touching the model. Item 9 found the model's dependency chain, not the
+  coder, to be the limit, so expect a binary-for-binary swap to be worth
+  ~5-15% of the coding share.
+- [ ] **E-A1. Adaptive binary rANS swap.** Same `Prob` contexts. The encoder
+  records `(prob, bit)` pairs in the forward pass and encodes them in reverse
+  (fine for offline compression); the decoder still adapts as it goes. Gains:
+  very cheap renormalization and 2-state interleaving inside one stream
+  (alternate states, not streams), simpler than the reverted 4-stream
+  framing. Costs: a more complex encoder and a possible small ratio change.
+- [ ] **E-A2. Adaptive multi-symbol rANS for small alphabets.** The LZNA
+  approach: adaptive 16-symbol (nibble) frequency tables with a SIMD update.
+  With a power-of-two total, rANS gets the slot as `x & mask` and searches
+  the cumulative frequencies with no division, which an adaptive
+  multi-symbol range coder can't do as cheaply. Candidate sites: rank
+  (9 symbols), uint length (33, as 2 nibble steps), opcode index (3 nibble
+  steps instead of 10 bits), string/byte models (2 nibbles instead of 8
+  bits). Cuts the serial chain 2-4x at those sites, with no per-file tables
+  (unlike reverted item 8). Ratio may move either way: frequency-count
+  adaptation behaves differently from per-bit shift updates.
+- [ ] **E-A3. Static tANS/FSE back end for the residual stream** (item 11).
+  Only worth doing with the dedicated reconstruction loop, since structure
+  work caps it at ~139 MiB/s.
+
+### Larger structural ideas
+
+- [ ] **E11. Dedicated reconstruction loop** (raw residual TODO above). Also
+  benefits M2 if the generic `CodeModule` template is what keeps coder state
+  out of registers (E1).
+- [ ] **E12. Decode 2-4 modules at once in one thread.** Independent
+  dependency chains give the CPU parallel work with no format change; fits
+  only a batch API (shader packs). IPC is ~2.6 on a core that can do ~5, so
+  maybe ~1.3x.
+- [ ] **E13. Chunked parallel decode** (item 12). Cuts latency on large
+  modules; does not improve single-core throughput.
+
 ## Suggested attack order
 
 Tier A first — pure profiling debt, no ratio risk; estimated to take decode
