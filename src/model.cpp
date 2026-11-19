@@ -727,10 +727,10 @@ uint32_t UnZigZag32(uint32_t value) {
 }
 
 template <class Bits>
-uint32_t CodeDelta(Bits& bits, UintModel& model, uint32_t value,
+uint32_t CodeDelta(Bits& bits, Arena& arena, UintModel& model, uint32_t value,
                    uint32_t base) {
   const uint32_t hint = ZigZag32(value - base);
-  const uint32_t coded = CodeUint(bits, model, hint);
+  const uint32_t coded = CodeUint(bits, arena, model, hint);
   return Bits::kEncoding ? value : base + UnZigZag32(coded);
 }
 
@@ -859,7 +859,7 @@ uint32_t CodeRankedId(Bits& bits, Prob& flag, BitTree<kRankTreeBits>& tree,
     const uint32_t coded = bits.CodeUint32(delta);
     return Bits::kEncoding ? hint : base + UnZigZag32(coded);
   }
-  return CodeDelta(bits, EnsureUint(arena, escape), hint, base);
+  return CodeDelta(bits, arena, EnsureUint(arena, escape), hint, base);
 }
 
 
@@ -885,7 +885,7 @@ uint32_t CodeResultId(Bits& bits, ModelState& model,
         id = Bits::kEncoding ? hint : 0;
       }
     } else {
-      id = CodeDelta(bits, model.result_delta[ResultClassBucket(desc)], hint,
+      id = CodeDelta(bits, model.arena, model.result_delta[ResultClassBucket(desc)], hint,
                      predicted);
     }
   }
@@ -963,7 +963,7 @@ uint32_t CodeValueEnum(Bits& bits, ModelState& model,
     }
     return Bits::kEncoding ? hint : 0;
   }
-  return CodeUint(bits, ctx.escape, hint);
+  return CodeUint(bits, model.arena, ctx.escape, hint);
 }
 
 template <class Bits>
@@ -1011,7 +1011,7 @@ uint32_t CodeBitEnum(Bits& bits, ModelState& model,
   }
   const uint32_t residual_hint = hint & ~known_mask;
   if (bits.CodeBit(ctx.unknown, Bits::kEncoding && residual_hint != 0)) {
-    value |= CodeUint(bits, ctx.residual, residual_hint);
+    value |= CodeUint(bits, model.arena, ctx.residual, residual_hint);
   }
   return Bits::kEncoding ? hint : value;
 }
@@ -1037,14 +1037,14 @@ uint32_t CodeLiteralInteger(Bits& bits, ModelState& model,
   const size_t cls = ClassBucket(desc);
   UintModel& ctx =
       EnsureContext(model.arena, model.integer_values[cls * 9 + Slot8(field.slot)]);
-  const uint32_t value = CodeDelta(bits, ctx, hint, base);
+  const uint32_t value = CodeDelta(bits, model.arena, ctx, hint, base);
   model.last_literal[key] = value;
   return Bits::kEncoding ? hint : value;
 }
 
 template <class Bits>
 uint32_t CodeContextNumber(Bits& bits, ModelState& model, uint32_t hint) {
-  return CodeUint(bits, model.context_number, hint);
+  return CodeUint(bits, model.arena, model.context_number, hint);
 }
 
 template <class Bits>
@@ -1053,7 +1053,7 @@ uint32_t CodeSpecConstantOp(Bits& bits, ModelState& model, uint32_t hint) {
     (void)model;
     return bits.CodeUint32(hint);
   }
-  return CodeUint(bits, EnsureUint(model.arena, model.spec_constant_op), hint);
+  return CodeUint(bits, model.arena, EnsureUint(model.arena, model.spec_constant_op), hint);
 }
 
 template <class Bits>
@@ -1063,14 +1063,14 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
     if constexpr (Bits::kRawResidual) {
       return bits.CodeUint32(hint);
     }
-    return CodeUint(bits, EnsureUint(model.arena, model.ext_inst_unknown), hint);
+    return CodeUint(bits, model.arena, EnsureUint(model.arena, model.ext_inst_unknown), hint);
   }
   const int set_index = FindExtInstSetIndex(set);
   if (set_index < 0) {
     if constexpr (Bits::kRawResidual) {
       return bits.CodeUint32(hint);
     }
-    return CodeUint(bits, EnsureUint(model.arena, model.ext_inst_unknown), hint);
+    return CodeUint(bits, model.arena, EnsureUint(model.arena, model.ext_inst_unknown), hint);
   }
   const InstructionDesc* inst =
       Bits::kEncoding ? FindExtInstruction(*set, hint) : nullptr;
@@ -1105,7 +1105,7 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
     }
     return Bits::kEncoding ? hint : 0;
   }
-  return CodeUint(bits, ctx.escape, hint);
+  return CodeUint(bits, model.arena, ctx.escape, hint);
 }
 
 template <class Bits, size_t kInlineWords>
@@ -1293,7 +1293,7 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
     if constexpr (Bits::kRawResidual) {
       return bits.CodeUint32(hint) & 0xffffu;
     }
-    count = CodeUint(bits, EnsureUint(model.arena, model.raw_unknown_count), hint) & 0xffffu;
+    count = CodeUint(bits, model.arena, EnsureUint(model.arena, model.raw_unknown_count), hint) & 0xffffu;
     return count;
   }
 
@@ -1340,13 +1340,13 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
                                         ? hint - desc->min_word_count
                                         : 0;
         count = (desc->min_word_count +
-                 CodeUint(bits, count_model.extra, extra_hint)) &
+                 CodeUint(bits, model.arena, count_model.extra, extra_hint)) &
                 0xffffu;
       }
       model.last_word_count[inst_index] = count;
     }
   } else {
-    count = CodeUint(bits, EnsureUint(model.arena, model.raw_known_count), hint) & 0xffffu;
+    count = CodeUint(bits, model.arena, EnsureUint(model.arena, model.raw_known_count), hint) & 0xffffu;
   }
   return count;
 }
@@ -1655,7 +1655,7 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
                         if constexpr (Bits::kRawResidual) {
                           return bits.CodeUint32(bound_hint);
                         }
-                        return CodeUint(bits, EnsureUint(model.arena, model.bound_value),
+                        return CodeUint(bits, model.arena, EnsureUint(model.arena, model.bound_value),
                                         bound_hint);
                       }();
   io.PatchBound(bound);

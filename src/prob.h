@@ -261,10 +261,46 @@ struct BitTree {
   }
 };
 
+// A uint is a bit length (bit tree) then its mantissa below the leading 1:
+// the first kUintHighBits mantissa bits use per-(length, position)
+// probabilities, deeper ones the shared `rest` probabilities.
+//
+// Lengths up to kUintHighBits use fewer than kUintHighBits positions, so
+// their rows are packed triangularly inline (row b starts at (b-1)(b-2)/2).
+// Longer rows and `rest` are only reached by values >= 2^kUintHighBits and
+// live in a block allocated on first use: most contexts (word counts, small
+// deltas) never need it. Same probabilities in the same roles as one eager
+// [33][kUintHighBits] table, and a fresh block starts at kProbInit.
+constexpr int kUintShortRows = kUintHighBits;  // bit lengths 1..kUintHighBits
+constexpr int kUintShortProbs = kUintShortRows * (kUintShortRows - 1) / 2;
+constexpr int kUintLongRows = 32 - kUintShortRows;  // kUintHighBits+1..32
+
+struct UintLongRows {
+  std::array<std::array<Prob, kUintHighBits>, kUintLongRows> high{};
+  std::array<Prob, kUintRestBits> rest{};
+};
+
 struct UintModel {
   BitTree<kUintLengthBits> length;
-  std::array<std::array<Prob, kUintHighBits>, 33> high{};
-  std::array<Prob, kUintRestBits> rest{};
+  std::array<Prob, kUintShortProbs> short_rows{};
+  ArenaPtr<UintLongRows> long_rows;
+
+  // Probabilities for the first min(nbits - 1, kUintHighBits) mantissa bits.
+  Prob* HighRow(Arena& arena, uint32_t nbits) {
+    if (nbits <= static_cast<uint32_t>(kUintShortRows)) {
+      return short_rows.data() + (nbits - 1) * (nbits - 2) / 2;
+    }
+    return Long(arena).high[nbits - kUintShortRows - 1].data();
+  }
+  Prob* Rest(Arena& arena) { return Long(arena).rest.data(); }
+
+ private:
+  UintLongRows& Long(Arena& arena) {
+    if (!long_rows) {
+      long_rows.Make(arena);
+    }
+    return *long_rows;
+  }
 };
 
 inline uint32_t BitWidth(uint32_t v) {
@@ -277,8 +313,9 @@ inline uint32_t BitWidth(uint32_t v) {
 }
 
 template <typename Coder>
-uint32_t CodeUint(Coder& coder, UintModel& model, uint32_t v) {
+uint32_t CodeUint(Coder& coder, Arena& arena, UintModel& model, uint32_t v) {
   if constexpr (Coder::kRawResidual) {
+    (void)arena;
     (void)model;
     return coder.CodeUint32(v);
   }
@@ -300,19 +337,20 @@ uint32_t CodeUint(Coder& coder, UintModel& model, uint32_t v) {
   if constexpr (!Coder::kEncoding && !Coder::kRawResidual) {
     const int mantissa = static_cast<int>(nbits) - 1;
     const int high = mantissa < kUintHighBits ? mantissa : kUintHighBits;
-    uint32_t out = coder.DecodeSequence(model.high[nbits].data(), high);
+    uint32_t out = coder.DecodeSequence(model.HighRow(arena, nbits), high);
     if (mantissa > high) {
       out = (out << (mantissa - high)) |
-            coder.DecodeSequence(model.rest.data(), mantissa - high);
+            coder.DecodeSequence(model.Rest(arena), mantissa - high);
     }
     return (1u << mantissa) | out;
   }
   uint32_t out = 1u << (nbits - 1);
+  Prob* const high_row = model.HighRow(arena, nbits);
   for (uint32_t j = 0; j + 1 < nbits; ++j) {
     const uint32_t src_pos = nbits - 2 - j;
     const bool hint = ((v >> src_pos) & 1u) != 0;
-    Prob& p = (j < kUintHighBits) ? model.high[nbits][j]
-                                  : model.rest[j - kUintHighBits];
+    Prob& p = (j < kUintHighBits) ? high_row[j]
+                                  : model.Rest(arena)[j - kUintHighBits];
     const bool bit = coder.CodeBit(p, hint);
     if (bit) {
       out |= 1u << src_pos;

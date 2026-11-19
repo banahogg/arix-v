@@ -169,9 +169,10 @@ void ProbabilityPrimitives() {
   std::vector<uint8_t> encoded;
   arixv::RangeEncoder range_enc(encoded);
   arixv::BitEncoder enc(range_enc);
+  arixv::Arena arena;
   arixv::UintModel uint_model;
   for (uint32_t v : values) {
-    assert(arixv::CodeUint(enc, uint_model, v) == v);
+    assert(arixv::CodeUint(enc, arena, uint_model, v) == v);
   }
   arixv::BitTree<1> tree1;
   arixv::BitTree<2> tree2;
@@ -198,9 +199,10 @@ void ProbabilityPrimitives() {
 
   arixv::RangeDecoder range_dec(encoded.data(), encoded.size());
   arixv::BitDecoder dec(range_dec);
+  arixv::Arena darena;
   arixv::UintModel duint_model;
   for (uint32_t v : values) {
-    assert(arixv::CodeUint(dec, duint_model, 0) == v);
+    assert(arixv::CodeUint(dec, darena, duint_model, 0) == v);
   }
   arixv::BitTree<1> dtree1;
   arixv::BitTree<2> dtree2;
