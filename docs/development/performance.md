@@ -1133,6 +1133,57 @@ little per call. *Follow-up candidate:* shrink or reuse the per-call
 footprint (e.g. the four 56 KB per-instruction arrays and arena blocks) so
 stateless decode is insensitive to the allocator's trim policy.
 
+### Per-call memory footprint vs. allocator policy (2026-11-18)
+
+Following up the cross-tool gap above. Same runner (`build/arixv_bench`),
+all files, core 2, idle host:
+
+| setting | decode |
+|---|---|
+| 64-file batch processes (what the script does) | 65.2 MiB/s |
+| one long-lived process, default glibc | 75.0 MiB/s |
+| one process, `glibc.malloc.trim_threshold` raised | 83.7 MiB/s |
+
+Two effects, both about memory each `Decode` call touches: heap trimming
+hands freed model memory back to the kernel and the next call faults it
+back in; fresh processes start with no pre-faulted heap and glibc's
+adaptive mmap/trim thresholds at their low defaults. Transparent huge pages
+are `madvise`-only here and not involved (no THP faults).
+
+Load-independent metrics: heap bytes per decode (malloc-level histogram
+over the corpus), and minor page faults per decode in batched 64-file
+processes ((faults at 21 iterations − at 1) / 20 per file).
+
+| change | bytes/decode | batched faults/decode | stateless Ir |
+|---|---|---|---|
+| baseline (f484b18) | 590 KB | 9.88 | 298.2M |
+| arena blocks start at 4 KB and double to 64 KB (**landed**) | ~500 KB | **7.10** | 301.0M (+0.9%) |
+| ID map reserved for word_count / 4 instead of word_count (reverted) | — | 6.35 single-process (was 3.17) | — |
+| per-instruction caches as lazy arena groups (reverted) | 360 KB | 7.64 | +0.6% |
+
+- **Landed: geometric arena blocks.** Every arena (the model's, and each
+  `ByteModel`'s, which used to take a 64 KB block for a few 544-byte trees)
+  started with a full 64 KB block. Blocks now start at 4 KB and double;
+  objects over 16 KB still get their own block. **Batched decode 65.1 →
+  69.2 MiB/s (+6.3%, all 5 interleaved rounds)**; warm-process decode
+  84.6 → 85.1 MiB/s (neutral), at +0.9% instructions for the extra small
+  mallocs.
+- **Reverted: smaller ID-map reservation.** It doubled faults and
+  quadrupled `brk` calls: more mid-decode doubling rehashes, and without
+  the oversized map's large frees glibc no longer raises its adaptive
+  trim threshold, so the heap is trimmed more often.
+- **Reverted: lazy per-instruction groups.** Bytes fell to 360 KB per decode
+  but faults did not: those flat arrays were deliberately uninitialized, so
+  their untouched pages never faulted. Cost +0.6% instructions.
+- **What remains:** faults come from memory that is *touched*, mostly
+  zero-initialized contexts; the largest is ~55 order-1 opcode trees ×
+  2.2 KB per decode, fully zeroed though a walk touches 3 of each tree's 69
+  tables. Lazily zeroing tree tables is the next lever, but it reaches into
+  `BitTree`'s hot path.
+- Correctness: corpus and raw-residual output byte-identical; `make test`,
+  `make asan`, 3000-iteration fuzz, the 720-case mutated-blob differential,
+  and valgrind memcheck with full leak checking pass.
+
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
 `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest

@@ -44,7 +44,12 @@ class Arena {
 
  private:
   static constexpr size_t kMaxAlign = 16;
-  static constexpr size_t kBlockBytes = size_t{64} << 10;
+  // Blocks start small and double up to kMaxBlockBytes, so a small module
+  // (or a ByteModel holding a few trees) touches a few KB, not 64 KB per
+  // arena: every fresh page is a page fault in a short-lived process or
+  // after the allocator trims the heap.
+  static constexpr size_t kFirstBlockBytes = size_t{4} << 10;
+  static constexpr size_t kMaxBlockBytes = size_t{64} << 10;
 
   struct alignas(kMaxAlign) Block {
     Block* next;
@@ -55,7 +60,13 @@ class Arena {
     if (cur_ == nullptr || at + size > cap_) {
       // Large objects get a block of their own so they don't strand the
       // tail of the current one.
-      const size_t payload = size > kBlockBytes / 4 ? size : kBlockBytes;
+      const bool own_block = size > kMaxBlockBytes / 4;
+      size_t payload = size;
+      if (!own_block) {
+        payload = next_block_ > size ? next_block_ : size;
+        next_block_ = next_block_ < kMaxBlockBytes ? next_block_ * 2
+                                                   : kMaxBlockBytes;
+      }
       void* raw = std::malloc(sizeof(Block) + payload);
       if (raw == nullptr) {
         throw std::bad_alloc();
@@ -63,7 +74,7 @@ class Arena {
       Block* block = static_cast<Block*>(raw);
       block->next = head_;
       head_ = block;
-      if (payload == size && cur_ != nullptr) {
+      if (own_block && cur_ != nullptr) {
         return reinterpret_cast<unsigned char*>(block + 1);
       }
       cur_ = reinterpret_cast<unsigned char*>(block + 1);
@@ -78,6 +89,7 @@ class Arena {
   unsigned char* cur_ = nullptr;
   size_t used_ = 0;
   size_t cap_ = 0;
+  size_t next_block_ = kFirstBlockBytes;
 };
 
 // Non-owning, trivially destructible handle to an arena object, standing in
