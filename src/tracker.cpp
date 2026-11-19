@@ -285,16 +285,35 @@ void Tracker::OnInstructionStart(uint32_t opcode, const InstructionDesc* desc,
   cur_desc_ = desc;
 }
 
-uint32_t Tracker::OnIdUse(uint32_t id) {
+Tracker::IdUse Tracker::OnIdUse(uint32_t id, bool touch_recent_ids) {
   IdInfo& info = Ensure(id);
   if (!info.defined) {
     forward_refs_.Touch(id);
   }
-  recent_ids_.Touch(id);
+  if (touch_recent_ids) {
+    recent_ids_.Touch(id);
+  }
   if (info.kind == IdKind::kType) {
     recent_types_.Touch(id);
   }
-  return info.result_type;
+  if (info.type_list != 0) {
+    typed_lists_[info.type_list - 1].Touch(id);
+  }
+  return IdUse{info.result_type, info.type_list};
+}
+
+// Only looks the type up (never inserts it), so callers' IdInfo references
+// stay valid; a type the tracker has never seen (hostile input) gets no list.
+uint32_t Tracker::ValuesListFor(uint32_t type) {
+  IdInfo* type_info = ids_.FindMutable(type);
+  if (type_info == nullptr) {
+    return 0;
+  }
+  if (type_info->values_list == 0) {
+    typed_lists_.emplace_back(kRankListCapIds);
+    type_info->values_list = static_cast<uint32_t>(typed_lists_.size());
+  }
+  return type_info->values_list;
 }
 
 // Result types are coded from recent_types(), so touching recent_ids() here
@@ -374,6 +393,12 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
         info.kind = IdKind::kValue;
       }
       recent_ids_.Touch(result_id);
+      if (info.result_type != 0) {
+        info.type_list = ValuesListFor(info.result_type);
+        if (info.type_list != 0) {
+          typed_lists_[info.type_list - 1].Touch(result_id);
+        }
+      }
     }
   }
 
@@ -408,6 +433,7 @@ void Tracker::Reset() {
   recent_ids_.Clear();
   recent_types_.Clear();
   forward_refs_.Clear();
+  typed_lists_.clear();
   cur_desc_ = nullptr;
   cur_opcode_ = 0;
 }

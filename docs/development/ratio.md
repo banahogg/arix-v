@@ -151,3 +151,37 @@ cost (the 19-instruction golden vector grew 86 → 88 bytes).
 Checks: `make test` (golden vector regenerated), `make asan`, 3000-iteration
 fuzz, valgrind memcheck with full leak checking (corpus decodes,
 `arixv_test`, 80 mutated/truncated blobs), scalar/SIMD cross-check.
+
+### 2. Per-type ID recency lists — landed (2026-11-18)
+
+**Oracle first** (`id_ref` was 332.3 KB on main). Variants estimated:
+A, an adaptive choice of a per-type list plus per-type lists, ~304.6 KB;
+D1, a single list predicted from the type the same (instruction, slot)
+referenced last time, ~308.7 KB; B, the global list filtered by predicted
+type, worse than today. D1 was implemented because it needs no extra symbol
+and no type prediction beyond "same as last time".
+
+**Implementation:** the tracker keeps one recency list per Result Type,
+created lazily on the type's first value (`IdInfo::values_list` on the type,
+`IdInfo::type_list` on each value). Each instruction group remembers, per
+operand slot, the list its last ID came from. `CodeIdRef` codes a flag "in
+that list", then a 4-bit rank. On a miss it falls back to the global ranked
+coding. A typed hit does not touch the global list (keeping it for IDs the
+typed lists miss measured slightly better than touching both, and is
+cheaper).
+
+| | corpus bytes | Δ vs item 1 | train total | holdout total | decode Ir | wall |
+|---|---|---|---|---|---|---|
+| item 1 (8abe05b) | 993,748 | — | 0.15912 | 0.16874 | 299.6M | — |
+| typed lists, touch global too | 973,096 | −2.08% | | | | |
+| **landed: skip global touch** | **973,376** | **−2.05%** | 0.15536 (−2.4%) | 0.16569 (−1.8%) | 312.5M (+4.3%) | ×0.950 |
+
+−3.9% vs main (1,013,012). The 16-entry cap still binds: a 31-entry global
+list on top of this gives 965,653 bytes (another −0.77%), which is item 6
+and needs SIMD rank search past 16 entries. Memory: malloc-level heap per
+decode 159 → 172 KB (one list per used type), arena unchanged at ~86 KB. The
+19-instruction golden vector stays at 88 bytes (content changed).
+
+Checks: `make all`, `make test`, `make asan`, 3000-iteration fuzz, valgrind
+memcheck with full leak checking (corpus decodes, `arixv_test`, 120
+mutated/truncated/overwritten blobs), scalar/SIMD cross-check.

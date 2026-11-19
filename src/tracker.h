@@ -116,6 +116,12 @@ class Tracker {
     // pointer, the component of a vector, the element of an array, the
     // return type of a function type — or 0.
     uint32_t element_type;
+    // For a type ID: 1 + index of the recency list of IDs of that type
+    // (typed_lists_), or 0 before its first value.
+    uint32_t values_list;
+    // For a value ID: its type's values_list, copied at definition so a use
+    // needs no second lookup.
+    uint32_t type_list;
   };
   static_assert(std::is_trivially_default_constructible_v<IdInfo> &&
                     static_cast<int>(IdKind::kUnknown) == 0 &&
@@ -147,6 +153,13 @@ class Tracker {
     const IdInfo* info = Find(id);
     return info ? info->result_type : 0;
   }
+  // Recency list number `list` (an IdInfo::type_list / values_list value:
+  // 1-based, 0 = none), most recent first; null for 0. Valid until the next
+  // tracker update.
+  const RecencyList* TypedList(uint32_t list) const {
+    return list != 0 && list <= typed_lists_.size() ? &typed_lists_[list - 1]
+                                                    : nullptr;
+  }
   // Element type recorded for a type ID (0 if none).
   uint32_t ElementTypeOf(uint32_t type_id) const {
     const IdInfo* info = Find(type_id);
@@ -171,9 +184,13 @@ class Tracker {
   void OnInstructionStart(uint32_t opcode, const InstructionDesc* desc,
                           uint32_t word_count);
   // Use of an ID operand (coded from recent_ids()).
-  // Returns the ID's recorded Result Type (0 if none), read from the entry
-  // this call already looks up.
-  uint32_t OnIdUse(uint32_t id);
+  // What OnIdUse read from the ID's entry: its Result Type and its type's
+  // recency list (0 if none).
+  struct IdUse {
+    uint32_t result_type;
+    uint32_t type_list;
+  };
+  IdUse OnIdUse(uint32_t id, bool touch_recent_ids = true);
   // Use of an ID in a result-type slot (coded from recent_types()); unlike
   // OnIdUse it leaves recent_ids() alone.
   void OnResultTypeUse(uint32_t id);
@@ -201,6 +218,9 @@ class Tracker {
   class IdMap {
    public:
     const IdInfo* Find(uint32_t id) const;
+    IdInfo* FindMutable(uint32_t id) {
+      return const_cast<IdInfo*>(static_cast<const IdMap*>(this)->Find(id));
+    }
     IdInfo& Ensure(uint32_t id);
     size_t Bytes() const {
       return capacity_ * (2 * sizeof(uint32_t) + sizeof(IdInfo));
@@ -245,6 +265,10 @@ class Tracker {
   RecencyList recent_ids_{kRankListCapIds};
   RecencyList recent_types_{kRankListCapTypes};
   RecencyList forward_refs_{kRankListCapIds};
+  // Per-type recency lists (see TypedList), created on a type's first value.
+  std::vector<RecencyList> typed_lists_;
+  // values_list of `type`, created on first use (0 if the type is unknown).
+  uint32_t ValuesListFor(uint32_t type);
 
   const InstructionDesc* cur_desc_ = nullptr;
   uint32_t cur_opcode_ = 0;

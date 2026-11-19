@@ -324,6 +324,7 @@ void DumpStats() {
 // InstGroup{} is the first-touch state.
 struct InstGroup {
   uint32_t last_id[16];
+  uint32_t last_id_list[16];  // last_id's type's recency list (valid with it)
   uint32_t last_literal[16];
   uint8_t last_id_valid[16];
   uint8_t last_literal_valid[16];
@@ -426,6 +427,10 @@ struct ModelState {
   std::vector<ArenaPtr<UintModel>> type_escape;
 
   std::array<std::array<Prob, 9>, 3> id_in_list{};
+  // ID operands are first looked up in the recency list of the type the same
+  // (instruction, slot) took last time (see CodeIdRef).
+  std::array<std::array<Prob, 9>, 3> id_in_typed{};
+  std::array<std::array<BitTree<kRankTreeBits>, 9>, 3> id_typed_rank{};
   std::array<std::array<BitTree<kRankTreeBits>, 9>, 3> id_rank{};
   std::array<std::array<ArenaPtr<UintModel>, 9>, 3> id_escape{};
 
@@ -1007,16 +1012,38 @@ uint32_t CodeIdRef(Bits& bits, ModelState& model, uint16_t inst_index,
   const uint32_t slot = Slot8(field.slot);
   InstGroup& group = model.inst_group(inst_index);
   const size_t key = Slot16(field.slot);
-  const uint32_t base =
-      group.last_id_valid[key] != 0 ? group.last_id[key]
-                                    : model.prev_result_id;
-  uint32_t id = CodeRankedId(bits, model.id_in_list[bucket][slot],
-                             model.id_rank[bucket][slot],
-                             model.arena, model.id_escape[bucket][slot],
-                             model.tracker.recent_ids(), hint, base);
+  const bool have_last = group.last_id_valid[key] != 0;
+  const uint32_t base = have_last ? group.last_id[key] : model.prev_result_id;
+  // First try the recency list of the type this (instruction, slot) took
+  // last time: it holds far more same-typed history than the global list
+  // (corpus oracle: ~24% fewer escapes). On a miss, the global path below.
+  uint32_t id = 0;
+  bool coded = false;
+  const RecencyList* typed =
+      have_last ? model.tracker.TypedList(group.last_id_list[key]) : nullptr;
+  if (typed != nullptr && typed->size() > 0) {
+    const int rank = Bits::kEncoding ? typed->Find(hint) : -1;
+    if (bits.CodeBit(model.id_in_typed[bucket][slot], rank >= 0)) {
+      const uint32_t coded_rank = model.id_typed_rank[bucket][slot].CodeValue(
+          bits, rank >= 0 ? static_cast<uint32_t>(rank) : 0u);
+      id = Bits::kEncoding ? hint
+           : coded_rank < static_cast<uint32_t>(typed->size())
+               ? typed->at(static_cast<int>(coded_rank))
+               : 0u;
+      coded = true;
+    }
+  }
+  if (!coded) {
+    id = CodeRankedId(bits, model.id_in_list[bucket][slot],
+                      model.id_rank[bucket][slot], model.arena,
+                      model.id_escape[bucket][slot],
+                      model.tracker.recent_ids(), hint, base);
+  }
   group.last_id[key] = id;
   group.last_id_valid[key] = 1;
-  model.last_id_operand_type = model.tracker.OnIdUse(id);
+  const Tracker::IdUse use = model.tracker.OnIdUse(id, /*touch_recent_ids=*/!coded);
+  model.last_id_operand_type = use.result_type;
+  group.last_id_list[key] = use.type_list;
   return Bits::kEncoding ? hint : id;
 }
 
