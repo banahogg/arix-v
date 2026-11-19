@@ -1078,6 +1078,40 @@ cost. The library now has a single, stateless decode path:
   differential against the previous CLI, and valgrind memcheck with full
   leak checking pass.
 
+### Adaptation-rate bookkeeping (2026-11-18)
+
+Byte-identical; developed with load-independent metrics (stateless decode
+instructions per pass, as above), then timed. Profile share before: symbol-CDF
+rate bookkeeping ~3.6%, binary `Prob` warm-up ~3%.
+
+| change | stateless Ir per pass | Δ |
+|---|---|---|
+| baseline (0b0076c) | 302.7M | — |
+| symbol CDFs: clamp-free rate, single count store (landed) | 298.3M | −1.5% |
+| + binary `Prob`: branch-free warm-up (reverted) | 304.9M | +2.2% |
+
+- **Symbol CDFs (landed).** The rate is `min(bitwidth(count + 1), cap)`
+  with the count saturating at `2^cap − 1`; the clamp only ever fired at
+  the saturated count. Saturating one step earlier, at `2^cap − 2`, gives
+  the identical rate sequence (`bitwidth(2^cap − 1) = cap`) with no clamp,
+  and the count is now written once, branch-free, as the lane-0 value
+  `SymbolCdfAdapt` already restores (shadow training passes the count
+  through unchanged).
+- **Binary `Prob` (reverted).** With the default tuning the saturated count
+  15 gives `bitwidth(16) = 5 = kProbShift`, so the shift could always be
+  `bitwidth(count + 1)` with a branch-free count step. That cost
+  instructions: most probabilities sit at the saturated count, where the
+  old, well-predicted branch skips the `clz` entirely.
+- Correctness: corpus and raw-residual output byte-identical; `make test`,
+  `make asan`, 3000-iteration fuzz, the 720-case mutated-blob differential
+  against the previous CLI (0 mismatches), and the scalar (`ARIXV_NO_SIMD`)
+  build (identical blobs, cross-decodes with the SIMD build and the
+  previous CLI) pass.
+- Wall time (idle host, core 2, full corpus, 30 iterations, 9 interleaved
+  rounds): stateless 83.5 → 83.8 MiB/s (+0.4% median; median per-round
+  ratio ~1.009, with interference outliers in both builds) — a small
+  non-regressing win, consistent with the instruction cut.
+
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
 `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest

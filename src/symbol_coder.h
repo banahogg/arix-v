@@ -102,11 +102,13 @@ ARIXV_FORCE_INLINE int SymbolCdfLookup(const SymbolCdf& t, uint32_t v, uint16_t 
 #endif
 }
 
-// Moves the CDF toward symbol s at the given shift; keeps d[0].
+// Moves the CDF toward symbol s at the given shift, then writes `count`
+// (the caller's next warm-up count) to d[0], which the lane arithmetic
+// clobbers.
 template <int kN>
-ARIXV_FORCE_INLINE void SymbolCdfAdapt(SymbolCdf& t, int s, int rate) {
+ARIXV_FORCE_INLINE void SymbolCdfAdapt(SymbolCdf& t, int s, int rate,
+                                       uint16_t count) {
   using K = SymbolCdfConst<kN>;
-  const uint16_t count = t.d[0];
 #if ARIXV_SYMBOL_SSE2
   const __m128i shift = _mm_cvtsi32_si128(rate);
   const __m128i top = _mm_set1_epi16(static_cast<short>(K::kTop));
@@ -137,23 +139,24 @@ ARIXV_FORCE_INLINE void SymbolCdfAdapt(SymbolCdf& t, int s, int rate) {
   t.d[0] = count;
 }
 
-// Count-warmed adaptation: shift 1, 2, 2, 3, ... capped at kRateCap; the
-// count saturates once the cap is reached.
+// Count-warmed adaptation: shift = bitwidth(count + 1) = 1, 2, 2, 3, ...,
+// reaching kRateCap at count 2^kRateCap - 2, where the count saturates — so
+// the shift never exceeds the cap and needs no clamp, and the count update
+// is branch-free.
 template <int kN, int kRateCap>
 ARIXV_FORCE_INLINE void SymbolCdfUpdate(SymbolCdf& t, int s) {
   static_assert(kRateCap >= 1 && kRateCap <= 14, "bad symbol rate cap");
-  constexpr uint16_t kSaturation = static_cast<uint16_t>((1u << kRateCap) - 1u);
+  constexpr uint16_t kSaturation = static_cast<uint16_t>((1u << kRateCap) - 2u);
   const uint16_t count = t.d[0];
-  int rate = 32 - __builtin_clz(static_cast<unsigned>(count) + 1u);
-  if (rate > kRateCap) rate = kRateCap;
-  SymbolCdfAdapt<kN>(t, s, rate);
-  if (count < kSaturation) t.d[0] = static_cast<uint16_t>(count + 1);
+  const int rate = 32 - __builtin_clz(static_cast<unsigned>(count) + 1u);
+  SymbolCdfAdapt<kN>(t, s, rate,
+                     static_cast<uint16_t>(count + (count < kSaturation)));
 }
 
 // Steady-rate update without touching the warm-up count (shadow training).
 template <int kN, int kRateCap>
 inline void SymbolCdfTrain(SymbolCdf& t, int s) {
-  SymbolCdfAdapt<kN>(t, s, kRateCap);
+  SymbolCdfAdapt<kN>(t, s, kRateCap, t.d[0]);
 }
 
 // Buffers symbols in coding order; Flush rANS-encodes them in reverse and
