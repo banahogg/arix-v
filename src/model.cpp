@@ -152,10 +152,10 @@ struct CountModel {
 struct OpcodeTree {
   static_assert(BitTree<10>::kFirstChunk == 2 && BitTree<10>::NumTables() == 69,
                 "OpcodeTree mirrors BitTree<10>'s 2/4/4 chunk layout");
-  using LeafGroup = std::array<SymbolCdf, 16>;
+  using LeafGroup = std::array<SymbolCdf, 4>;
   SymbolCdf root;
   std::array<SymbolCdf, 4> mid;
-  std::array<ArenaPtr<LeafGroup>, 4> leaf;
+  std::array<ArenaPtr<LeafGroup>, 16> leaf;  // by (top, mid >> 2)
 
   template <typename Coder>
   uint32_t CodeValue(Coder& coder, Arena& arena, uint32_t value) {
@@ -174,7 +174,7 @@ struct OpcodeTree {
       const uint32_t m = coder.template CodeSymbol<16, kSymbolRateCap>(
           mid[top], (value >> 4) & 15u);
       const uint32_t low = coder.template CodeSymbol<16, kSymbolRateCap>(
-          Leaf(arena, top)[m], value & 15u);
+          Leaf(arena, top, m), value & 15u);
       return Coder::kEncoding ? value : ((top << 8) | (m << 4) | low);
     }
   }
@@ -185,16 +185,17 @@ struct OpcodeTree {
     const uint32_t m = (value >> 4) & 15u;
     SymbolCdfTrain<4, kSymbolRateCap>(root, static_cast<int>(top));
     SymbolCdfTrain<16, kSymbolRateCap>(mid[top], static_cast<int>(m));
-    SymbolCdfTrain<16, kSymbolRateCap>(Leaf(arena, top)[m],
+    SymbolCdfTrain<16, kSymbolRateCap>(Leaf(arena, top, m),
                                        static_cast<int>(value & 15u));
   }
 
  private:
-  LeafGroup& Leaf(Arena& arena, uint32_t top) {
-    if (!leaf[top]) {
-      leaf[top].Make(arena);
+  SymbolCdf& Leaf(Arena& arena, uint32_t top, uint32_t m) {
+    ArenaPtr<LeafGroup>& group = leaf[(top << 2) | (m >> 2)];
+    if (!group) {
+      group.Make(arena);
     }
-    return *leaf[top];
+    return (*group)[m & 3u];
   }
 };
 
