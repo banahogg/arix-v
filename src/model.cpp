@@ -199,9 +199,12 @@ struct OpcodeTree {
   }
 };
 
+// Order-1 opcode context (keyed by the previous instruction), created on
+// first use with its tree: the count and tree used to sit in an eager
+// 876-entry table, half of whose bytes were tree pointers.
 struct OpcodeCtx {
-  uint32_t count = 0;
-  ArenaPtr<OpcodeTree> tree;
+  uint32_t count;
+  OpcodeTree tree;
 };
 
 struct ValueEnumModel {
@@ -386,7 +389,7 @@ struct ModelState {
   std::array<Prob, static_cast<size_t>(Section::kCount) * 2> known_opcode{};
   std::vector<ArenaPtr<OpcodeTree>> opcode_index_trees;
   ArenaPtr<BitTree<16>> unknown_opcode_tree;
-  std::vector<OpcodeCtx> opcode_contexts;
+  std::vector<ArenaPtr<OpcodeCtx>> opcode_contexts;
   std::vector<ArenaPtr<CountModel>> count_models;
   UninitArray<uint32_t> last_word_count;
   // Two-level validity flags for the per-(instruction x slot) caches: one
@@ -1239,7 +1242,8 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
     OpcodeTree& tree =
         EnsureContext(model.arena, model.opcode_index_trees[tree_ctx]);
     const uint16_t prev_key = PreviousOpcodeKey(model.tracker);
-    OpcodeCtx& order1 = model.opcode_contexts[prev_key];
+    OpcodeCtx& order1 =
+        EnsureContext(model.arena, model.opcode_contexts[prev_key]);
     uint32_t index = 0;
     if (Bits::kEncoding) {
       const int found = FindInstructionIndex(hint);
@@ -1248,15 +1252,9 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
     }
     if (order1.count < kOpcodeOrder1MinCount) {
       index = tree.CodeValue(bits, model.arena, index);
-      if (!order1.tree) {
-        order1.tree.Make(model.arena);
-      }
-      order1.tree->Train(model.arena, index);
+      order1.tree.Train(model.arena, index);
     } else {
-      if (!order1.tree) {
-        order1.tree.Make(model.arena);
-      }
-      index = order1.tree->CodeValue(bits, model.arena, index);
+      index = order1.tree.CodeValue(bits, model.arena, index);
     }
     if (order1.count != 0xffffffffu) {
       ++order1.count;
