@@ -190,11 +190,6 @@ void ProbabilityPrimitives() {
   assert(tree6.CodeValue(enc, 33) == 33);
   assert(tree7.CodeValue(enc, 65) == 65);
   assert(tree8.CodeValue(enc, 129) == 129);
-  arixv::Prob rank_slots[arixv::kRankCount + 1];
-  for (int rank = 0; rank <= arixv::kRankCount; ++rank) {
-    assert(arixv::CodeRank(enc, rank_slots, rank) ==
-           (rank == arixv::kRankCount ? arixv::kRankEscape : rank));
-  }
   enc.Flush();
 
   arixv::RangeDecoder range_dec(encoded.data(), encoded.size());
@@ -220,12 +215,6 @@ void ProbabilityPrimitives() {
   assert(dtree6.CodeValue(dec, 0) == 33);
   assert(dtree7.CodeValue(dec, 0) == 65);
   assert(dtree8.CodeValue(dec, 0) == 129);
-  arixv::Prob drank_slots[arixv::kRankCount + 1];
-  for (int rank = 0; rank <= arixv::kRankCount; ++rank) {
-    const int expected =
-        rank == arixv::kRankCount ? arixv::kRankEscape : rank;
-    assert(arixv::CodeRank(dec, drank_slots, 0) == expected);
-  }
   assert(!dec.exhausted());
 }
 

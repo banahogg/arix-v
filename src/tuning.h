@@ -28,12 +28,6 @@
 #ifndef ARIXV_KRANGE_TOP
 #define ARIXV_KRANGE_TOP (1u << 24)
 #endif
-#ifndef ARIXV_KRANK_COUNT
-#define ARIXV_KRANK_COUNT 8
-#endif
-#ifndef ARIXV_KRANK_ESCAPE
-#define ARIXV_KRANK_ESCAPE ARIXV_KRANK_COUNT
-#endif
 #ifndef ARIXV_KMODE_STORED
 #define ARIXV_KMODE_STORED 0
 #endif
@@ -117,12 +111,6 @@ constexpr int kProbAdaptMinShift = ARIXV_KPROB_ADAPT_MIN_SHIFT;
 
 // Range coder renormalization threshold.
 constexpr uint32_t kRangeTop = ARIXV_KRANGE_TOP;
-
-// Number of rank-list entries coded before falling back to the escape path.
-constexpr int kRankCount = ARIXV_KRANK_COUNT;
-
-// Rank value returned by CodeRank when no slot matches.
-constexpr int kRankEscape = ARIXV_KRANK_ESCAPE;
 
 // Container mode for verbatim payloads.
 constexpr uint8_t kModeStored = ARIXV_KMODE_STORED;

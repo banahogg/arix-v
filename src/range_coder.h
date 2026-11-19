@@ -55,17 +55,6 @@ struct Prob {
     }
     state = static_cast<uint16_t>((count << kProbBits) | v);
   }
-
-  void UpdateSteady(int bit) {
-    const uint16_t old_state = state;
-    uint16_t v = old_state & kValueMask;
-    if (bit == 0) {
-      v = static_cast<uint16_t>(v + ((kProbScale - v) >> kProbShift));
-    } else {
-      v = static_cast<uint16_t>(v - (v >> kProbShift));
-    }
-    state = static_cast<uint16_t>((old_state & ~kValueMask) | v);
-  }
 };
 
 static_assert(sizeof(Prob) == sizeof(uint16_t),
@@ -109,14 +98,6 @@ struct Prob {
   }
 
   void UpdateFromRaw(uint16_t, int bit) { Update(bit); }
-
-  void UpdateSteady(int bit) {
-    if (bit == 0) {
-      v = static_cast<uint16_t>(v + ((kProbScale - v) >> kProbShift));
-    } else {
-      v = static_cast<uint16_t>(v - (v >> kProbShift));
-    }
-  }
 };
 
 #endif

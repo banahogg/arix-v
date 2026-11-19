@@ -222,9 +222,6 @@ struct BitTree {
     }
   }
 
-  // Steady-rate shadow update along value's path (no coding).
-  void Train(uint32_t value) { TrainFrom<0>(value, 0, 0); }
-
  private:
   template <int kPrefix>
   static constexpr int Chunk() { return kPrefix == 0 ? kFirstChunk : 4; }
@@ -244,19 +241,6 @@ struct BitTree {
                                         base + (1u << kPrefix));
     } else {
       return next;
-    }
-  }
-
-  template <int kPrefix>
-  void TrainFrom(uint32_t value, uint32_t prefix_value, uint32_t base) {
-    constexpr int kChunk = Chunk<kPrefix>();
-    constexpr int kShift = kBits - kPrefix - kChunk;
-    const uint32_t s = (value >> kShift) & ((1u << kChunk) - 1u);
-    SymbolCdfTrain<1 << kChunk, kRateCap>(tables[base + prefix_value],
-                                static_cast<int>(s));
-    if constexpr (kPrefix + kChunk < kBits) {
-      TrainFrom<kPrefix + kChunk>(value, (prefix_value << kChunk) | s,
-                                  base + (1u << kPrefix));
     }
   }
 };
@@ -357,16 +341,6 @@ uint32_t CodeUint(Coder& coder, Arena& arena, UintModel& model, uint32_t v) {
     }
   }
   return Coder::kEncoding ? v : out;
-}
-
-template <typename Coder>
-int CodeRank(Coder& coder, Prob slots[kRankCount + 1], int rank) {
-  for (int i = 0; i < kRankCount; ++i) {
-    if (coder.CodeBit(slots[i], rank == i)) {
-      return i;
-    }
-  }
-  return kRankEscape;
 }
 
 // An 8-bit value, symbol-for-symbol identical to BitTree<8, kRateCap> (a
