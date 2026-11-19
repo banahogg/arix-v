@@ -14,19 +14,17 @@ output):
 
 | tool | mean | median | total | decode |
 |---|---|---|---|---|
-| smol-v | 0.3865 | 0.3831 | 0.3715 | 1214.36 MiB/s |
-| yari-v | 0.3395 | 0.3373 | 0.3367 | 731.13 MiB/s |
-| zstd -19 | 0.3438 | 0.3330 | 0.2756 | 647.55 MiB/s |
-| smol-v + zstd -19 | 0.2647 | 0.2534 | 0.1950 | 621.80 MiB/s |
-| **ARIX-V** | **0.2203** | **0.2104** | **0.1681** | **66.20 MiB/s** |
+| smol-v | 0.3865 | 0.3831 | 0.3715 | 1236.70 MiB/s |
+| yari-v | 0.3395 | 0.3373 | 0.3367 | 730.57 MiB/s |
+| zstd -19 | 0.3438 | 0.3330 | 0.2756 | 652.23 MiB/s |
+| smol-v + zstd -19 | 0.2647 | 0.2534 | 0.1950 | 622.78 MiB/s |
+| **ARIX-V** | **0.2169** | **0.2073** | **0.1667** | **87.12 MiB/s** |
 
-The script runs each tool in short-lived batch processes that encode each
-file just before decoding it. ARIX-V allocates a fresh model (~0.5 MB) per
-`Decode` call, so in that setting it also pays glibc heap trimming and
-cold-heap page faults; in a long-running process with a warm heap
-(`build/arixv_decode_bench`) the same decoder measures ~84 MiB/s. See
-`docs/development/performance.md` for the decoder history (46 MiB/s on this
-table in July).
+ARIX-V decode was 46 MiB/s on this table in July; the decoder and model-size
+work behind the change (rANS symbol coding, cheaper structural paths, and a
+~66% smaller per-call model footprint, so stateless `Decode` costs almost no
+page faults even in short-lived processes) is recorded in
+`docs/development/performance.md`.
 
 ARIX-V round-trips all 1080 corpus files (including the three big-endian
 modules the other tools reject) and arbitrary non-SPIR-V bytes (byte-fallback

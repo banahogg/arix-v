@@ -1264,6 +1264,24 @@ the same way. Remaining touched memory (~91 KB) is model state decodes
 genuinely use: per-instruction contexts, order-1 opcode contexts, opcode
 leaf groups, each under ~16 KB.
 
+### Stateless vs reusable after the size work (2026-11-18, idle host)
+
+Same method as the re-measurement above (`build/arixv_bench`, all files,
+core 2, interleaved rounds): current `HEAD` (stateless, b22a90b) against
+the reusable `arixv::Decoder` runner built at `21199df`.
+
+| setting | HEAD stateless | 21199df reusable |
+|---|---|---|
+| 64-file batch processes (5 rounds) | 79.3 / 85.7 / 86.1 / 86.5 / 82.7 (median 85.7) MiB/s | 84.1 / 84.4 / 84.4 / 84.7 / 84.1 (median 84.4) MiB/s |
+| one long-lived process (2 rounds) | 85.7 / 87.4 MiB/s | 84.1 / 82.0 MiB/s |
+
+The 23% batch-mode gap (69.3 vs 85.3 MiB/s at 0e9f38c) is gone: with page
+faults per decode down to ~0.1, stateless decode now matches or beats the
+old reusable decoder in both settings. Caveat: `21199df` predates ~5% of
+instruction savings made since, so a reusable decoder rebuilt on today's
+code would likely still lead by a few percent — a small margin, no longer
+the reason to keep two decode paths.
+
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
 `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest
