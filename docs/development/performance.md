@@ -1,5 +1,69 @@
 # Decode performance plan
 
+## Current state (2026-11-18)
+
+**Numbers** (`scripts/bench/benchmark_spv_compressors.py`, 1070-file
+intersection, one pinned core of a Ryzen 9 5950X, idle host): ARIX-V decode
+**87.1 MiB/s**, encode 50.0 MiB/s, total ratio **0.1667** (mean 0.2169,
+median 0.2073). History of the decode figure: ~18 MiB/s (2026-07-06
+baseline) → 46 MiB/s (2026-07-12 README) → 87 MiB/s. For comparison on the
+same run: smol-v 1237, yari-v 731, zstd -19 652, smol-v + zstd -19 623 MiB/s
+at total ratios 0.3715 / 0.3367 / 0.2756 / 0.1950.
+
+**Design as it stands:**
+- Purely adaptive model, no corpus-trained tables (E10 / the
+  `static-opcode-tables` branch is out of scope by policy).
+- Entropy coding: a binary range coder for single-bit flags and mantissa
+  runs, plus adaptive nibble-symbol rANS for every bit tree, in one
+  two-ended payload (range bytes forward, rANS words backward, no length
+  field). Container magic `ARX2`.
+- One decode path: stateless `arixv::Decode()`, thread-safe;
+  `arixv_decoder_compat.h` keeps a forwarding `arixv::Decoder` for old
+  callers. Re-timed after the size work, stateless matches or beats the
+  removed reusable decoder (see "Stateless vs reusable after the size
+  work").
+- Per-call model footprint: ~154 KB heap requested and ~91 KB touched per
+  decode (was ~500 / ~265 KB), lazily created contexts in an arena with
+  geometric blocks, ~0.1 page faults per decode even in short-lived
+  processes.
+- Structural ceiling (entropy coding removed, `arixv_decode_bench
+  --raw-residual`): ~165 MiB/s reusable-equivalent at 2026-11-17; entropy
+  coding was ~half of decode instructions at the last profile.
+
+**How to measure** (lessons from this investigation):
+- Decode instructions: callgrind over every 4th corpus file, stateless,
+  per pass = (Ir at 3 iterations − Ir at 1) / 2 — independent of load and
+  of symbol names.
+- Memory: `make build/memory_breakdown` (`ARIXV_MEMSTATS`): heap requested,
+  bytes touched, every model table and arena object type.
+- Allocator interaction: minor page faults per decode in 64-file batch
+  processes (as the cross-tool script runs) *and* in one long-lived process.
+  `arixv_decode_bench` alone keeps a warm, never-trimmed heap and badly
+  understated per-call setup cost — that is what made the reusable decoder
+  look unnecessary at the time it was removed.
+- Wall time: interleaved A/B rounds on one pinned core with an idle SMT
+  sibling; check per-CPU load first (a busy sibling skews results).
+- Ratio: exact corpus encoded bytes; byte-identical changes must keep the
+  corpus and raw-residual outputs and checksums unchanged, plus the
+  mutated-blob differential against the previous CLI.
+
+**Open items:**
+- Tradeoff branches: `size/tradeoff-no-order1-opcode` (corpus +1.07%,
+  instructions −4.0%, ~18 KB less touched) and
+  `size/tradeoff-eight-operand-slots` (+8 bytes, ~3 KB less touched).
+- Remaining structural costs (recency lists, operand cursor, tracker) are
+  targeted-fix territory (E11); a rewritten decode loop was judged not worth
+  it given how diffuse the glue code is.
+- Measured dead ends worth not repeating: plain binary rANS (E-A1),
+  symbol-coded uint mantissas, folding flags into symbols, history-ring
+  recency lists, branch-free binary probability warm-up.
+
+The rest of this file is a chronological log: earlier sections describe
+designs since replaced (the reusable decoder, generation-stamp resets, the
+LZMA flush), and their numbers are as measured at the time.
+
+## Original goal (2026-07-06)
+
 Goal: several-X decode throughput gains, accepting small compression-ratio
 losses where necessary. Baseline (2026-07-06): ~18 MiB/s decode vs ~650-1250
 MiB/s for smol-v/yari-v/zstd baselines.
@@ -220,7 +284,7 @@ format compatibility is not required.
    >16 KiB 45.50 → 48.97 MiB/s. `make test` passes on a clean rebuild with
    the new flags; no new warnings surfaced at LTO link time.
 
-## Current profile (2026-07-10)
+## Profile (2026-07-10)
 
 Full 1080-file corpus, core-pinned Ryzen 9 5950X sandbox, `-O3 -flto=auto`,
 100 decode iterations. Root `perf` is available in this sandbox; unprivileged
@@ -758,6 +822,12 @@ produce identical bytes and checksums.
   because GCC didn't vectorize it, for only ~+1.6% wall time; the explicit
   SSE2 path is 58.3 → 64.1 MiB/s.
 
+First-pass profile (2026-11-17, reusable decoder, instruction share):
+`CodeModule` body 46.7%, `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor
+`Consume`+`Next` 8.0%, `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain
+flags). The largest remaining decision bucket is the opcode index tree (E10 /
+E-A2).
+
 ### Third pass (2026-11-17, quiet host)
 
 - **Force-inline the symbol decode path: kept, neutral.** `DecodeSymbol`
@@ -1282,12 +1352,9 @@ instruction savings made since, so a reusable decoder rebuilt on today's
 code would likely still lead by a few percent — a small margin, no longer
 the reason to keep two decode paths.
 
-Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
-`CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
-`CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest
-remaining decision bucket is the opcode index tree (E10 / E-A2).
+## Suggested attack order (July 2026 — historical)
 
-## Suggested attack order
+*Superseded by "Current state" at the top of this file; kept for the record.*
 
 Tier A first — pure profiling debt, no ratio risk; estimated to take decode
 from ~18 to ~50-70 MiB/s (strcmp + allocation + tracker alone are ~40% of
