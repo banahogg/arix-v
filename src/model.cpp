@@ -209,7 +209,7 @@ struct OpcodeCtx {
 
 struct ValueEnumModel {
   Prob known;
-  BitTree<8> index;
+  LazyLeafTree8<kSymbolRateCap> index;
   UintModel escape;
 };
 
@@ -221,7 +221,7 @@ struct BitEnumModel {
 
 struct ExtInstNumberModel {
   Prob known;
-  BitTree<8> index;
+  LazyLeafTree8<kSymbolRateCap> index;
   UintModel escape;
 };
 
@@ -950,7 +950,7 @@ uint32_t CodeValueEnum(Bits& bits, ModelState& model,
   ValueEnumModel& ctx =
       EnsureContext(model.arena, model.value_enums[key]);
   if (bits.CodeBit(ctx.known, known)) {
-    index = ctx.index.CodeValue(bits, index);
+    index = ctx.index.CodeValue(bits, model.arena, index);
     if (!Bits::kEncoding && index < kind.num_enumerants) {
       return GetEnumerant(kind, static_cast<uint16_t>(index)).value;
     }
@@ -1093,7 +1093,7 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
       EnsureContext(model.arena,
                     model.ext_inst_nums[static_cast<size_t>(set_index)]);
   if (bits.CodeBit(ctx.known, known)) {
-    index = ctx.index.CodeValue(bits, index);
+    index = ctx.index.CodeValue(bits, model.arena, index);
     if (!Bits::kEncoding && index < set->num_instructions) {
       return set->instructions[index].opcode;
     }

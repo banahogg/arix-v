@@ -369,15 +369,16 @@ int CodeRank(Coder& coder, Prob slots[kRankCount + 1], int rank) {
   return kRankEscape;
 }
 
-// One byte, symbol-for-symbol identical to BitTree<8, kByteSymbolRateCap>
-// (a 16-symbol high-nibble root, then a 16-symbol low-nibble leaf per high
-// nibble), with each leaf table allocated on first use: text following a
-// given byte uses only a few high nibbles, so most of the 544-byte eager
-// tree was never touched. A fresh leaf is zeroed (uniform), like the eager
-// tree's untouched tables.
-struct ByteTree {
+// An 8-bit value, symbol-for-symbol identical to BitTree<8, kRateCap> (a
+// 16-symbol high-nibble root, then a 16-symbol low-nibble leaf per high
+// nibble), with each leaf table allocated on first use: bytes after a given
+// byte, and enum/ext-inst indices, use only a few high nibbles, so most of
+// the 544-byte eager tree was never touched. A fresh leaf is zeroed
+// (uniform), like the eager tree's untouched tables.
+template <int kRateCap>
+struct LazyLeafTree8 {
   static_assert(kByteBits == 8 && BitTree<kByteBits>::kFirstChunk == 4,
-                "ByteTree mirrors BitTree<8>'s 4/4 chunk layout");
+                "LazyLeafTree8 mirrors BitTree<8>'s 4/4 chunk layout");
   SymbolCdf root;
   std::array<ArenaPtr<SymbolCdf>, 16> leaf;
 
@@ -393,18 +394,20 @@ struct ByteTree {
       }
 #endif
       StatSiteScope<Coder> site(kSiteBitTree);
-      const uint32_t high = coder.template CodeSymbol<16, kByteSymbolRateCap>(
+      const uint32_t high = coder.template CodeSymbol<16, kRateCap>(
           root, (value >> 4) & 15u);
       ArenaPtr<SymbolCdf>& low_table = leaf[high];
       if (!low_table) {
         low_table.Make(arena);
       }
-      const uint32_t low = coder.template CodeSymbol<16, kByteSymbolRateCap>(
+      const uint32_t low = coder.template CodeSymbol<16, kRateCap>(
           *low_table, value & 15u);
       return Coder::kEncoding ? value : ((high << 4) | low);
     }
   }
 };
+
+using ByteTree = LazyLeafTree8<kByteSymbolRateCap>;
 
 // Order-1 byte model: one tree per previous byte, created on first use.
 struct ByteModel {
