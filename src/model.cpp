@@ -352,12 +352,20 @@ struct ModelState {
         type_rank(std::make_unique<std::vector<BitTree<kRankTreeBits>>>(
             static_cast<size_t>(NumInstructionClasses()) + 1)),
         type_escape(static_cast<size_t>(NumInstructionClasses()) + 1),
-        value_enums(static_cast<size_t>(NumOperandKinds()) * 16),
+        value_enum_ordinal(NumOperandKinds()),
         bit_enums(NumOperandKinds()),
         integer_values(
             (static_cast<size_t>(NumInstructionClasses()) + 1) * 9),
         ext_inst_nums(NumExtInstSets()),
-        string_bytes(std::make_unique<ByteModel>()) {}
+        string_bytes(std::make_unique<ByteModel>()) {
+    size_t value_enum_kinds = 0;
+    for (uint16_t k = 0; k < NumOperandKinds(); ++k) {
+      if (GetOperandKind(k).category == OperandCategory::kValueEnum) {
+        value_enum_ordinal[k] = static_cast<uint16_t>(value_enum_kinds++);
+      }
+    }
+    value_enums.resize(value_enum_kinds * 16);
+  }
 
   // Must run before any inst_group/count_model access for inst_index;
   // CodeModule calls it once per instruction with a known descriptor.
@@ -413,6 +421,10 @@ struct ModelState {
   std::array<std::array<BitTree<kRankTreeBits>, 9>, 3> id_rank{};
   std::array<std::array<ArenaPtr<UintModel>, 9>, 3> id_escape{};
 
+  // Value-enum contexts are indexed by (value-enum ordinal, slot): only 56 of
+  // the 91 operand kinds are value enums, so indexing by raw kind wasted
+  // ~40% of a pointer table zeroed every decode.
+  std::vector<uint16_t> value_enum_ordinal;  // per operand kind
   std::vector<ArenaPtr<ValueEnumModel>> value_enums;
   std::vector<std::unique_ptr<BitEnumModel>> bit_enums;
 
@@ -946,7 +958,11 @@ uint32_t CodeValueEnum(Bits& bits, ModelState& model,
     }
     return bits.CodeUint32(hint);
   }
-  const size_t key = static_cast<size_t>(field.kind) * 16 + Slot16(field.slot);
+  // field.kind is a value-enum kind here (the cursor yields kValueEnum only
+  // for those), so its ordinal is valid.
+  const size_t key =
+      static_cast<size_t>(model.value_enum_ordinal[field.kind]) * 16 +
+      Slot16(field.slot);
   ValueEnumModel& ctx =
       EnsureContext(model.arena, model.value_enums[key]);
   if (bits.CodeBit(ctx.known, known)) {
