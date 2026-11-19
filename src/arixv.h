@@ -10,7 +10,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <vector>
 
 namespace arixv {
@@ -18,7 +17,7 @@ namespace arixv {
 // Exact four-byte format identifier for blobs produced by this release. This
 // is the complete format-versioning mechanism: a format change must change
 // all four bytes, and a decoder accepts only an exact match.
-inline constexpr uint8_t kContainerMagic[] = {'A', 'R', 'X', '1'};
+inline constexpr uint8_t kContainerMagic[] = {'A', 'R', 'X', '2'};
 inline constexpr size_t kContainerMagicBytes = sizeof(kContainerMagic);
 
 struct EncodeOptions {
@@ -32,28 +31,6 @@ enum class Status {
   kBadContainer,  // wrong magic, bad mode/header, or trailing bytes
   kTruncated,     // blob ends before the declared output is complete
   kTooLarge,      // declared output size exceeds max_output
-};
-
-struct DecoderState;
-
-// Caller-owned reusable decoder. Not thread-safe: use one instance per
-// concurrent decode job, such as one per pool worker or a checked-out decoder
-// pool. Internal model memory persists across Decode calls and grows toward
-// the high-water mark of inputs seen by this instance.
-class Decoder {
- public:
-  Decoder();
-  ~Decoder();
-  Decoder(Decoder&&) noexcept;
-  Decoder& operator=(Decoder&&) noexcept;
-  Decoder(const Decoder&) = delete;
-  Decoder& operator=(const Decoder&) = delete;
-
-  Status Decode(const uint8_t* data, size_t size, std::vector<uint8_t>& out,
-                size_t max_output = 1u << 30);
-
- private:
-  std::unique_ptr<DecoderState> state_;
 };
 
 // Human-readable name for a Status value, e.g. for error messages.
@@ -71,7 +48,9 @@ std::vector<uint8_t> Encode(const uint8_t* data, size_t size,
 // byte-exactly in `out`. The blob is treated as untrusted: the container is
 // validated, and memory use is bounded by `max_output` rather than by the
 // blob's own header. Returns kOk and the full output, or a failure Status
-// with `out` left empty.
+// with `out` left empty. Stateless and thread-safe: every call builds and
+// frees its own model. (The former reusable arixv::Decoder survives only as
+// a forwarding shim in arixv_decoder_compat.h.)
 Status Decode(const uint8_t* data, size_t size, std::vector<uint8_t>& out,
               size_t max_output = 1u << 30);
 

@@ -7,11 +7,6 @@
 //   - output never exceeds max_output, for a roomy and a tiny cap
 //   - the two caps agree: same bytes when both succeed, and the tiny cap
 //     never succeeds where the roomy cap failed
-//
-// Set ARIXV_FUZZ_STATEFUL=1 to route decodes through one persistent
-// arixv::Decoder instance instead of the stateless entry point. That
-// exercises model-memory reuse across calls, at the cost of reproducibility
-// (a crash may depend on the sequence of prior inputs).
 
 #include <cstdint>
 #include <cstdio>
@@ -27,11 +22,6 @@ constexpr size_t kTinyCap = 64;
 
 arixv::Status DecodeUnderTest(const uint8_t* data, size_t size,
                               std::vector<uint8_t>& out, size_t max_output) {
-  static const bool stateful = std::getenv("ARIXV_FUZZ_STATEFUL") != nullptr;
-  if (stateful) {
-    static arixv::Decoder decoder;
-    return decoder.Decode(data, size, out, max_output);
-  }
   return arixv::Decode(data, size, out, max_output);
 }
 

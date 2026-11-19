@@ -7,6 +7,10 @@
 #include <cstring>
 #include <string>
 
+#if ARIXV_RECENCY_SSE2
+#include <emmintrin.h>
+#endif
+
 #include "operand_cursor.h"
 
 namespace arixv {
@@ -66,7 +70,7 @@ const Tracker::IdInfo* Tracker::IdMap::Find(uint32_t id) const {
   if (id == 0) {
     return has_zero_ ? &zero_info_ : nullptr;
   }
-  if (keys_.empty()) {
+  if (capacity_ == 0) {
     return nullptr;
   }
   size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
@@ -87,7 +91,7 @@ Tracker::IdInfo& Tracker::IdMap::Ensure(uint32_t id) {
     }
     return zero_info_;
   }
-  if (keys_.empty()) {
+  if (capacity_ == 0) {
     Rehash(kIdMapMinSlots);
   }
   size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
@@ -97,8 +101,8 @@ Tracker::IdInfo& Tracker::IdMap::Ensure(uint32_t id) {
     }
     i = (i + 1) & mask_;
   }
-  if ((size_ + 1) * 10 >= keys_.size() * 7) {
-    Rehash(keys_.size() * 2);
+  if ((size_ + 1) * 10 >= capacity_ * 7) {
+    Rehash(capacity_ * 2);
     i = static_cast<size_t>(id * kIdHashMul) & mask_;
     while (slot_gen_[i] == generation_) {
       i = (i + 1) & mask_;
@@ -118,7 +122,7 @@ void Tracker::IdMap::Clear() {
   // pay a one-time bulk reset to re-establish the "0 => empty" invariant.
   ++generation_;
   if (generation_ == 0) {
-    std::fill(slot_gen_.begin(), slot_gen_.end(), 0u);
+    std::fill(slot_gen_.get(), slot_gen_.get() + capacity_, 0u);
     generation_ = 1;
   }
   size_ = 0;
@@ -130,23 +134,26 @@ void Tracker::IdMap::Reserve(size_t expected_ids) {
   while (slots < expected_ids && slots < kIdMapMaxReserveSlots) {
     slots *= 2;
   }
-  if (slots > keys_.size()) {
+  if (slots > capacity_) {
     Rehash(slots);
   }
 }
 
 void Tracker::IdMap::Rehash(size_t slot_count) {
-  std::vector<uint32_t> old_keys = std::move(keys_);
-  std::vector<IdInfo> old_values = std::move(values_);
-  std::vector<uint32_t> old_gen = std::move(slot_gen_);
-  keys_.assign(slot_count, 0u);
-  values_.assign(slot_count, IdInfo{});
-  // Fresh stamps are 0; occupied slots below are stamped with generation_.
-  // generation_ is never 0 during use (Clear() skips 0), so nothing else in
-  // the new array reads as occupied.
-  slot_gen_.assign(slot_count, 0u);
+  const std::unique_ptr<uint32_t[]> old_keys = std::move(keys_);
+  const std::unique_ptr<IdInfo[]> old_values = std::move(values_);
+  const std::unique_ptr<uint32_t[]> old_gen = std::move(slot_gen_);
+  const size_t old_capacity = capacity_;
+  // Keys and values stay uninitialized (written when a slot is claimed);
+  // only the stamps are zeroed. Fresh stamps are 0 and occupied slots below
+  // are stamped with generation_, which is never 0 during use (Clear() skips
+  // 0), so nothing else in the new array reads as occupied.
+  keys_.reset(new uint32_t[slot_count]);
+  values_.reset(new IdInfo[slot_count]);
+  slot_gen_.reset(new uint32_t[slot_count]());
+  capacity_ = slot_count;
   mask_ = slot_count - 1;
-  for (size_t from = 0; from < old_keys.size(); ++from) {
+  for (size_t from = 0; from < old_capacity; ++from) {
     if (old_gen[from] != generation_) {
       continue;  // slot was empty in the current generation
     }
@@ -161,41 +168,86 @@ void Tracker::IdMap::Rehash(size_t slot_count) {
   }
 }
 
-int RecencyList::Find(uint32_t id) const {
-  for (int i = 0; i < size_; ++i) {
-    if (items_[i] == id) {
-      return i;
-    }
+uint32_t RecencyList::MatchMask(uint32_t id) const {
+  // Fixed-width compare over the whole storage (no early-exit branch);
+  // entries past size_ are stale and masked off.
+  uint32_t mask = 0;
+#if ARIXV_RECENCY_SSE2
+  const __m128i key = _mm_set1_epi32(static_cast<int>(id));
+  const __m128i* v = reinterpret_cast<const __m128i*>(items_.data());
+  const __m128i e0 = _mm_cmpeq_epi32(_mm_load_si128(v + 0), key);
+  const __m128i e1 = _mm_cmpeq_epi32(_mm_load_si128(v + 1), key);
+  const __m128i e2 = _mm_cmpeq_epi32(_mm_load_si128(v + 2), key);
+  const __m128i e3 = _mm_cmpeq_epi32(_mm_load_si128(v + 3), key);
+  const __m128i lo = _mm_packs_epi32(e0, e1);
+  const __m128i hi = _mm_packs_epi32(e2, e3);
+  mask = static_cast<uint32_t>(_mm_movemask_epi8(_mm_packs_epi16(lo, hi)));
+#else
+  for (int i = 0; i < kRecencyListStorageCap; ++i) {
+    mask |= static_cast<uint32_t>(items_[static_cast<size_t>(i)] == id) << i;
   }
-  return -1;
+#endif
+  return mask & ((1u << size_) - 1u);
+}
+
+int RecencyList::Find(uint32_t id) const {
+  const uint32_t mask = MatchMask(id);
+  return mask != 0 ? __builtin_ctz(mask) : -1;
 }
 
 void RecencyList::Touch(uint32_t id) {
   if (cap_ <= 0) {
     return;
   }
-  const int rank = Find(id);
-  if (rank == 0) {
-    return;
+  const uint32_t mask = MatchMask(id);
+  // `last` is the slot that the move-to-front overwrites: the touched entry
+  // when present, else the first free slot (or the oldest entry when full).
+  int last;
+  if (mask != 0) {
+    last = __builtin_ctz(mask);
+    if (last == 0) {
+      return;
+    }
+  } else {
+    last = size_ < cap_ ? size_ : cap_ - 1;
+    if (size_ < cap_) {
+      ++size_;
+    }
   }
-  if (rank > 0) {
-    // Move-to-front by shifting only the [0, rank] prefix, instead of an
-    // erase + front insert that each shift the whole vector. Result is
-    // identical: items_[rank] leads, the rest keep their relative order.
-    std::memmove(&items_[1], &items_[0],
-                 static_cast<size_t>(rank) * sizeof(uint32_t));
-    items_[0] = id;
-    return;
-  }
-  const int move_count = size_ < cap_ ? size_ : cap_ - 1;
-  if (move_count > 0) {
-    std::memmove(&items_[1], &items_[0],
-                 static_cast<size_t>(move_count) * sizeof(uint32_t));
+  // Shift [0, last) up by one with a fixed-width select instead of a
+  // variable-length memmove call; slots past `last` keep their value.
+#if ARIXV_RECENCY_SSE2
+  __m128i* v = reinterpret_cast<__m128i*>(items_.data());
+  const __m128i v0 = _mm_load_si128(v + 0);
+  const __m128i v1 = _mm_load_si128(v + 1);
+  const __m128i v2 = _mm_load_si128(v + 2);
+  const __m128i v3 = _mm_load_si128(v + 3);
+  // Whole list moved up one lane, id entering at lane 0.
+  const __m128i s0 = _mm_or_si128(_mm_slli_si128(v0, 4),
+                                  _mm_cvtsi32_si128(static_cast<int>(id)));
+  const __m128i s1 = _mm_or_si128(_mm_slli_si128(v1, 4), _mm_srli_si128(v0, 12));
+  const __m128i s2 = _mm_or_si128(_mm_slli_si128(v2, 4), _mm_srli_si128(v1, 12));
+  const __m128i s3 = _mm_or_si128(_mm_slli_si128(v3, 4), _mm_srli_si128(v2, 12));
+  // Lane i takes the shifted value iff i <= last.
+  const __m128i limit = _mm_set1_epi32(last + 1);
+  const auto blend = [&limit](__m128i shifted, __m128i orig, int base) {
+    const __m128i lane = _mm_setr_epi32(base, base + 1, base + 2, base + 3);
+    const __m128i take = _mm_cmpgt_epi32(limit, lane);
+    return _mm_or_si128(_mm_and_si128(take, shifted),
+                        _mm_andnot_si128(take, orig));
+  };
+  _mm_store_si128(v + 0, blend(s0, v0, 0));
+  _mm_store_si128(v + 1, blend(s1, v1, 4));
+  _mm_store_si128(v + 2, blend(s2, v2, 8));
+  _mm_store_si128(v + 3, blend(s3, v3, 12));
+#else
+  const std::array<uint32_t, kRecencyListStorageCap> old = items_;
+  for (int i = 1; i < kRecencyListStorageCap; ++i) {
+    const size_t u = static_cast<size_t>(i);
+    items_[u] = i <= last ? old[u - 1] : old[u];
   }
   items_[0] = id;
-  if (size_ < cap_) {
-    ++size_;
-  }
+#endif
 }
 
 void RecencyList::Remove(uint32_t id) {
@@ -244,12 +296,34 @@ void Tracker::OnIdUse(uint32_t id) {
   }
 }
 
-void Tracker::OnResultId(uint32_t id) {
-  Ensure(id);
-  recent_ids_.Touch(id);
+// Result types are coded from recent_types(), so touching recent_ids() here
+// only pushed the values that ID operands reference further down the list
+// (removing it: −0.52% corpus size alone, −1.04% with OnResultId below).
+void Tracker::OnResultTypeUse(uint32_t id) {
+  IdInfo& info = Ensure(id);
+  if (!info.defined) {
+    forward_refs_.Touch(id);
+  }
+  if (info.kind == IdKind::kType) {
+    recent_types_.Touch(id);
+  }
 }
 
-void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count) {
+// No recency touch: OnInstructionEnd moves the result to the front once the
+// instruction is complete, and an instruction's own later operands do not
+// reference its result, so touching it here only shifted their ranks.
+// No map insert either: OnInstructionEnd inserts the result, and until then a
+// default entry and a missing one read the same to every consumer (Find ->
+// TypeWidth 0 / no ext set; OnIdUse and Ensure create the default). Only
+// max_seen_id_ must see the ID now.
+void Tracker::OnResultId(uint32_t id) {
+  if (id > max_seen_id_) {
+    max_seen_id_ = id;
+  }
+}
+
+void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
+                               uint16_t inst_index) {
   const InstructionDesc* desc = cur_desc_;
   const uint32_t opcode = cur_opcode_;
 
@@ -312,6 +386,7 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count) {
   }
 
   prev_opcode_ = static_cast<uint16_t>(opcode);
+  prev_inst_index_ = inst_index;
   prev_opcode_class_ = desc ? desc->instruction_class : 0xFFu;
   ++instruction_index_;
 }
@@ -319,6 +394,7 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count) {
 void Tracker::Reset() {
   section_ = Section::kCapabilities;
   prev_opcode_ = 0xFFFF;
+  prev_inst_index_ = 0xFFFF;
   prev_opcode_class_ = 0xFF;
   in_function_ = false;
   in_block_ = false;
@@ -335,9 +411,11 @@ void Tracker::Reset() {
 void Tracker::Reserve(size_t word_count) {
   // word_count is derived from the untrusted header size; clamp so a hostile
   // container cannot force a giant allocation before any payload is decoded.
-  // A module cannot define or reference more distinct IDs than it has words,
-  // so word_count is already a comfortable overestimate of the ID count.
-  ids_.Reserve(std::min<size_t>(word_count, kMaxReserveWords));
+  // Real modules define roughly one ID per 4-6 words, so word_count / 4
+  // rarely needs a doubling rehash; the full word count overprovisioned the
+  // 24-byte slots ~4x (corpus-measured: page faults per decode 1.55 -> 0.32
+  // in 64-file batch processes; / 2 was neutral and / 8 rehashed too often).
+  ids_.Reserve(std::min<size_t>(word_count, kMaxReserveWords) / 4);
 }
 
 Tracker::IdInfo& Tracker::Ensure(uint32_t id) {

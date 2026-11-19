@@ -55,17 +55,6 @@ struct Prob {
     }
     state = static_cast<uint16_t>((count << kProbBits) | v);
   }
-
-  void UpdateSteady(int bit) {
-    const uint16_t old_state = state;
-    uint16_t v = old_state & kValueMask;
-    if (bit == 0) {
-      v = static_cast<uint16_t>(v + ((kProbScale - v) >> kProbShift));
-    } else {
-      v = static_cast<uint16_t>(v - (v >> kProbShift));
-    }
-    state = static_cast<uint16_t>((old_state & ~kValueMask) | v);
-  }
 };
 
 static_assert(sizeof(Prob) == sizeof(uint16_t),
@@ -109,14 +98,6 @@ struct Prob {
   }
 
   void UpdateFromRaw(uint16_t, int bit) { Update(bit); }
-
-  void UpdateSteady(int bit) {
-    if (bit == 0) {
-      v = static_cast<uint16_t>(v + ((kProbScale - v) >> kProbShift));
-    } else {
-      v = static_cast<uint16_t>(v - (v >> kProbShift));
-    }
-  }
 };
 
 #endif
@@ -146,11 +127,19 @@ class RangeEncoder {
     Normalize();
   }
 
+  // Short flush: after the last Normalize, range >= 2^24, so [low,
+  // low + range) contains low rounded up to a multiple of 2^16 together with
+  // every value sharing its top 16 bits. Emitting only the pending cache and
+  // those two bytes (3 instead of LZMA's 5) is enough; the decoder's last
+  // kRangeTailSlack reads are don't-care.
   void Flush() {
+    low_ = (low_ + 0xFFFFu) & ~static_cast<uint64_t>(0xFFFFu);
     for (int i = 0; i < kRangeFlushBytes; ++i) {
       ShiftLow();
     }
   }
+
+  std::vector<uint8_t>& out() { return out_; }
 
  private:
   void Normalize() {
@@ -165,8 +154,14 @@ class RangeEncoder {
         static_cast<uint32_t>(low_ >> 32) != 0) {
       uint8_t temp = cache_;
       do {
-        out_.push_back(static_cast<uint8_t>(
-            temp + static_cast<uint8_t>(low_ >> 32)));
+        const uint8_t b =
+            static_cast<uint8_t>(temp + static_cast<uint8_t>(low_ >> 32));
+        // LZMA's first byte sits above the initial 32-bit window and is
+        // always 0; it is not stored.
+        if (started_) {
+          out_.push_back(b);
+        }
+        started_ = true;
         temp = 0xFF;
       } while (--cache_size_ != 0);
       cache_ = static_cast<uint8_t>(static_cast<uint32_t>(low_) >> 24);
@@ -180,12 +175,12 @@ class RangeEncoder {
   uint32_t range_ = 0xFFFFFFFFu;
   uint8_t cache_ = 0;
   uint64_t cache_size_ = 1;
+  bool started_ = false;
 };
 
 class RangeDecoder {
  public:
   RangeDecoder(const uint8_t* data, size_t size) : data_(data), size_(size) {
-    (void)ReadByte();  // LZMA streams start with a dummy byte.
     for (int i = 0; i < 4; ++i) {
       code_ = (code_ << 8) | ReadByte();
     }
@@ -207,6 +202,18 @@ class RangeDecoder {
     return bit;
   }
 
+  // Decodes n bits MSB first, bit i using its own probs[i].
+  uint32_t DecodeSequence(Prob* probs, int n) {
+    State st = Load();
+    uint32_t value = 0;
+    for (int i = 0; i < n; ++i) {
+      value = (value << 1) |
+              static_cast<uint32_t>(DecodeBitLocal(st, probs[i]));
+    }
+    Store(st);
+    return value;
+  }
+
   int DecodeBitDirect() {
     range_ >>= 1;
     int bit = 0;
@@ -219,16 +226,63 @@ class RangeDecoder {
   }
 
   bool exhausted() const { return exhausted_; }
-  size_t consumed_size() const { return pos_; }
+  // Bytes the encoder actually wrote (reads minus the don't-care tail).
+  size_t consumed_size() const {
+    return pos_ >= static_cast<size_t>(kRangeTailSlack)
+               ? pos_ - static_cast<size_t>(kRangeTailSlack)
+               : 0;
+  }
+  const uint8_t* data() const { return data_; }
+  size_t size() const { return size_; }
 
  private:
-  uint8_t ReadByte() {
-    if (pos_ >= size_) {
-      exhausted_ = true;
+  struct State {
+    uint32_t code;
+    uint32_t range;
+    size_t pos;
+  };
+
+  State Load() const { return State{code_, range_, pos_}; }
+  void Store(const State& st) {
+    code_ = st.code;
+    range_ = st.range;
+    pos_ = st.pos;
+  }
+
+  // Same arithmetic as DecodeBit/Normalize/ReadByte, on local state.
+  int DecodeBitLocal(State& st, Prob& p) {
+    const uint16_t raw = p.raw();
+    const uint32_t bound = (st.range >> kProbBits) * Prob::ValueFromRaw(raw);
+    int bit = 0;
+    if (st.code < bound) {
+      st.range = bound;
+    } else {
+      st.code -= bound;
+      st.range -= bound;
+      bit = 1;
+    }
+    p.UpdateFromRaw(raw, bit);
+    while (st.range < kRangeTop) {
+      st.range <<= 8;
+      st.code = (st.code << 8) | Fetch(st.pos);
+    }
+    return bit;
+  }
+
+  // Up to kRangeTailSlack reads past the end are virtual zeros (the flush's
+  // don't-care tail); anything further means the stream was cut short.
+  uint8_t Fetch(size_t& pos) {
+    if (pos < size_) {
+      return data_[pos++];
+    }
+    if (pos < size_ + static_cast<size_t>(kRangeTailSlack)) {
+      ++pos;
       return 0;
     }
-    return data_[pos_++];
+    exhausted_ = true;
+    return 0;
   }
+  uint8_t ReadByte() { return Fetch(pos_); }
 
   void Normalize() {
     while (range_ < kRangeTop) {

@@ -22,12 +22,12 @@ SOURCES = [
     "src/operand_cursor.cpp", "src/grammar_tables.cpp",
 ]
 
-# knob -> candidate values (first entry = current default).
+# knob -> candidate values (first entry = current default). Rank-list caps
+# must stay <= 2^kRankTreeBits = 16 (static_assert in tuning.h).
 KNOBS: dict[str, list[int]] = {
     "ARIXV_KPROB_SHIFT": [5, 4, 6],
-    "ARIXV_KRANK_LIST_CAP_IDS": [64, 32, 128],
-    "ARIXV_KRANK_LIST_CAP_TYPES": [64, 32, 128],
-    "ARIXV_KRANK_LIST_CAP_VALUES": [128, 64, 256],
+    "ARIXV_KRANK_LIST_CAP_IDS": [16, 8, 12],
+    "ARIXV_KRANK_LIST_CAP_TYPES": [16, 8, 12],
     "ARIXV_KUINT_HIGH_BITS": [8, 6, 12],
 }
 
@@ -54,9 +54,10 @@ def total_ratio(exe: Path, files: list[Path]) -> float:
         proc = subprocess.run([str(exe), *map(str, batch)],
                               capture_output=True, text=True, check=True)
         for line in proc.stdout.splitlines():
-            _, in_s, out_s, _ = line.split("\t")
-            total_in += int(in_s)
-            total_out += int(out_s)
+            # path, input_bytes, encoded_bytes, encode_ns, decode_ns
+            fields = line.split("\t")
+            total_in += int(fields[1])
+            total_out += int(fields[2])
     return total_out / total_in
 
 

@@ -98,11 +98,6 @@ std::vector<uint8_t> EncodeStored(const uint8_t* data, size_t size) {
 
 }  // namespace
 
-struct DecoderState {
-  ModuleDecoder spirv_decoder;
-  ByteModel byte_model;
-};
-
 std::vector<uint8_t> Encode(const uint8_t* data, size_t size,
                             const EncodeOptions& opts) {
   if (size > std::numeric_limits<uint32_t>::max()) {
@@ -135,13 +130,8 @@ std::vector<uint8_t> Encode(const uint8_t* data, size_t size,
   return coded;
 }
 
-Decoder::Decoder() : state_(std::make_unique<DecoderState>()) {}
-Decoder::~Decoder() = default;
-Decoder::Decoder(Decoder&&) noexcept = default;
-Decoder& Decoder::operator=(Decoder&&) noexcept = default;
-
-Status Decoder::Decode(const uint8_t* data, size_t size,
-                       std::vector<uint8_t>& out, size_t max_output) {
+Status Decode(const uint8_t* data, size_t size, std::vector<uint8_t>& out,
+              size_t max_output) {
   out.clear();
   if (!HasContainerMagic(data, size)) {
     return Status::kBadContainer;
@@ -178,31 +168,24 @@ Status Decoder::Decode(const uint8_t* data, size_t size,
     if (original_size < 20 || (original_size % 4) != 0) {
       return Status::kBadContainer;
     }
-    return state_->spirv_decoder.Decode(data + pos, size - pos, original_size,
-                                        out);
+    return DecodeModule(data + pos, size - pos, original_size, out);
   }
 
   out.reserve(CappedDecodeReserve(size - pos, original_size));
   RangeDecoder range(data + pos, size - pos);
   BitDecoder coder(range);
-  BeginByteModelGeneration(state_->byte_model);
-  CodeBytePayload(coder, state_->byte_model, nullptr, original_size,
+  ByteModel byte_model;
+  CodeBytePayload(coder, byte_model, nullptr, original_size,
                   [&out](uint8_t b) { out.push_back(b); });
   if (coder.exhausted()) {
     out.clear();
-    return Status::kTruncated;
+    return coder.range_exhausted() ? Status::kTruncated : Status::kBadContainer;
   }
-  if (range.consumed_size() != size - pos) {
+  if (!coder.ConsumedExactly()) {
     out.clear();
     return Status::kBadContainer;
   }
   return Status::kOk;
-}
-
-Status Decode(const uint8_t* data, size_t size, std::vector<uint8_t>& out,
-              size_t max_output) {
-  Decoder decoder;
-  return decoder.Decode(data, size, out, max_output);
 }
 
 const char* StatusToString(Status status) {

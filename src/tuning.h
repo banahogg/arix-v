@@ -28,12 +28,6 @@
 #ifndef ARIXV_KRANGE_TOP
 #define ARIXV_KRANGE_TOP (1u << 24)
 #endif
-#ifndef ARIXV_KRANK_COUNT
-#define ARIXV_KRANK_COUNT 8
-#endif
-#ifndef ARIXV_KRANK_ESCAPE
-#define ARIXV_KRANK_ESCAPE ARIXV_KRANK_COUNT
-#endif
 #ifndef ARIXV_KMODE_STORED
 #define ARIXV_KMODE_STORED 0
 #endif
@@ -47,7 +41,7 @@
 #define ARIXV_KMAX_SIZE_VARINT_BYTES 5
 #endif
 #ifndef ARIXV_KRANGE_FLUSH_BYTES
-#define ARIXV_KRANGE_FLUSH_BYTES 5
+#define ARIXV_KRANGE_FLUSH_BYTES 3
 #endif
 #ifndef ARIXV_KBYTE_CONTEXT_COUNT
 #define ARIXV_KBYTE_CONTEXT_COUNT 256
@@ -87,7 +81,9 @@
 #define ARIXV_KUINT_HIGH_BITS 8
 #endif
 #ifndef ARIXV_KUINT_REST_BITS
-#define ARIXV_KUINT_REST_BITS 24
+// Derived so that overriding ARIXV_KUINT_HIGH_BITS alone stays valid (24 for
+// the default 8).
+#define ARIXV_KUINT_REST_BITS (32 - ARIXV_KUINT_HIGH_BITS)
 #endif
 
 namespace arixv {
@@ -118,12 +114,6 @@ constexpr int kProbAdaptMinShift = ARIXV_KPROB_ADAPT_MIN_SHIFT;
 // Range coder renormalization threshold.
 constexpr uint32_t kRangeTop = ARIXV_KRANGE_TOP;
 
-// Number of rank-list entries coded before falling back to the escape path.
-constexpr int kRankCount = ARIXV_KRANK_COUNT;
-
-// Rank value returned by CodeRank when no slot matches.
-constexpr int kRankEscape = ARIXV_KRANK_ESCAPE;
-
 // Container mode for verbatim payloads.
 constexpr uint8_t kModeStored = ARIXV_KMODE_STORED;
 
@@ -139,6 +129,13 @@ constexpr int kMaxSizeVarintBytes = ARIXV_KMAX_SIZE_VARINT_BYTES;
 // Maximum number of bytes emitted by RangeEncoder::Flush().
 constexpr int kRangeFlushBytes = ARIXV_KRANGE_FLUSH_BYTES;
 
+// Bytes the range decoder reads past the encoder's last byte. The flush pins
+// a code value whose low 16 bits are zero, so its last two bytes are left
+// out and whatever the decoder reads there (the start of the rANS words, or
+// virtual zeros past the payload end) cannot change a decision.
+constexpr int kRangeTailSlack = 5 - kRangeFlushBytes;
+static_assert(kRangeTailSlack == 2, "flush/slack must cover a 4-byte window");
+
 // Byte contexts used by the M1 order-1 byte model.
 constexpr int kByteContextCount = ARIXV_KBYTE_CONTEXT_COUNT;
 
@@ -150,6 +147,21 @@ constexpr int kByteBits = ARIXV_KBYTE_BITS;
 constexpr int kRankListCap = ARIXV_KRANK_LIST_CAP;
 constexpr int kRankListCapIds = ARIXV_KRANK_LIST_CAP_IDS;
 constexpr int kRankListCapTypes = ARIXV_KRANK_LIST_CAP_TYPES;
+
+// Symbol-coded BitTree CDFs (symbol_coder.h): adaptation shift starts at 1
+// and grows with the per-table count up to the tree's cap (also the steady
+// rate used for shadow training). Byte trees (high-entropy string and
+// fallback bytes) adapt more slowly.
+constexpr int kSymbolRateCap = 5;
+constexpr int kByteSymbolRateCap = 7;
+
+// Depth of the rank-coding bit trees for the ID/type/forward-ref recency
+// lists. Must cover every list position, so it tracks the largest cap.
+constexpr int kRankTreeBits = 4;
+static_assert((1 << kRankTreeBits) >= kRankListCap &&
+                  (1 << kRankTreeBits) >= kRankListCapIds &&
+                  (1 << kRankTreeBits) >= kRankListCapTypes,
+              "rank trees must address every recency-list position");
 
 // See ARIXV_KMAX_RESERVE_WORDS above.
 constexpr size_t kMaxReserveWords = ARIXV_KMAX_RESERVE_WORDS;
@@ -176,6 +188,12 @@ constexpr int kUintHighBits = ARIXV_KUINT_HIGH_BITS;
 
 // Remaining uint32 payload bits after kUintHighBits.
 constexpr int kUintRestBits = ARIXV_KUINT_REST_BITS;
+// A 32-bit value has up to 31 mantissa bits below its leading 1; the shared
+// `rest` probabilities must cover every one past kUintHighBits, or CodeUint
+// indexes past them (an override of ARIXV_KUINT_HIGH_BITS alone used to do
+// exactly that with the old fixed default of 24).
+static_assert(kUintHighBits >= 0 && kUintHighBits + kUintRestBits >= 31,
+              "kUintRestBits must cover the mantissa bits past kUintHighBits");
 
 }  // namespace arixv
 

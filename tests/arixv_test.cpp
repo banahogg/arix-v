@@ -5,9 +5,11 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "arixv.h"
+#include "arixv_decoder_compat.h"
 #include "tuning.h"
 
 namespace {
@@ -63,15 +65,76 @@ void BasicRoundTrips() {
 
 void GoldenSpirvEncoding() {
   // Minimal little-endian SPIR-V module: header only, version 1.3, bound 1.
-  // This is an exact ARX1 format vector. Any byte-format change must use a
-  // new magic and update this vector for that format.
+  // This is an exact ARX2 format vector. Any byte-format change must use a
+  // new magic and update this vector for that format. The last four bytes
+  // are the rANS stream (version major/minor are symbol-coded).
   const std::vector<uint8_t> input = {
       0x03, 0x02, 0x23, 0x07, 0x00, 0x03, 0x01, 0x00, 0x00, 0x00,
       0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
   };
   const std::vector<uint8_t> expected = {
-      0x41, 0x52, 0x58, 0x31, 0x02, 0x14, 0x00,
-      0x44, 0xbf, 0xf8, 0x45, 0x76, 0xe8, 0x00,
+      0x41, 0x52, 0x58, 0x32, 0x02, 0x14, 0x70, 0x00, 0xb4,
+      0x1e, 0x00, 0x0a, 0x0d, 0x00,
+  };
+  arixv::EncodeOptions options;
+  options.force_coded = true;
+  const std::vector<uint8_t> encoded =
+      arixv::Encode(input.data(), input.size(), options);
+  assert(encoded == expected);
+  assert(ContainerMode(encoded) == arixv::kModeSpirv);
+
+  std::vector<uint8_t> decoded;
+  assert(arixv::Decode(expected.data(), expected.size(), decoded) ==
+         arixv::Status::kOk);
+  assert(decoded == input);
+}
+
+void GoldenSpirvModuleEncoding() {
+  // A minimal but complete fragment shader (19 instructions): capability,
+  // memory model, entry point with a name string, execution mode, OpName,
+  // a decoration, void/function/float/vector/pointer types, a constant and
+  // a composite, an output variable, and a function storing to it. Unlike
+  // the header-only vector above it exercises the opcode trees, word counts,
+  // result IDs, ranked ID/type references, enums, literals, strings, and
+  // both entropy streams. This is an exact ARX2 format vector: any
+  // byte-format change must use a new magic and update this vector.
+  const std::vector<uint32_t> words = {
+      0x07230203, 0x00010000, 0, 11, 0,         // header, bound 11
+      (2u << 16) | 17, 1,                       // OpCapability Shader
+      (3u << 16) | 14, 0, 1,                    // OpMemoryModel Logical GLSL450
+      (6u << 16) | 15, 4, 1, 0x6e69616d, 0, 2,  // OpEntryPoint Fragment %1 "main" %2
+      (3u << 16) | 16, 1, 7,                    // OpExecutionMode %1 OriginUpperLeft
+      (4u << 16) | 5, 1, 0x6e69616d, 0,         // OpName %1 "main"
+      (4u << 16) | 71, 2, 30, 0,                // OpDecorate %2 Location 0
+      (2u << 16) | 19, 3,                       // %3 = OpTypeVoid
+      (3u << 16) | 33, 4, 3,                    // %4 = OpTypeFunction %3
+      (3u << 16) | 22, 5, 32,                   // %5 = OpTypeFloat 32
+      (4u << 16) | 23, 6, 5, 4,                 // %6 = OpTypeVector %5 4
+      (4u << 16) | 32, 7, 3, 6,                 // %7 = OpTypePointer Output %6
+      (4u << 16) | 59, 7, 2, 3,                 // %2 = OpVariable %7 Output
+      (4u << 16) | 43, 5, 8, 0x3f800000,        // %8 = OpConstant %5 1.0
+      (7u << 16) | 44, 6, 9, 8, 8, 8, 8,        // %9 = OpConstantComposite %6 %8 x4
+      (5u << 16) | 54, 3, 1, 0, 4,              // %1 = OpFunction %3 None %4
+      (2u << 16) | 248, 10,                     // %10 = OpLabel
+      (3u << 16) | 62, 2, 9,                    // OpStore %2 %9
+      (1u << 16) | 253,                         // OpReturn
+      (1u << 16) | 56,                          // OpFunctionEnd
+  };
+  std::vector<uint8_t> input;
+  for (uint32_t w : words) {
+    for (int i = 0; i < 4; ++i) {
+      input.push_back(static_cast<uint8_t>(w >> (8 * i)));
+    }
+  }
+  const std::vector<uint8_t> expected = {
+      0x41, 0x52, 0x58, 0x32, 0x02, 0x98, 0x02, 0x7b, 0xde, 0x2e, 0x9a, 0x17,
+      0x9c, 0xfb, 0xee, 0xae, 0x2e, 0xae, 0x90, 0x40, 0x05, 0x15, 0xec, 0x06,
+      0x5b, 0x4a, 0xca, 0xf0, 0xb0, 0x05, 0x07, 0x8b, 0x56, 0x03, 0x32, 0xc8,
+      0xd5, 0x16, 0xf0, 0x12, 0xc8, 0x16, 0x0e, 0x00, 0x69, 0xa8, 0x27, 0xd1,
+      0x93, 0x14, 0x73, 0x86, 0x9b, 0x0d, 0x1c, 0x08, 0x03, 0xaa, 0x5d, 0x86,
+      0x20, 0x08, 0x00, 0x38, 0x40, 0xf2, 0x81, 0x86, 0x01, 0x48, 0x73, 0x68,
+      0x0b, 0x23, 0xc1, 0x80, 0x16, 0x00, 0x08, 0x08, 0x5e, 0x83, 0x57, 0x0f,
+      0x00, 0x58,
   };
   arixv::EncodeOptions options;
   options.force_coded = true;
@@ -198,34 +261,34 @@ void HostileInputs() {
          arixv::Status::kBadContainer);
 }
 
-void ExpectReusableDecode(arixv::Decoder& decoder,
-                          const std::vector<uint8_t>& encoded,
-                          const std::vector<uint8_t>& expected) {
-  std::vector<uint8_t> reused;
-  assert(decoder.Decode(encoded.data(), encoded.size(), reused) ==
+// The compatibility shim (arixv_decoder_compat.h) must behave exactly like
+// stateless Decode, however many calls go through one instance.
+void ExpectShimDecode(arixv::Decoder& decoder,
+                      const std::vector<uint8_t>& encoded,
+                      const std::vector<uint8_t>& expected) {
+  std::vector<uint8_t> via_shim;
+  assert(decoder.Decode(encoded.data(), encoded.size(), via_shim) ==
          arixv::Status::kOk);
-  assert(reused == expected);
+  assert(via_shim == expected);
 
-  arixv::Decoder fresh_decoder;
-  std::vector<uint8_t> fresh;
-  assert(fresh_decoder.Decode(encoded.data(), encoded.size(), fresh) ==
+  std::vector<uint8_t> stateless;
+  assert(arixv::Decode(encoded.data(), encoded.size(), stateless) ==
          arixv::Status::kOk);
-  assert(fresh == expected);
-  assert(reused == fresh);
+  assert(via_shim == stateless);
 }
 
-void DecoderReuse() {
+void DecoderCompatShim() {
   arixv::Decoder decoder;
   arixv::EncodeOptions opts;
   opts.force_coded = true;
 
   const std::string text1 =
-      "first reusable decoder byte payload, deliberately repeated repeated";
+      "first shim decoder byte payload, deliberately repeated repeated";
   const std::vector<uint8_t> bytes1(text1.begin(), text1.end());
   const std::vector<uint8_t> encoded1 =
       arixv::Encode(bytes1.data(), bytes1.size(), opts);
   assert(ContainerMode(encoded1) == arixv::kModeCoded);
-  ExpectReusableDecode(decoder, encoded1, bytes1);
+  ExpectShimDecode(decoder, encoded1, bytes1);
 
   std::vector<uint8_t> bad = encoded1;
   bad.push_back(0);
@@ -233,6 +296,14 @@ void DecoderReuse() {
   assert(decoder.Decode(bad.data(), bad.size(), out) ==
          arixv::Status::kBadContainer);
   assert(out.empty());
+  // The shim forwards max_output too.
+  assert(decoder.Decode(encoded1.data(), encoded1.size(), out, 4) ==
+         arixv::Status::kTooLarge);
+  assert(out.empty());
+
+  // Movable like the old reusable decoder.
+  arixv::Decoder moved = std::move(decoder);
+  decoder = std::move(moved);
 
   const std::string text2 =
       "second payload uses the same decoder after an error path";
@@ -240,7 +311,7 @@ void DecoderReuse() {
   const std::vector<uint8_t> encoded2 =
       arixv::Encode(bytes2.data(), bytes2.size(), opts);
   assert(ContainerMode(encoded2) == arixv::kModeCoded);
-  ExpectReusableDecode(decoder, encoded2, bytes2);
+  ExpectShimDecode(decoder, encoded2, bytes2);
 
   const std::filesystem::path dir = "corpus/spv";
   if (!std::filesystem::exists(dir)) {
@@ -256,7 +327,7 @@ void DecoderReuse() {
     const std::vector<uint8_t> encoded =
         arixv::Encode(input.data(), input.size(), opts);
     assert(ContainerMode(encoded) == arixv::kModeSpirv);
-    ExpectReusableDecode(decoder, encoded, input);
+    ExpectShimDecode(decoder, encoded, input);
     if (++count == 2) {
       break;
     }
@@ -269,10 +340,11 @@ void DecoderReuse() {
 int main() {
   BasicRoundTrips();
   GoldenSpirvEncoding();
+  GoldenSpirvModuleEncoding();
   RandomRoundTrips();
   CorpusRoundTrips();
   StoredModeForIncompressible();
   HostileInputs();
-  DecoderReuse();
+  DecoderCompatShim();
   return 0;
 }

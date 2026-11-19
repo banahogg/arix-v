@@ -1,5 +1,69 @@
 # Decode performance plan
 
+## Current state (2026-11-18)
+
+**Numbers** (`scripts/bench/benchmark_spv_compressors.py`, 1070-file
+intersection, one pinned core of a Ryzen 9 5950X, idle host): ARIX-V decode
+**87.1 MiB/s**, encode 50.0 MiB/s, total ratio **0.1667** (mean 0.2169,
+median 0.2073). History of the decode figure: ~18 MiB/s (2026-07-06
+baseline) → 46 MiB/s (2026-07-12 README) → 87 MiB/s. For comparison on the
+same run: smol-v 1237, yari-v 731, zstd -19 652, smol-v + zstd -19 623 MiB/s
+at total ratios 0.3715 / 0.3367 / 0.2756 / 0.1950.
+
+**Design as it stands:**
+- Purely adaptive model, no corpus-trained tables (E10 / the
+  `static-opcode-tables` branch is out of scope by policy).
+- Entropy coding: a binary range coder for single-bit flags and mantissa
+  runs, plus adaptive nibble-symbol rANS for every bit tree, in one
+  two-ended payload (range bytes forward, rANS words backward, no length
+  field). Container magic `ARX2`.
+- One decode path: stateless `arixv::Decode()`, thread-safe;
+  `arixv_decoder_compat.h` keeps a forwarding `arixv::Decoder` for old
+  callers. Re-timed after the size work, stateless matches or beats the
+  removed reusable decoder (see "Stateless vs reusable after the size
+  work").
+- Per-call model footprint: ~154 KB heap requested and ~91 KB touched per
+  decode (was ~500 / ~265 KB), lazily created contexts in an arena with
+  geometric blocks, ~0.1 page faults per decode even in short-lived
+  processes.
+- Structural ceiling (entropy coding removed, `arixv_decode_bench
+  --raw-residual`): ~165 MiB/s reusable-equivalent at 2026-11-17; entropy
+  coding was ~half of decode instructions at the last profile.
+
+**How to measure** (lessons from this investigation):
+- Decode instructions: callgrind over every 4th corpus file, stateless,
+  per pass = (Ir at 3 iterations − Ir at 1) / 2 — independent of load and
+  of symbol names.
+- Memory: `make build/memory_breakdown` (`ARIXV_MEMSTATS`): heap requested,
+  bytes touched, every model table and arena object type.
+- Allocator interaction: minor page faults per decode in 64-file batch
+  processes (as the cross-tool script runs) *and* in one long-lived process.
+  `arixv_decode_bench` alone keeps a warm, never-trimmed heap and badly
+  understated per-call setup cost — that is what made the reusable decoder
+  look unnecessary at the time it was removed.
+- Wall time: interleaved A/B rounds on one pinned core with an idle SMT
+  sibling; check per-CPU load first (a busy sibling skews results).
+- Ratio: exact corpus encoded bytes; byte-identical changes must keep the
+  corpus and raw-residual outputs and checksums unchanged, plus the
+  mutated-blob differential against the previous CLI.
+
+**Open items:**
+- Tradeoff branches: `size/tradeoff-no-order1-opcode` (corpus +1.07%,
+  instructions −4.0%, ~18 KB less touched) and
+  `size/tradeoff-eight-operand-slots` (+8 bytes, ~3 KB less touched).
+- Remaining structural costs (recency lists, operand cursor, tracker) are
+  targeted-fix territory (E11); a rewritten decode loop was judged not worth
+  it given how diffuse the glue code is.
+- Measured dead ends worth not repeating: plain binary rANS (E-A1),
+  symbol-coded uint mantissas, folding flags into symbols, history-ring
+  recency lists, branch-free binary probability warm-up.
+
+The rest of this file is a chronological log: earlier sections describe
+designs since replaced (the reusable decoder, generation-stamp resets, the
+LZMA flush), and their numbers are as measured at the time.
+
+## Original goal (2026-07-06)
+
 Goal: several-X decode throughput gains, accepting small compression-ratio
 losses where necessary. Baseline (2026-07-06): ~18 MiB/s decode vs ~650-1250
 MiB/s for smol-v/yari-v/zstd baselines.
@@ -220,7 +284,7 @@ format compatibility is not required.
    >16 KiB 45.50 → 48.97 MiB/s. `make test` passes on a clean rebuild with
    the new flags; no new warnings surfaced at LTO link time.
 
-## Current profile (2026-07-10)
+## Profile (2026-07-10)
 
 Full 1080-file corpus, core-pinned Ryzen 9 5950X sandbox, `-O3 -flto=auto`,
 100 decode iterations. Root `perf` is available in this sandbox; unprivileged
@@ -501,7 +565,796 @@ and before/after instruction or sampling profiles where available.
     shaders keep max ratio). The container already has a mode byte, so this
     stages cheaply.
 
-## Suggested attack order
+## Experiment backlog (2026-11-17)
+
+Starting point: persistent decode ~57 MiB/s versus the ~139 MiB/s
+raw-residual ceiling, so roughly 60% of decode time is entropy coding plus
+model work. Items are labelled `E*` to avoid clashing with the tier numbering
+above; none repeats an experiment already measured in this file. Suggested
+order: E0 → E1-E3 → E4 → E6-E8 → E-A0 → E-A2 (E-A1 only if E-A0
+surprises) → E11.
+
+**First pass (2026-11-17): E0, E1, E6 and a new E14 landed — reusable
+55.9 → 64.3 MiB/s (+15.0%), stateless 48.7 → 54.6 MiB/s (+12.2%), corpus
+1,041,769 → 1,031,921 encoded bytes (−0.95%).** Method: full 1080-file
+corpus, `taskset -c 2`, `-O3 -flto=auto`, 30 iterations, 7 interleaved A/B
+rounds, medians (the host was shared with a heavy background job, so
+absolute MiB/s are lower than earlier sections; every A/B round agreed in
+sign). Decode instruction counts from callgrind on every 4th corpus file,
+3 iterations, reusable decoder, collection toggled on `Decoder::Decode`:
+1,597.3M → 1,513.0M. `make test`, `make asan`, and a 1000-iteration fuzz
+run of the `-DARIXV_NO_SIMD` scalar build pass; the scalar and SSE2 builds
+produce identical bytes and checksums.
+
+### Measure first
+
+- [x] **E0. Decisions per call site.** `ARIXV_STATS` now also prints adaptive
+  decisions per field category, split by coding primitive (plain flag, bit
+  tree, uint length, uint mantissa, byte), plus direct bits. Counted at
+  encode time, which makes exactly the decoder's decisions. Full corpus
+  (before E6): **15.46M adaptive decisions = 2.55 per output byte, and zero
+  direct bits.** Largest buckets: opcode bit tree 3.52M (23%, the 10-bit
+  index tree for ~352K instructions), id_ref 4.25M (bit tree 1.84M, uint
+  1.94M), result_id 1.69M, string bytes 1.42M, result_type 1.40M (bit tree
+  1.10M). By primitive: bit trees 7.26M, uint length 2.59M, uint mantissa
+  2.01M, plain flags 2.15M, bytes 1.46M.
+
+### Cost of each decision (no format change)
+
+- [x] **E1. Keep coder state in registers (+4.2% reusable, byte-identical).**
+  Confirmed in the disassembly: `DecodeBit` loaded `range_`/`code_` from
+  `*this` and stored them back on every bit, putting a store→reload on the
+  serial chain. Landed as `RangeDecoder::DecodeTree<kBits>` and
+  `DecodeSequence`, which copy the state into locals for a whole bit-tree
+  walk or uint mantissa run and write it back once; `BitTree::CodeValue` and
+  `CodeUint` use them on the decoder path. That covers ~86% of decisions;
+  plain flags still go through `DecodeBit`. Instructions 1,597M → 1,564M
+  (−2.1%), wall time +4.2% (all 7 rounds faster).
+- [ ] **E2. Cheaper renormalization.** *Deprioritized after E0:* the
+  payload is ~0.53 bits per decision, so a renormalization byte is read only
+  about once per 15 decisions, and the per-bit cost is one predictable
+  compare. Replace the byte-at-a-time `while`
+  loop (with a per-byte bounds check in `ReadByte`) with a 64-bit
+  `code`/`range` that refills 32 bits at once, and pad the input tail so the
+  hot path has no exhausted-input check; detect overrun once at the end.
+- [ ] **E3. Batch direct bits.** *Moot after E0:* M2 makes no direct-bit
+  decisions on the corpus. `CodeBitsDirect` loops one bit at a time
+  through `DecodeBitDirect` (8/10/16/32-bit fields, every byte of
+  `CodeUint32`). Decode k bits in one step (`range >>= k`, then one
+  compare/divide).
+- [ ] **E4. PGO and compiler comparison.** `-fprofile-generate/-fprofile-use`
+  trained on the corpus, and clang vs GCC. Branchy interpreter-style code
+  often gains 5-15% from PGO; worth knowing even if the source-integration
+  story can't ship it.
+- [ ] **E5. Cache misses.** `perf stat` with L1d/L2 miss counters. The inline
+  model plus its trees is near or above the 32 KB L1; if misses are
+  significant, pack the hot contexts (opcode, rank slots, uint length)
+  together.
+
+### Fewer serial decisions (format change, ratio-neutral or close)
+
+- [x] **E6. Right-size the rank trees (+2.1% reusable, −0.95% size).** The
+  original description was wrong: unary `CodeRank` is unused, and ranks are
+  coded with `BitTree<6>`. But the ID, type, and forward-ref recency lists
+  are capped at 16 entries, so the top two of the six levels were always 0:
+  two wasted serial decisions per ranked ID, and not free in size either.
+  Landed as `kRankTreeBits = 4` (with a `static_assert` that it covers every
+  list cap) for `id_rank`, `type_rank`, and `result_fwd_rank`;
+  `string_rank` keeps 6 bits because the string list holds 64 entries.
+  Corpus 1,041,769 → 1,031,921 bytes; instructions −2.8%; wall time
+  +2.1%.
+- [ ] **E7. Shorter uint ladder.** A 20-bit value costs 6 length bits plus 19
+  adaptive mantissa bits. Code only `kUintHighBits` adaptively and send the
+  rest as bypass bits (E8); measure the ratio cost.
+- [ ] **E8. Separate stream for bypass bits.** *Only relevant together with
+  E7:* M2 has no bypass bits today (E0). Route direct bits, uint rest
+  bits and unknown opcode/literal bytes through a plain bit reader instead of
+  the arithmetic coder. It doesn't wait on coder state, so it shortens the
+  serial chain without the stream interleaving that already failed (item 9).
+- [ ] **E9. Cheaper bit-enum coding.** Item 10 above: code "mask is zero /
+  same as last" before the per-bit loop, if E0 shows it is large.
+- [ ] **E10. Adopt `static-opcode-tables`.** *Dropped from this
+  investigation (2026-11-17): the project is keeping its no-corpus-trained-
+  tables rule, and after E-A2 the opcode costs 3 symbols rather than 10
+  binary decisions, so the speed case is mostly gone.* Already measured at −5% size and
+  +13-16% decode; a decision about the "no corpus tables" rule, not an
+  experiment.
+
+### ANS
+
+- [x] **E-A0. Microbenchmark before porting — binary rANS is not faster
+  (2026-11-17).** `build/ans_microbench` (`tools/bench/ans_microbench.cpp`,
+  built with `-DARIXV_TRACE_DECISIONS`) records every adaptive decision of a
+  real corpus encode as (context, bit) and replays it with fresh contexts per
+  module through the range coder (state in locals, as E1), adaptive binary
+  rANS (32-bit state, 16-bit renormalization), and 2-state interleaved rANS.
+  "dep" adds a true data dependency from each decoded bit to the next
+  context index. Full corpus, 14.46M decisions: sizes range 1,027,258,
+  rANS −0.17%, rANS×2 +0.14%. Per decision: range 5.03 (indep) / 5.57 (dep)
+  ns, rANS 5.57 / 5.85, rANS×2 5.62 / 5.92 — rANS 5-10% *slower*, and
+  interleaving doesn't help. A per-decision cost is dominated by instruction
+  throughput (probability update, renormalization), not by the coder's own
+  dependency chain. Original plan text: Decode a synthetic bit stream
+  with realistic probabilities using the LZMA-style coder vs adaptive binary
+  rANS (32-bit state with 16-bit renorm, or 64/32). Bounds the gain before
+  touching the model. Item 9 found the model's dependency chain, not the
+  coder, to be the limit, so expect a binary-for-binary swap to be worth
+  ~5-15% of the coding share.
+- [ ] **E-A1. Adaptive binary rANS swap.** *Not worth doing on E-A0's
+  numbers; any rANS gain has to come from multi-symbol decode (E-A2).* Same `Prob` contexts. The encoder
+  records `(prob, bit)` pairs in the forward pass and encodes them in reverse
+  (fine for offline compression); the decoder still adapts as it goes. Gains:
+  very cheap renormalization and 2-state interleaving inside one stream
+  (alternate states, not streams), simpler than the reverted 4-stream
+  framing. Costs: a more complex encoder and a possible small ratio change.
+- [x] **E-A2. Adaptive multi-symbol rANS for small alphabets — landed
+  (2026-11-17): reusable 64.5 → 72.7 MiB/s (+12.7%), stateless 55.2 → 64.1
+  MiB/s (+16.1%), corpus 1,031,921 → 1,035,489 bytes (+0.35%), container
+  magic `ARX1` → `ARX2`.** Matched 1080-file corpus on a quiet host (the
+  background job was stopped), core 2, `-O3 -flto=auto`, 30 iterations, 7
+  interleaved A/B rounds, medians; every round agreed. Cumulative since the
+  backlog was written: reusable 55.5 → 72.7 (+31%), stateless 49.1 → 64.3
+  (+31%). Adaptive decisions per corpus encode 14.46M → 7.13M (1.18 per
+  output byte).
+
+  *What landed:* every `BitTree<kBits>` is now symbol-coded
+  (`src/symbol_coder.h`): MSB-first ≤4-bit chunks, each a 32-byte adaptive
+  CDF (`SymbolCdf`) chosen by the value prefix above it, on an rANS stream
+  beside the binary range coder. Design points:
+  - *Zero means uniform.* Tables store offsets from the uniform CDF and keep
+    the warm-up count in lane 0 (C[0] is always 0), so value-initialized
+    `BitTree{}` resets, stamped lazy resets, and pooled trees are unchanged.
+  - *Two-ended payload, no length field.* Range bytes run forward from the
+    front; rANS words (LE16) run backward from the end; a stream that coded
+    no symbols emits nothing. Validation: the two must tile the payload
+    exactly and the rANS state must finish at `kRansL`. Exhaustion of
+    either stream still stops decoding early (bounded output on hostile
+    headers); only a forward range-stream overrun reports `kTruncated`, a
+    mis-tiled payload (trailing bytes, rANS overrun) reports
+    `kBadContainer`.
+  - *Shadow training* (`TrainBitTree` → `BitTree::Train`) applies a
+    steady-rate CDF update along the value's path.
+  - *Per-tree adaptation cap:* `kSymbolRateCap = 5` (best for the corpus),
+    but byte trees (`ByteTree`: string, opaque, and byte-fallback bytes) use
+    `kByteSymbolRateCap = 7`. With one global cap 5, forced-coded random
+    bytes expanded +6.67% (was +2.49% with binary trees), breaking the test
+    bound; byte cap 6/7/8 gives +4.32/+3.57/+3.33% for +104/+146/+164 corpus
+    bytes.
+  - SSE2 lookup/update with a portable scalar fallback; the
+    `-DARIXV_NO_SIMD` build produces byte-identical blobs and cross-decodes
+    (54-file check).
+  - The size cost is almost entirely the 4-byte rANS final state per module
+    (~4.3 KB over 1080 modules), which the microbench's tree-only accounting
+    did not charge.
+  - **[Recovered, 2026-11-17] 3 bytes per module from the range coder:
+    1,035,489 → 1,032,249 bytes, now +328 bytes (+0.03%) over the pre-rANS
+    1,031,921.** (a) LZMA's leading byte lies above the initial 32-bit
+    window and is always 0, so it is no longer stored or read. (b) Short
+    flush: after the final normalization range ≥ 2^24, so the interval
+    contains `low` rounded up to a multiple of 2^16 with every low-16-bit
+    suffix; the encoder emits 3 flush bytes instead of 5, and the decoder's
+    last `kRangeTailSlack = 2` reads are don't-care (the start of the rANS
+    words, or virtual zeros past the payload end; reads beyond that still
+    mark the stream exhausted). The tiling check discounts the slack. Kept
+    the unreleased `ARX2` magic and regenerated its golden vector. Speed
+    neutral within noise. *Not pursued for the rANS state:* range-coding
+    it buys ~4.5 bits (the state is ~log-uniform); byte-wise renormalization
+    with a 3-byte state keeps x close to the 2^15 scale and costs coding
+    efficiency on every symbol; hiding 16 bits of payload in the encoder's
+    initial state needs data the decoder can defer past the last symbol,
+    and the range stream's tail cannot be deferred.
+  `make test`, `make asan` (clean), a 3000-iteration fuzz run, and a
+  1000-iteration scalar-build fuzz run pass.
+
+  *Microbench record (2026-11-17), before the port:* `build/ans_symbol_microbench` records every `BitTree`
+  value (tree, depth, value) of a real corpus encode and replays the tree
+  events. Each tree is split MSB-first into ≤4-bit chunks, each chunk an
+  adaptive 2-16-symbol CDF chosen by the prefix above it: the bit tree's
+  context structure with fewer, wider nodes. CDF: 15-bit total, stored in
+  coding domain with a +1-per-symbol floor and a 32768 sentinel; SSE2 search
+  (`subs_epu16` compare, `ctz(~mask)` — *not* `popcount`, which is a libgcc
+  call without `-mpopcnt`) and SSE2 update toward 0 / top with a
+  count-warmed shift capped at `--rate-cap` (5 best: 4 is +0.03%, 6 is
+  +0.21% with rANS).
+  - **Coverage is larger than E0's `bit_tree` column:** uint lengths and
+    bytes are bit trees too, so trees are **10.3M of 14.5M decisions
+    (71%)**: depth 4 ×511K events (rank trees), 6 ×437K (uint length),
+    8 ×264K (bytes, enum indices), 10 ×352K (opcode index).
+  - **Size:** binary 672,344 bytes of tree payload; nibble range-coded
+    +0.02%, nibble rANS −0.30%. No ratio cost.
+  - **Speed** (callgrind instructions, every 8th file, net of context
+    reset): binary ~40 per decision ≈ 137 per nibble-equivalent; nibble
+    range coder (one 32-bit division per symbol) ≈ 1.25x faster by wall
+    time; nibble rANS ~110 per symbol; nibble rANS with compile-time chunk
+    walks ("tight") **~83 per symbol, 1.65x fewer**. Reset-adjusted wall
+    time agrees (~36 → ~21 ns per tree event, ~1.7x), but treat wall
+    numbers as ±15%: the host was saturated by an unrelated job.
+  - **Projection:** coding is ~60% of decode time and trees ~71% of
+    decisions, so ~43% of decode; 1.65x there is **~1.2x end to end**.
+  - **Design questions settled by the port:** two-stream layout chosen;
+    shadow training ported; E10 overlap and uint mantissas still open.
+    Originally: (1) stream layout — rANS
+    for symbols plus the range coder for the remaining binary flags as two
+    payloads (encoder buffers symbols and rANS-encodes them in reverse at
+    the end), versus all-rANS (E-A0 says binary rANS is 5-10% slower);
+    (2) an equivalent of `TrainBitTree` shadow training for opcode CDFs;
+    (3) overlap with E10 — the opcode tree is a third of all tree
+    decisions and `static-opcode-tables` replaces it; (4) the uint
+    mantissa runs (~2M decisions) could become nibble symbols too.
+  Original plan text: The LZNA
+  approach: adaptive 16-symbol (nibble) frequency tables with a SIMD update.
+  With a power-of-two total, rANS gets the slot as `x & mask` and searches
+  the cumulative frequencies with no division, which an adaptive
+  multi-symbol range coder can't do as cheaply. Candidate sites: rank
+  (9 symbols), uint length (33, as 2 nibble steps), opcode index (3 nibble
+  steps instead of 10 bits), string/byte models (2 nibbles instead of 8
+  bits). Cuts the serial chain 2-4x at those sites, with no per-file tables
+  (unlike reverted item 8). Ratio may move either way: frequency-count
+  adaptation behaves differently from per-bit shift updates.
+- [ ] **E-A3. Static tANS/FSE back end for the residual stream** (item 11).
+  Only worth doing with the dedicated reconstruction loop, since structure
+  work caps it at ~139 MiB/s.
+
+### Larger structural ideas
+
+- [ ] **E11. Dedicated reconstruction loop** (raw residual TODO above).
+  *Sizing measurements (2026-11-17) are under "Third pass" below; they argue
+  for targeted structural fixes rather than a full rewrite.* Also
+  benefits M2 if the generic `CodeModule` template is what keeps coder state
+  out of registers (E1).
+- [ ] **E12. Decode 2-4 modules at once in one thread.** Independent
+  dependency chains give the CPU parallel work with no format change; fits
+  only a batch API (shader packs). IPC is ~2.6 on a core that can do ~5, so
+  maybe ~1.3x.
+- [ ] **E13. Chunked parallel decode** (item 12). Cuts latency on large
+  modules; does not improve single-core throughput.
+
+### Found while profiling
+
+- [x] **E14. SSE2 recency lists (+9.9% reusable, byte-identical).** After E1
+  and E6, `RecencyList::Touch` was 7.9% of decode instructions: an early-exit
+  scan plus a libc `memmove` call on every ID use. Landed as a fixed-width
+  match mask (four `pcmpeqd` + packs + `movemask`, masked to `size_`, then
+  `ctz`) and a branch-free move-to-front (lane-shift the 16 entries, blend
+  lanes `<= last`). Guarded by `__SSE2__` (baseline on x86-64) with a
+  portable fixed-width scalar fallback (`-DARIXV_NO_SIMD`) that produces
+  the same output. The scalar fallback alone *raised* instructions 14%
+  because GCC didn't vectorize it, for only ~+1.6% wall time; the explicit
+  SSE2 path is 58.3 → 64.1 MiB/s.
+
+First-pass profile (2026-11-17, reusable decoder, instruction share):
+`CodeModule` body 46.7%, `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor
+`Consume`+`Next` 8.0%, `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain
+flags). The largest remaining decision bucket is the opcode index tree (E10 /
+E-A2).
+
+### Third pass (2026-11-17, quiet host)
+
+- **Force-inline the symbol decode path: kept, neutral.** `DecodeSymbol`
+  and friends were out-of-line calls from every tree walk. With
+  `ARIXV_FORCE_INLINE`: instructions −1.3%, wall time +0.1% reusable /
+  +0.8% stateless (noise). A follow-up that read `C[s]`/`C[s+1]` straight
+  from the table instead of a staged 17-entry stack copy was also neutral
+  (+0.6% / −0.4%) and was reverted.
+- **[Measured dead end] Symbol-coded uint mantissas.** On the corpus, 76% of
+  mantissa bits fall in the first `kUintHighBits = 8` below the leading one
+  (1.52M of 2.01M; uint bit lengths are mostly 2-9). Prototype: that region
+  coded as fixed-width chunks, each `(bit length, chunk index)` with its own
+  CDF (the binary model's context structure); deeper bits stay binary.
+  | chunk | bytes | Δ size | reusable | stateless |
+  |---|---|---|---|---|
+  | 4 bits | 1,035,005 | +0.27% | +1.7% | +1.5% |
+  | 3 bits | 1,032,857 | +0.06% | +0.0% | −0.6% |
+  | 2 bits | 1,032,093 | −0.02% | −4.3% | −7.2% |
+  Rate caps for 4-bit chunks: 3 → 1,041,887, 4 → 1,035,597, 5 → 1,035,005,
+  6 → 1,035,995, 7 → 1,036,861, 8 → 1,037,297 (mantissas want fast
+  adaptation; the size loss is the learning cost of 15 CDF parameters
+  versus 4 per-bit probabilities in sparse contexts). The speed case
+  failed because E1 already made the binary mantissa run a tight
+  register-held loop with no context dependence between its bits, so a
+  symbol costs about as much as the 2-3 bits it replaces; narrower chunks
+  also grow every `UintModel`, which stateless decode pays to zero.
+  Reverted. (The earlier +5-8% estimate for this was wrong.)
+- **E11 step 1: the structural ceiling rose to 164.5 MiB/s reusable /
+  143.7 stateless** (was 139.2 / 121.7 before E1/E6/E14). Matched 1078-file
+  word-aligned set, core 2, 30 iterations, median of 3: M2 72.8 / 63.7
+  MiB/s, raw residual 164.5 / 143.7 MiB/s, identical checksums; raw payload
+  now 1,818,396 bytes (4-bit rank trees). Per MiB, M2 spends 13.7 ms, of
+  which the raw-residual walk is 6.1 ms: structure (including raw
+  bit-unpacking) is **at most ~44% of decode time**, entropy coding plus
+  model work still ~56%. Even an infinitely fast structural pass would
+  only reach ~1.8x.
+- **E11 step 2: line-level profile** (callgrind, `-O3 -flto=auto -g`,
+  every 4th file, 3 iterations, reusable). By function (self, inlined code
+  attributed to its caller):
+  | function | share |
+  |---|---|
+  | `CodeModule` body | 27.0% |
+  | `CodeUint` | 12.0% |
+  | `BitTree<4>` walk (rank trees) | 11.5% |
+  | `RecencyList::Touch` | 10.1% |
+  | `RangeDecoder::DecodeBit` (flags) | 6.9% |
+  | `BitTree<10>` walk (opcode) | 5.8% |
+  | `OperandCursor::Consume` + `Next` | 8.8% |
+  | `Tracker::Ensure` + `OnInstructionEnd` + `OnIdUse` | 7.6% |
+  | `CodeByte` + `BitTree<8>` | 3.7% |
+  Inside the 27% `CodeModule` self cost: 15.7% is `model.cpp` code spread
+  across hundreds of lines (no line above 1.1%: operand dispatch, the
+  fixed-layout path, stamp checks, `WordBuffer`/`DecodeIO::Append`
+  bounds checks), 4.3% is inlined grammar-table lookups, and the rest is
+  inlined range/symbol coding. Lazy-reset work is visible but small
+  (order-1 opcode tree reset 0.64%, count-model `EnsureStamped` + reset
+  ~1.7%). Hottest single coder lines: the symbol rate computation
+  (`clz` on the count) 2.1%, rANS state update 1.3%, range `bound` 1.2% +
+  1.0%.
+  **Reading:** the structural cost is concentrated in identifiable
+  subsystems (recency lists ~10%, operand cursor ~9-11%, tracker ~8%,
+  grammar lookups ~4%), and the generic `CodeModule` glue itself is
+  diffuse. That matches the earlier reverted direct-layout (+1%) and
+  dense-ID (−2.5%) experiments. A wholesale specialized loop would mostly
+  re-home that glue; the better next E11 steps are targeted: recency-list
+  update rules (a format/ratio trade, ~10% at stake), the cursor's
+  variable-layout path, and tracker `Ensure`/`OnInstructionEnd`.
+
+### Recency-list update rules (2026-11-17)
+
+Variants were compared with load-independent metrics (full-corpus encoded
+bytes and callgrind decode instructions: reusable decoder, every 4th file,
+3 iterations) while the host was busy; the landed rule set was timed
+afterwards (below).
+
+| variant | bytes | Δ size | decode Ir | Δ Ir |
+|---|---|---|---|---|
+| baseline (c670473) | 1,032,249 | — | 1,389.9M | — |
+| R1: no recency touch in `OnResultId` | 1,030,875 | −0.13% | 1,366.0M | −1.7% |
+| R2: result-type uses skip `recent_ids` | 1,026,842 | −0.52% | 1,357.8M | −2.3% |
+| **R1 + R2 (landed)** | **1,021,506** | **−1.04%** | **1,330.6M** | **−4.3%** |
+| R1 + R2 + R5: new types skip `recent_ids` | 1,029,088 | −0.31% | — | — |
+| history ring ×16, R1 + R2 | 1,046,060 | +1.34% | 1,274.1M | −8.3% |
+| history ring ×32 (5-bit ranks), R1 + R2 | 1,036,457 | +0.41% | — | — |
+
+- **R1:** result IDs were touched twice: at coding time and again in
+  `OnInstructionEnd`. An instruction's later operands don't reference its
+  own result, so the first touch only shifted their ranks by one.
+- **R2:** result types are coded from `recent_types()`, but `OnIdUse` also
+  pushed them onto `recent_ids()`, crowding out the values that ID operands
+  actually reference. Now `Tracker::OnResultTypeUse` touches only the types
+  list (plus forward refs).
+- The two compound: removing both is worth more than the sum of each alone.
+  `RecencyList::Touch` dropped 139.6M → 95.2M instructions (7.2% of decode).
+- **Rejected:** R5 (type definitions skip `recent_ids()`) — ID operands of
+  type declarations (`OpTypePointer`, struct members, …) reference types
+  through that list. A history ring (rank = touches ago, O(1) touch, the
+  decoder only indexes) saves another ~4% of instructions but costs
+  +1.3-2.4% size, since duplicates crowd useful IDs out of the slots.
+- **Wall time (measured later on a mostly quiet host, core 2 and its SMT
+  sibling idle, full 1080-file corpus, 30 iterations, interleaved A/B
+  medians): reusable 72.1 → 74.1 MiB/s (+2.8%, 7 rounds), stateless
+  63.6 → 64.6 MiB/s (+1.7%, 9 rounds); every round agreed in sign.**
+- Format change within the unreleased `ARX2` (the golden vector has no IDs
+  and is unchanged). `make test`, `make asan`, 3000-iteration fuzz, and the
+  scalar/SIMD cross-check pass.
+
+### Operand cursor and opcode-context lookup (2026-11-17)
+
+Byte-identical changes, developed with load-independent metrics:
+callgrind decode instructions (reusable decoder, every 4th file, 3
+iterations) and output identity.
+
+| change | decode Ir | Δ |
+|---|---|---|
+| baseline (12ff914) | 1,330.6M | — |
+| cache the previous instruction's table index | 1,276.5M | −4.1% |
+| + inline cursor fast paths | 1,195.9M | −6.3% (−10.1% total) |
+
+- **Previous-opcode key.** The order-1 opcode context (`PreviousOpcodeKey`)
+  binary-searched the core instruction table by the previous opcode on
+  every instruction: ~3.8% of decode, visible in the E11 profile as
+  "inlined grammar-table lookups". The tracker now remembers the previous
+  instruction's index (`OnInstructionEnd` takes it; unknown opcodes keep
+  the sentinel), so the key is a field read.
+- **Cursor fast paths.** `Next()` averaged ~53 instructions per call and
+  `Consume()` ~70, as out-of-line calls on every variable-layout field.
+  Both are now forced-inline wrappers handling the common case — `Next()`:
+  a plain top-level slot with words left, no pending enumerant parameters,
+  no composite; `Consume()`: a plain top-level operand whose value does not
+  steer the walk (not a value/bit enum, ext-inst number, or spec-op
+  opcode) — and fall back to the unchanged `NextSlow()`/`ConsumeSlow()`,
+  leaving identical state. Out-of-line cursor cost fell from ~9.5% to
+  ~1.5% of decode instructions.
+- **Wall time (under moderate load: load average ~6-8, another process
+  using ~4 cores and migrating; core 2 and its sibling mostly free; full
+  corpus, 30 iterations, 9 interleaved A/B rounds):** reusable medians
+  59.9 → 67.6 MiB/s (+12.7%), stateless 52.5 → 57.8 MiB/s (+10.3%); B
+  beat A in 17 of 18 rounds, and the median per-round ratio was 1.14
+  reusable / 1.11 stateless. The load depressed absolute speeds (the
+  quiet-host baseline is ~74 MiB/s reusable) and drifted mid-run, so treat
+  the size of the gain as ±3% until re-timed on a quiet host.
+- **Correctness:** M2, stateless, and raw-residual outputs are byte-identical
+  to 12ff914 (1,021,506 / 1,805,240 bytes, same checksums). `make test`
+  (including `operand_cursor_test`), `make asan`, a 3000-iteration fuzz,
+  and a differential decode of 720 mutated/truncated/padded blobs (old vs
+  new CLI: identical exit status and output in every case) pass.
+
+### Tracker ID map (2026-11-17)
+
+Byte-identical changes, developed with load-independent metrics:
+callgrind decode instructions (every 4th file, 3 iterations) for both
+decoder modes, plus output identity.
+
+| change | reusable Ir | Δ | stateless Ir | Δ |
+|---|---|---|---|---|
+| baseline (44f9497) | 1,195.9M | — | 1,358.3M | — |
+| uninitialized ID-map arrays + single result-ID insert | 1,176.0M | −1.7% | 1,316.7M | −3.1% |
+| (+ inline `Ensure` hit path — reverted) | 1,180.4M | +0.4% | 1,321.1M | +0.3% |
+
+- Profile at 44f9497: `Tracker::Ensure` ~1.55M calls per sample run
+  (615K ID-operand uses, 245K result-type uses, 306K `OnResultId`, 383K
+  `OnInstructionEnd`) at ~30 instructions each; `IdMap::Rehash` 1.1% in
+  only 274 calls; `OnInstructionEnd`'s own lines are diffuse — its weight
+  is the recency `Touch` (2.0%) and `Ensure` (0.7%) it calls.
+- **Uninitialized slot arrays.** `Rehash` value-initialized three parallel
+  arrays (24 bytes per slot) although a slot's key and value are written
+  when it is claimed and occupancy is decided by the generation stamp
+  alone. Keys and values are now `new T[n]` without initialization; only
+  the stamps are zeroed. `IdInfo` became a plain aggregate whose all-zero
+  value is the old default (static_assert-checked), always created as
+  `IdInfo{}`. Stateless decode, which builds a fresh map per call, gains
+  the most.
+- **One map insert per result ID.** `OnResultId` inserted the result and
+  `OnInstructionEnd` looked it up again. Every reader treats a default
+  entry and a missing one the same (`TypeWidth` → 0, ext-set lookup →
+  null, `OnIdUse`/`Ensure` create the default), so `OnResultId` now only
+  updates `max_seen_id_` and the insert happens once, at instruction end.
+- **Rejected:** force-inlining the `Ensure` hit path and the
+  `Tracker::Ensure` wrapper added instructions — call overhead was not the
+  cost.
+- **Wall time (idle host, core 2, full corpus, 30 iterations, 9
+  interleaved A/B rounds, medians): reusable 82.3 → 83.4 MiB/s (+1.4%;
+  faster in 7 of 9 rounds, the other two within 0.1 MiB/s), stateless
+  71.3 → 73.0 MiB/s (+2.4%, all 9 rounds).** The same run re-timed the
+  cursor commit (44f9497) at 82.3 MiB/s reusable on an idle host, against
+  74.1 MiB/s for 12ff914 in the earlier quiet run: the cursor gain measured
+  under load (+12.7%) holds at about +11%.
+- **Correctness:** M2, stateless, and raw-residual outputs byte-identical to
+  44f9497 (same bytes and checksums); `make test`, `make asan`,
+  3000-iteration fuzz, the 720-case mutated-blob differential against the
+  previous CLI (0 mismatches), and valgrind memcheck (corpus decodes in
+  both modes plus 40 mutated-blob decodes: 0 errors, so nothing reads an
+  unclaimed slot) pass.
+
+### Re-profile after the structural passes (2026-11-17, at 76e5823)
+
+Decode instructions by subsystem (callgrind, `-O3 -flto=auto -g`, every
+4th file, 3 iterations; inlined code attributed to its source):
+
+| subsystem | reusable | stateless |
+|---|---|---|
+| entropy coding (rANS symbols, range-coded flags/mantissas, prob updates) | 49.3% | 44.3% |
+| `model.cpp` field coders + `CodeModule` glue | 18.0% | 14.4% |
+| recency lists | 8.1% | 7.2% |
+| operand cursor | 7.8% | 7.0% |
+| tracker ID map + instruction end | 6.2% | 5.6% |
+| allocation / zeroing (malloc, free, memset) | 3.4% | 12.8% |
+| std library inlines | 4.2% | 5.5% |
+
+Stateless decode additionally spends ~2.9% in `ModelState` construction and
+destruction, so ~15% of its instructions are per-call model setup and
+teardown that the reusable decoder avoids. The adaptation-rate
+bookkeeping (count, `clz`, saturate) is ~3.6% for symbol CDFs and ~3% for
+binary probabilities.
+
+### [Measured dead end] Folding binary flags into adjacent symbols
+
+Remaining binary flags are ~2.15M of 7.13M decisions, most directly in
+front of a symbol they gate. Prototype for the largest group (ID operands
+and result types, ~670K flags): the "in recency list" flag and the 4-bit
+rank tree share contexts, so they were folded into one 16-symbol table
+(ranks 0-14 plus an escape to the delta coder; rank 15 escapes).
+
+- Size: 1,021,506 → 1,023,435 bytes (+0.19%).
+- Decode instructions: reusable 1,176.0M → 1,167.0M (−0.8%), stateless
+  1,316.7M → 1,307.6M (−0.7%): only ~18 instructions saved per folded flag,
+  since a range-coded flag is cheap here and a 16-symbol decode costs more
+  than the flag it absorbs.
+- Wall time (load rose mid-run; quiet rounds only): reusable about +0-1%,
+  stateless neutral. Shortening the serial chain did not show up either.
+- Bound for the whole idea: even folding all ~2.15M flags would save at
+  most ~2.5% of instructions, with a ratio risk at each site. The earlier
+  +5-10% estimate assumed a flag costs as much as a full symbol step; it
+  costs much less. Reverted; not extended to the result-ID, opcode, or
+  word-count flags.
+
+### Stateless model setup/teardown: arena for lazy contexts (2026-11-17)
+
+Byte-identical; developed with load-independent metrics, then timed. Stateless
+instructions are now measured per pass as (Ir at 3 iterations − Ir at 1) / 2
+over every 4th file, which cancels the benchmark's encode and verification
+work and does not depend on symbol names (LTO inlined the free `Decode()`
+into the benchmark loop, defeating the callgrind toggle).
+
+- Before: a stateless decode made **220 heap allocations (544 KB)**, mostly
+  lazily created contexts — 55.6 order-1 opcode trees (2,208 B), 49.2
+  count models (752 B), 45.4 8-bit trees (544 B), 13.6 uint models — each
+  freed individually in `~ModelState`. Setup/teardown (malloc, free,
+  memset, `ModelState` ctor/dtor) was **39.3M instructions per pass, 12.0%
+  of stateless decode**.
+- Change: `src/arena.h` adds a bump allocator owned by `ModelState` (and one
+  inside `ByteModel`, which mode 1 also uses standalone) plus a trivially
+  destructible `ArenaPtr<T>` replacing the `std::unique_ptr` members of
+  lazily created contexts. Arena objects must be trivially destructible
+  (static_assert); `ValueEnumModel`/`ExtInstNumberModel` now hold their
+  always-created `BitTree<8>` inline, and `BitEnumModel` (owns a
+  `std::vector`) stays on `std::unique_ptr`. `BeginDecode`'s drops of rare
+  contexts became in-place `T{}` resets, so a reusable decoder does not
+  abandon arena memory per decode; its high-water pooling is otherwise
+  unchanged.
+- Result: **220 → 56 `operator new` allocations per decode; stateless
+  329.0M → 307.7M instructions per pass (−6.5%)**; setup/teardown 39.3M →
+  17.1M (12.0% → 5.6%). Reusable decode unchanged (1,176.0M → 1,175.5M).
+  The remainder is mostly `memset` zeroing of freshly created contexts
+  (zero is the uniform model) and `ModelState` construction — inherent to
+  the current model layout.
+- **Wall time (idle host, core 2, full corpus, 30 iterations, 9 interleaved
+  A/B rounds, medians): stateless 73.6 → 82.4 MiB/s (+12.0%, all 9
+  rounds); reusable 84.3 → 84.1 MiB/s (−0.2%, within run-to-run spread).**
+  The wall-clock gain is nearly twice the instruction reduction: allocator
+  calls cost more in cache misses and pointer chasing than in instructions.
+  Stateless decode is now within ~2% of the reusable decoder (it was
+  ~11-15% slower).
+- Correctness: M2 (both modes) and raw-residual output byte-identical;
+  `make test`, `make asan`, 3000-iteration fuzz, the 720-case mutated-blob
+  differential (0 mismatches), and valgrind memcheck with full leak
+  checking (both decoder modes and `arixv_test`, which covers the
+  byte-fallback model's arena: no errors, all heap blocks freed) pass.
+
+### Reusable decoder removed (2026-11-17)
+
+With the arena, stateless decode runs within ~2% of the reusable
+`arixv::Decoder`, which existed only as a workaround for per-call allocation
+cost. The library now has a single, stateless decode path:
+
+- **Public API:** `arixv::Decoder` is gone from `arixv.h`.
+  `src/arixv_decoder_compat.h` keeps a source-compatible, header-only
+  `arixv::Decoder` (same constructor, move, and `Decode(data, size, out,
+  max_output)` signatures) that forwards to stateless `Decode()`; it holds
+  no state, so the old thread-safety and memory-retention caveats no longer
+  apply. `arixv_test` checks the shim against `Decode()` over byte-fallback
+  payloads, an error path, `max_output`, moves, and corpus modules.
+- **Internals deleted:** `ModuleDecoder` / `RawResidualModuleDecoder`
+  (the free `DecodeModule` / `DecodeModuleRawResidual` build a fresh heap
+  `ModelState` per call), `ModelState::BeginDecode` / `BeginRawDecode` /
+  `AdvanceGeneration` and the `generation` counter, the per-context stamp
+  vectors and `Reset*Model` functions (`EnsureStamped` /
+  `EnsureStampedTree` became create-if-null `EnsureContext`), the order-1
+  opcode context stamp, `ByteModel`'s generation and stamps, and the
+  arena's in-place `reset()`. Byte identity holds because the encoder has
+  always run on a fresh `ModelState`, and every field `BeginDecode` reset
+  already held that value in a fresh model.
+- **Kept:** the per-instruction first-touch guards for the deliberately
+  uninitialized `last_id` / `last_literal` / `last_word_count` arrays, now
+  plain flags (`inst_group_touched`, `last_id_valid`, `last_literal_valid`)
+  instead of generation stamps; the tracker ID map's generation stamp,
+  which is its occupancy mechanism.
+- **Tools:** `arixv_decode_bench --reuse-decoder` and the fuzz harness's
+  `ARIXV_FUZZ_STATEFUL` mode (cross-call state bugs no longer exist) are
+  removed; the overnight fuzz script's stateful AFL instance is now a plain
+  ASan instance.
+- **Result:** byte-identical M2 and raw-residual output; stateless decode
+  instructions 307.7M → 302.7M per pass (−1.6%, fewer per-decode stamp
+  vectors to allocate and zero); wall time +1.4% (8 of 9 interleaved rounds
+  faster, but load rose mid-run, so treat it as "no regression"). `make
+  test`, `make asan`, 3000-iteration fuzz, the 720-case mutated-blob
+  differential against the previous CLI, and valgrind memcheck with full
+  leak checking pass.
+
+### Adaptation-rate bookkeeping (2026-11-18)
+
+Byte-identical; developed with load-independent metrics (stateless decode
+instructions per pass, as above), then timed. Profile share before: symbol-CDF
+rate bookkeeping ~3.6%, binary `Prob` warm-up ~3%.
+
+| change | stateless Ir per pass | Δ |
+|---|---|---|
+| baseline (0b0076c) | 302.7M | — |
+| symbol CDFs: clamp-free rate, single count store (landed) | 298.3M | −1.5% |
+| + binary `Prob`: branch-free warm-up (reverted) | 304.9M | +2.2% |
+
+- **Symbol CDFs (landed).** The rate is `min(bitwidth(count + 1), cap)`
+  with the count saturating at `2^cap − 1`; the clamp only ever fired at
+  the saturated count. Saturating one step earlier, at `2^cap − 2`, gives
+  the identical rate sequence (`bitwidth(2^cap − 1) = cap`) with no clamp,
+  and the count is now written once, branch-free, as the lane-0 value
+  `SymbolCdfAdapt` already restores (shadow training passes the count
+  through unchanged).
+- **Binary `Prob` (reverted).** With the default tuning the saturated count
+  15 gives `bitwidth(16) = 5 = kProbShift`, so the shift could always be
+  `bitwidth(count + 1)` with a branch-free count step. That cost
+  instructions: most probabilities sit at the saturated count, where the
+  old, well-predicted branch skips the `clz` entirely.
+- Correctness: corpus and raw-residual output byte-identical; `make test`,
+  `make asan`, 3000-iteration fuzz, the 720-case mutated-blob differential
+  against the previous CLI (0 mismatches), and the scalar (`ARIXV_NO_SIMD`)
+  build (identical blobs, cross-decodes with the SIMD build and the
+  previous CLI) pass.
+- Wall time (idle host, core 2, full corpus, 30 iterations, 9 interleaved
+  rounds): stateless 83.5 → 83.8 MiB/s (+0.4% median; median per-round
+  ratio ~1.009, with interference outliers in both builds) — a small
+  non-regressing win, consistent with the instruction cut.
+
+### Cross-tool benchmark refresh and heap-trim sensitivity (2026-11-18)
+
+`scripts/bench/benchmark_spv_compressors.py --decode-iters=20`, pinned to
+core 2 on an idle host, 1070-file intersection (same skips as July: smol-v
+3, yari-v 10): ARIX-V mean/median/total 0.2203 / 0.2104 / 0.1681 (July
+0.2240 / 0.2136 / 0.1715), encode 41.42 MiB/s, **decode 66.20 MiB/s (July
+46.30, +43%)**; the other tools' rows match July within timing noise.
+
+The script's 66.2 MiB/s sits well below `arixv_decode_bench`'s ~84 MiB/s,
+a wider gap than in July. Its runner (`tools/bench/bench.cpp`) times each
+`Decode` call the same way, but runs in short-lived 64-file batch processes
+that encode each file just before decoding it. In one process over every
+4th file, `build/arixv_bench` decodes at 74.6-74.9 MiB/s by default and
+78.8-81.5 MiB/s with `GLIBC_TUNABLES=glibc.malloc.trim_threshold=268435456`:
+the stateless decoder's ~0.5 MB of per-call model allocations are returned
+to the kernel by heap trimming and faulted back in, and fresh batch
+processes add cold-heap first-touch costs on top. The other tools allocate
+little per call. *Follow-up candidate:* shrink or reuse the per-call
+footprint (e.g. the four 56 KB per-instruction arrays and arena blocks) so
+stateless decode is insensitive to the allocator's trim policy.
+
+### Per-call memory footprint vs. allocator policy (2026-11-18)
+
+Following up the cross-tool gap above. Same runner (`build/arixv_bench`),
+all files, core 2, idle host:
+
+| setting | decode |
+|---|---|
+| 64-file batch processes (what the script does) | 65.2 MiB/s |
+| one long-lived process, default glibc | 75.0 MiB/s |
+| one process, `glibc.malloc.trim_threshold` raised | 83.7 MiB/s |
+
+Two effects, both about memory each `Decode` call touches: heap trimming
+hands freed model memory back to the kernel and the next call faults it
+back in; fresh processes start with no pre-faulted heap and glibc's
+adaptive mmap/trim thresholds at their low defaults. Transparent huge pages
+are `madvise`-only here and not involved (no THP faults).
+
+Load-independent metrics: heap bytes per decode (malloc-level histogram
+over the corpus), and minor page faults per decode in batched 64-file
+processes ((faults at 21 iterations − at 1) / 20 per file).
+
+| change | bytes/decode | batched faults/decode | stateless Ir |
+|---|---|---|---|
+| baseline (f484b18) | 590 KB | 9.88 | 298.2M |
+| arena blocks start at 4 KB and double to 64 KB (**landed**) | ~500 KB | **7.10** | 301.0M (+0.9%) |
+| ID map reserved for word_count / 4 instead of word_count (reverted) | — | 6.35 single-process (was 3.17) | — |
+| per-instruction caches as lazy arena groups (reverted) | 360 KB | 7.64 | +0.6% |
+
+- **Landed: geometric arena blocks.** Every arena (the model's, and each
+  `ByteModel`'s, which used to take a 64 KB block for a few 544-byte trees)
+  started with a full 64 KB block. Blocks now start at 4 KB and double;
+  objects over 16 KB still get their own block. **Batched decode 65.1 →
+  69.2 MiB/s (+6.3%, all 5 interleaved rounds)**; warm-process decode
+  84.6 → 85.1 MiB/s (neutral), at +0.9% instructions for the extra small
+  mallocs.
+- **Reverted: smaller ID-map reservation.** It doubled faults and
+  quadrupled `brk` calls: more mid-decode doubling rehashes, and without
+  the oversized map's large frees glibc no longer raises its adaptive
+  trim threshold, so the heap is trimmed more often.
+- **Reverted: lazy per-instruction groups.** Bytes fell to 360 KB per decode
+  but faults did not: those flat arrays were deliberately uninitialized, so
+  their untouched pages never faulted. Cost +0.6% instructions.
+- **What remains:** faults come from memory that is *touched*, mostly
+  zero-initialized contexts; the largest is ~55 order-1 opcode trees ×
+  2.2 KB per decode, fully zeroed though a walk touches 3 of each tree's 69
+  tables. Lazily zeroing tree tables is the next lever, but it reaches into
+  `BitTree`'s hot path.
+- Correctness: corpus and raw-residual output byte-identical; `make test`,
+  `make asan`, 3000-iteration fuzz, the 720-case mutated-blob differential,
+  and valgrind memcheck with full leak checking pass.
+
+### Reusable vs stateless revisited: the removal was based on a warm-heap benchmark (2026-11-18)
+
+`0b0076c` removed the reusable `arixv::Decoder` because stateless decode
+measured within ~2% of it in `arixv_decode_bench`. That benchmark encodes
+every input first and then decodes in a tight loop, so its heap is warm and
+never trimmed — the one setting where per-call model setup is nearly free.
+Re-measured with the cross-tool runner (`tools/bench/bench.cpp`, which
+interleaves encode and decode per file), built at `21199df` (the last commit
+with the reusable decoder) both as-is and with every decode routed through
+one process-wide `arixv::Decoder`, plus current `HEAD` (stateless, with
+geometric arena blocks). All files, core 2, idle host:
+
+| runner | batched 64-file processes | batched faults/decode | one process, default glibc |
+|---|---|---|---|
+| 21199df stateless | 58.5 / 63.0 / 63.3 MiB/s | 10.56 | 79.7 MiB/s |
+| 21199df reusable `Decoder` | **85.3 / 85.4 / 85.2 MiB/s** | **0** | **84.8 MiB/s** |
+| HEAD stateless (0e9f38c) | 69.4 / 69.3 / 69.2 MiB/s | 7.10 | 81.7 MiB/s |
+
+In the script-like pattern the reusable decoder is ~23% faster than `HEAD`
+and takes no page faults; in a long-lived process it is still ~4% faster.
+**Methodology lesson:** `arixv_decode_bench` alone understates per-call
+setup cost; batched faults/decode (and batched cross-tool speed) must be
+tracked alongside it for any change touching allocation or model setup.
+
+### Systematic model-size reduction (2026-11-18, host under load)
+
+Breakdown tool: `make build/memory_breakdown` (an `ARIXV_MEMSTATS` build:
+arena objects by type, every fixed model table, allocated vs. touched).
+Metrics, all load-independent: heap bytes requested per decode, bytes
+touched per decode (zero-initialized or written; deliberately uninitialized
+arrays only fault where written), page faults per decode in 64-file batch
+processes and in one long-lived process, stateless decode instructions per
+pass, and exact corpus encoded size. No wall-clock numbers (loaded host).
+
+**Starting point (0e9f38c):** ~500 KB heap and ~265 KB touched per decode
+for a median 2.4 KB module; 7.10 batched / 3.17 long-lived faults per
+decode. Touched memory by component: opcode-index trees 123 KB (46%),
+count models 28.8 KB, byte trees 18.7 KB, order-1 opcode table 14 KB,
+value-enum models 13.6 KB and pointers 11.6 KB, uint models 10 KB, ...
+
+**Landed (byte-identical unless noted):**
+
+| commit | change | effect |
+|---|---|---|
+| 6be7bf2 | opcode trees: root+mid inline, 64 leaves in lazy 16-table groups | opcode trees 123 → 39 KB touched; batched faults 7.10 → 3.04 |
+| e1a15d8 | byte trees: lazy leaf tables | 18.7 → 7.5 KB; faults → 2.84 |
+| 7fc0f3e | `UintModel`: short rows packed inline, long rows + `rest` lazy | uint family ~50 → ~22 KB; faults → 1.93; Ir −0.75% |
+| f7b7a15 | opcode leaves in 4-table groups | opcode trees 39 → 26 KB; faults → 1.55 / 0.59 |
+| a93663e | ID map reserved for word_count / 4 | faults → 0.32 / 0.29; Ir −0.7% (/2 neutral, /8 rehashes) |
+| 147828e | order-1 opcode contexts in the arena | Ir −1.0% (first branched as a tradeoff; faults only +0.01-0.06 on the leaner model) |
+| f64fee3 | lazy per-instruction operand caches | heap −121 KB per decode (also first branched) |
+| a55e164 | merge per-instruction caches and count models | heap 184 → 174 KB |
+| 4a6e7e2 | lazy-leaf trees for enum / ext-inst indices | value-enum models 8.3 → 4.2 KB; Ir −0.6% |
+| 89d3763 | value-enum contexts by value-enum ordinal | pointer table 11.6 → 7.2 KB; Ir −0.7% |
+| 40e7cf2 | **format:** word-count models shared per instruction class | **corpus −0.83%** (1,021,506 → 1,013,012 bytes), ~7 KB less touched, faults → 0.12 / 0.16, Ir +0.25% |
+
+**Net:** heap per decode ~500 → 154 KB (−69%); touched ~265 → ~91 KB
+(−66%); page faults per decode 7.10 → 0.12 in batch processes (−98%) and
+3.17 → 0.16 long-lived; stateless instructions 301.0M → 290.0M per pass
+(−3.7%); corpus 0.83% smaller. Every byte-identical step kept corpus and
+raw-residual output identical; the final tree passes `make test`, `make
+asan`, a 3000-iteration fuzz, valgrind memcheck with full leak checking
+(corpus decodes, `arixv_test`, 40 mutated blobs), and the scalar/SIMD
+cross-check; each byte-identical commit also passed the 720-case
+mutated-blob differential against the pre-work CLI.
+
+**Branched (plausibly acceptable tradeoffs):**
+- `size/tradeoff-no-order1-opcode`: drop order-1 opcode contexts —
+  corpus +1.07%, ~18 KB less touched, instructions −4.0%.
+- `size/tradeoff-eight-operand-slots`: 8 operand-cache slots instead of 16
+  — corpus +8 bytes, ~3 KB less touched, instructions −0.04%.
+
+**Measurement notes:** fault counts at this level are sensitive to heap
+layout (which allocation sits at the top of the heap when glibc trims), so
+two changes that first looked like fault regressions were re-tested on the
+final footprint and landed; compare faults only between builds measured
+the same way. Remaining touched memory (~91 KB) is model state decodes
+genuinely use: per-instruction contexts, order-1 opcode contexts, opcode
+leaf groups, each under ~16 KB.
+
+### Stateless vs reusable after the size work (2026-11-18, idle host)
+
+Same method as the re-measurement above (`build/arixv_bench`, all files,
+core 2, interleaved rounds): current `HEAD` (stateless, b22a90b) against
+the reusable `arixv::Decoder` runner built at `21199df`.
+
+| setting | HEAD stateless | 21199df reusable |
+|---|---|---|
+| 64-file batch processes (5 rounds) | 79.3 / 85.7 / 86.1 / 86.5 / 82.7 (median 85.7) MiB/s | 84.1 / 84.4 / 84.4 / 84.7 / 84.1 (median 84.4) MiB/s |
+| one long-lived process (2 rounds) | 85.7 / 87.4 MiB/s | 84.1 / 82.0 MiB/s |
+
+The 23% batch-mode gap (69.3 vs 85.3 MiB/s at 0e9f38c) is gone: with page
+faults per decode down to ~0.1, stateless decode now matches or beats the
+old reusable decoder in both settings. Caveat: `21199df` predates ~5% of
+instruction savings made since, so a reusable decoder rebuilt on today's
+code would likely still lead by a few percent — a small margin, no longer
+the reason to keep two decode paths.
+
+## Suggested attack order (July 2026 — historical)
+
+*Superseded by "Current state" at the top of this file; kept for the record.*
 
 Tier A first — pure profiling debt, no ratio risk; estimated to take decode
 from ~18 to ~50-70 MiB/s (strcmp + allocation + tracker alone are ~40% of

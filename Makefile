@@ -44,6 +44,20 @@ $(BUILD_DIR)/arixv_bench: $(BENCH_SRCS) $(LIB_HDRS) | $(BUILD_DIR)
 $(BUILD_DIR)/arixv_decode_bench: $(DECODE_BENCH_SRCS) $(LIB_HDRS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DECODE_BENCH_SRCS) $(LDFLAGS) -o $@
 
+# E-A0/E-A2 entropy-coder microbenchmarks (docs/development/performance.md).
+# Not part of `all`: they need the -DARIXV_TRACE_DECISIONS diagnostics build.
+TRACE_CXXFLAGS := $(CXXFLAGS) -DARIXV_TRACE_DECISIONS
+
+$(BUILD_DIR)/ans_microbench: tools/bench/ans_microbench.cpp $(LIB_SRCS) $(LIB_HDRS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(TRACE_CXXFLAGS) tools/bench/ans_microbench.cpp $(LIB_SRCS) $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/ans_symbol_microbench: tools/bench/ans_symbol_microbench.cpp $(LIB_SRCS) $(LIB_HDRS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(TRACE_CXXFLAGS) tools/bench/ans_symbol_microbench.cpp $(LIB_SRCS) $(LDFLAGS) -o $@
+
+# Per-decode memory breakdown; needs the -DARIXV_MEMSTATS diagnostics build.
+$(BUILD_DIR)/memory_breakdown: tools/bench/memory_breakdown.cpp $(LIB_SRCS) $(LIB_HDRS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -DARIXV_MEMSTATS tools/bench/memory_breakdown.cpp $(LIB_SRCS) $(LDFLAGS) -o $@
+
 $(BUILD_DIR)/fuzz_roundtrip: $(FUZZ_SRCS) $(LIB_HDRS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(FUZZ_SRCS) $(LDFLAGS) -o $@
 

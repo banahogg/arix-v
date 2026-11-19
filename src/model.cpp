@@ -11,6 +11,10 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <type_traits>
+#ifdef ARIXV_MEMSTATS
+#include <map>
+#endif
 #include <unordered_map>
 #include <vector>
 
@@ -139,18 +143,74 @@ struct CountModel {
   UintModel extra;
 };
 
+// Opcode-index tree, symbol-for-symbol identical to BitTree<10> (chunks of
+// 2, 4, 4 bits: 1 root, 4 mid, 64 leaf tables) but with the 64 leaf tables —
+// 2 KB of BitTree<10>'s 2.2 KB — allocated lazily in four 16-table groups,
+// one per top-chunk value. A context only reaches the leaves under the top
+// values it actually sees, and a fresh group is zeroed (uniform), exactly
+// like the eager tree's untouched tables.
+struct OpcodeTree {
+  static_assert(BitTree<10>::kFirstChunk == 2 && BitTree<10>::NumTables() == 69,
+                "OpcodeTree mirrors BitTree<10>'s 2/4/4 chunk layout");
+  using LeafGroup = std::array<SymbolCdf, 4>;
+  SymbolCdf root;
+  std::array<SymbolCdf, 4> mid;
+  std::array<ArenaPtr<LeafGroup>, 16> leaf;  // by (top, mid >> 2)
+
+  template <typename Coder>
+  uint32_t CodeValue(Coder& coder, Arena& arena, uint32_t value) {
+    if constexpr (Coder::kRawResidual) {
+      (void)arena;
+      return coder.CodeBitsDirect(value, 10);
+    } else {
+#ifdef ARIXV_TRACE_DECISIONS
+      if (Coder::kEncoding && g_tree_trace != nullptr) {
+        g_tree_trace->push_back({this, 10, value});
+      }
+#endif
+      StatSiteScope<Coder> site(kSiteBitTree);
+      const uint32_t top = coder.template CodeSymbol<4, kSymbolRateCap>(
+          root, (value >> 8) & 3u);
+      const uint32_t m = coder.template CodeSymbol<16, kSymbolRateCap>(
+          mid[top], (value >> 4) & 15u);
+      const uint32_t low = coder.template CodeSymbol<16, kSymbolRateCap>(
+          Leaf(arena, top, m), value & 15u);
+      return Coder::kEncoding ? value : ((top << 8) | (m << 4) | low);
+    }
+  }
+
+  // Steady-rate shadow update along value's path, as BitTree<10>::Train.
+  void Train(Arena& arena, uint32_t value) {
+    const uint32_t top = (value >> 8) & 3u;
+    const uint32_t m = (value >> 4) & 15u;
+    SymbolCdfTrain<4, kSymbolRateCap>(root, static_cast<int>(top));
+    SymbolCdfTrain<16, kSymbolRateCap>(mid[top], static_cast<int>(m));
+    SymbolCdfTrain<16, kSymbolRateCap>(Leaf(arena, top, m),
+                                       static_cast<int>(value & 15u));
+  }
+
+ private:
+  SymbolCdf& Leaf(Arena& arena, uint32_t top, uint32_t m) {
+    ArenaPtr<LeafGroup>& group = leaf[(top << 2) | (m >> 2)];
+    if (!group) {
+      group.Make(arena);
+    }
+    return (*group)[m & 3u];
+  }
+};
+
+// Order-1 opcode context (keyed by the previous instruction), created on
+// first use with its tree: the count and tree used to sit in an eager
+// 876-entry table, half of whose bytes were tree pointers.
 struct OpcodeCtx {
-  uint32_t stamp = 0;
-  uint32_t count = 0;
-  std::unique_ptr<BitTree<10>> tree;
+  uint32_t count;
+  OpcodeTree tree;
 };
 
 struct ValueEnumModel {
   Prob known;
-  std::unique_ptr<BitTree<8>> index;
+  LazyLeafTree8<kSymbolRateCap> index;
   UintModel escape;
-
-  ValueEnumModel() : index(std::make_unique<BitTree<8>>()) {}
 };
 
 struct BitEnumModel {
@@ -161,79 +221,34 @@ struct BitEnumModel {
 
 struct ExtInstNumberModel {
   Prob known;
-  std::unique_ptr<BitTree<8>> index;
+  LazyLeafTree8<kSymbolRateCap> index;
   UintModel escape;
-
-  ExtInstNumberModel() : index(std::make_unique<BitTree<8>>()) {}
 };
 
-void ResetCountModel(CountModel& model) { model = CountModel{}; }
-
-void ResetValueEnumModel(ValueEnumModel& model) {
-  model.known = Prob{};
-  *model.index = BitTree<8>{};
-  model.escape = UintModel{};
-}
-
-void ResetBitEnumModel(BitEnumModel& model) {
-  for (Prob& bit : model.bits) {
-    bit = Prob{};
-  }
-  model.unknown = Prob{};
-  model.residual = UintModel{};
-}
-
-void ResetExtInstNumberModel(ExtInstNumberModel& model) {
-  model.known = Prob{};
-  *model.index = BitTree<8>{};
-  model.escape = UintModel{};
-}
-
-// Fixed-size POD array whose contents start *uninitialized*: every slot is
-// generation-stamp-guarded at its use site, so zeroing at construction (what
-// std::vector does) is pure per-decode waste for the stateless path.
-template <typename T>
-class UninitArray {
- public:
-  explicit UninitArray(size_t count) : data_(new T[count]) {}
-  T& operator[](size_t i) { return data_[i]; }
-  const T& operator[](size_t i) const { return data_[i]; }
-
- private:
-  std::unique_ptr<T[]> data_;
-};
-
-UintModel& EnsureUint(std::unique_ptr<UintModel>& model) {
+UintModel& EnsureUint(Arena& arena, ArenaPtr<UintModel>& model) {
   if (!model) {
-    model = std::make_unique<UintModel>();
+    model.Make(arena);
   }
   return *model;
 }
 
-template <typename T, typename Reset>
-T& EnsureStamped(std::vector<std::unique_ptr<T>>& slots,
-                 std::vector<uint32_t>& stamps, size_t key,
-                 uint32_t generation, Reset reset) {
-  std::unique_ptr<T>& slot = slots[key];
+// Lazily created contexts are built (as T{}) on first use. A model lives for
+// exactly one encode or decode, so a context, once made, is never stale.
+template <typename T>
+T& EnsureContext(Arena& arena, ArenaPtr<T>& slot) {
   if (!slot) {
-    slot = std::make_unique<T>();
-  } else if (stamps[key] != generation) {
-    reset(*slot);
+    slot.Make(arena);
   }
-  stamps[key] = generation;
   return *slot;
 }
 
-template <int kBits>
-BitTree<kBits>& EnsureStampedTree(std::unique_ptr<BitTree<kBits>>& tree,
-                                  uint32_t& stamp, uint32_t generation) {
-  if (!tree) {
-    tree = std::make_unique<BitTree<kBits>>();
-  } else if (stamp != generation) {
-    *tree = BitTree<kBits>{};
+// For the few context types that own heap storage (BitEnumModel).
+template <typename T>
+T& EnsureContext(std::unique_ptr<T>& slot) {
+  if (!slot) {
+    slot = std::make_unique<T>();
   }
-  stamp = generation;
-  return *tree;
+  return *slot;
 }
 
 // ARIXV_STATS=1: entropy cost per field category, accumulated process-wide
@@ -268,115 +283,101 @@ void DumpStats() {
                  g_stat_bits[i] / 8, total > 0 ? 100 * g_stat_bits[i] / total : 0);
   }
   std::fprintf(stderr, "  %-14s %12.0f bytes\n", "TOTAL", total / 8);
+
+  static_assert(kStatCount <= kStatMaxCats, "stat category table too small");
+  constexpr const char* kSiteNames[kSiteCount] = {
+      "flag", "bit_tree", "uint_len", "uint_mant", "byte"};
+  uint64_t site_total[kSiteCount] = {};
+  uint64_t adaptive_total = 0;
+  uint64_t direct_total = 0;
+  std::fprintf(stderr,
+               "ARIXV_STATS decisions (adaptive by primitive, direct bits):\n");
+  std::fprintf(stderr, "  %-14s", "category");
+  for (const char* n : kSiteNames) std::fprintf(stderr, " %11s", n);
+  std::fprintf(stderr, " %11s %11s\n", "adaptive", "direct");
+  for (int i = 0; i < kStatCount; ++i) {
+    uint64_t row = 0;
+    std::fprintf(stderr, "  %-14s", kStatNames[i]);
+    for (int s = 0; s < kSiteCount; ++s) {
+      std::fprintf(stderr, " %11llu",
+                   static_cast<unsigned long long>(g_stat_adaptive[i][s]));
+      row += g_stat_adaptive[i][s];
+      site_total[s] += g_stat_adaptive[i][s];
+    }
+    adaptive_total += row;
+    direct_total += g_stat_direct[i];
+    std::fprintf(stderr, " %11llu %11llu\n",
+                 static_cast<unsigned long long>(row),
+                 static_cast<unsigned long long>(g_stat_direct[i]));
+  }
+  std::fprintf(stderr, "  %-14s", "TOTAL");
+  for (uint64_t t : site_total) {
+    std::fprintf(stderr, " %11llu", static_cast<unsigned long long>(t));
+  }
+  std::fprintf(stderr, " %11llu %11llu\n",
+               static_cast<unsigned long long>(adaptive_total),
+               static_cast<unsigned long long>(direct_total));
 }
 
+// Per-instruction caches: the last ID and last literal seen in each of the
+// 16 operand slots (each guarded by a valid flag) and the last word count.
+// InstGroup{} is the first-touch state.
+struct InstGroup {
+  uint32_t last_id[16];
+  uint32_t last_literal[16];
+  uint8_t last_id_valid[16];
+  uint8_t last_literal_valid[16];
+  uint32_t last_word_count;
+};
+
+// Everything kept per known instruction, created on its first use.
+struct InstContext {
+  InstGroup group;
+};
+
 struct ModelState {
+  // Owns every lazily created context (ArenaPtr members below); declared
+  // first so it is destroyed last.
+  Arena arena;
+
   ModelState()
       : opcode_index_trees(
             static_cast<size_t>(Section::kCount) *
             (static_cast<size_t>(NumInstructionClasses()) + 1)),
-        opcode_index_tree_stamp(opcode_index_trees.size()),
         opcode_contexts(NumCoreInstructions() + 1),
-        count_models(NumCoreInstructions()),
-        count_model_stamp(count_models.size()),
-        last_word_count(NumCoreInstructions()),
-        inst_group_stamp(NumCoreInstructions()),
+        inst_contexts(NumCoreInstructions()),
+        class_count_models(static_cast<size_t>(NumInstructionClasses()) + 1),
         type_in_list(std::make_unique<std::vector<Prob>>(
             static_cast<size_t>(NumInstructionClasses()) + 1)),
-        type_rank(std::make_unique<std::vector<BitTree<6>>>(
+        type_rank(std::make_unique<std::vector<BitTree<kRankTreeBits>>>(
             static_cast<size_t>(NumInstructionClasses()) + 1)),
         type_escape(static_cast<size_t>(NumInstructionClasses()) + 1),
-        last_id(NumCoreInstructions() * 16u),
-        last_id_stamp(NumCoreInstructions() * 16u),
-        value_enums(static_cast<size_t>(NumOperandKinds()) * 16),
-        value_enum_stamp(value_enums.size()),
+        value_enum_ordinal(NumOperandKinds()),
         bit_enums(NumOperandKinds()),
-        bit_enum_stamp(bit_enums.size()),
         integer_values(
             (static_cast<size_t>(NumInstructionClasses()) + 1) * 9),
-        integer_value_stamp(integer_values.size()),
-        last_literal(NumCoreInstructions() * 16u),
-        last_literal_stamp(NumCoreInstructions() * 16u),
         ext_inst_nums(NumExtInstSets()),
-        ext_inst_num_stamp(ext_inst_nums.size()),
-        string_bytes(std::make_unique<ByteModel>()) {}
-
-  // Must run before any last_id/last_literal/last_word_count access for
-  // inst_index in a generation; CodeModule calls it once per instruction.
-  void EnsureInstGroup(uint16_t inst_index) {
-    if (inst_group_stamp[inst_index] == generation) {
-      return;
-    }
-    inst_group_stamp[inst_index] = generation;
-    const size_t base = static_cast<size_t>(inst_index) * 16;
-    for (size_t i = 0; i < 16; ++i) {
-      last_id_stamp[base + i] = 0;
-      last_literal_stamp[base + i] = 0;
-    }
-    last_word_count[inst_index] = 0;
-  }
-
-  void BeginDecode() {
-    AdvanceGeneration();
-    tracker.Reset();
-    swapped_flag = Prob{};
-    version_canonical = Prob{};
-    version_major = BitTree<4>{};
-    version_minor = BitTree<4>{};
-    BeginByteModelGeneration(generator_bytes);
-    schema_zero = Prob{};
-    bound_matches = Prob{};
-    known_opcode.fill(Prob{});
-    raw_known_count.reset();
-    raw_unknown_count.reset();
-    bound_value.reset();
-    if (operand_bytes) {
-      for (ByteModel& model : *operand_bytes) {
-        BeginByteModelGeneration(model);
+        string_bytes(std::make_unique<ByteModel>()) {
+    size_t value_enum_kinds = 0;
+    for (uint16_t k = 0; k < NumOperandKinds(); ++k) {
+      if (GetOperandKind(k).category == OperandCategory::kValueEnum) {
+        value_enum_ordinal[k] = static_cast<uint16_t>(value_enum_kinds++);
       }
     }
-    prev_result_id = 0;
-    result_next.fill(Prob{});
-    result_in_fwd = Prob{};
-    result_fwd_rank = BitTree<6>{};
-    result_delta = {};
-    std::fill(type_in_list->begin(), type_in_list->end(), Prob{});
-    for (BitTree<6>& tree : *type_rank) {
-      tree = BitTree<6>{};
-    }
-    for (std::unique_ptr<UintModel>& model : type_escape) {
-      model.reset();
-    }
-    id_in_list = {};
-    id_rank = {};
-    for (auto& bucket : id_escape) {
-      for (std::unique_ptr<UintModel>& model : bucket) {
-        model.reset();
-      }
-    }
-    context_number = UintModel{};
-    context_high_signext = Prob{};
-    spec_constant_op.reset();
-    ext_inst_unknown.reset();
-    string_match = Prob{};
-    string_rank = BitTree<6>{};
-    string_canonical = Prob{};
-    BeginByteModelGeneration(*string_bytes);
-    recent_strings.clear();
+    value_enums.resize(value_enum_kinds * 16);
   }
 
-  void BeginRawDecode() {
-    // The raw residual format keeps only structural prediction state. None of
-    // the adaptive probability arrays participate in decoding, so resetting
-    // them would distort the ceiling this experiment is intended to measure.
-    AdvanceGeneration();
-    tracker.Reset();
-    prev_result_id = 0;
-    recent_strings.clear();
+  // Must run before any inst_group access for inst_index;
+  // CodeModule calls it once per instruction with a known descriptor.
+  void EnsureInstContext(uint16_t inst_index) {
+    (void)EnsureContext(arena, inst_contexts[inst_index]);
   }
+  InstGroup& inst_group(uint16_t inst_index) {
+    return inst_contexts[inst_index]->group;
+  }
+
 
   Tracker tracker;
-  uint32_t generation = 1;
   Prob swapped_flag;
   Prob version_canonical;
   BitTree<4> version_major;
@@ -386,63 +387,57 @@ struct ModelState {
   Prob bound_matches;
 
   std::array<Prob, static_cast<size_t>(Section::kCount) * 2> known_opcode{};
-  std::vector<std::unique_ptr<BitTree<10>>> opcode_index_trees;
-  std::vector<uint32_t> opcode_index_tree_stamp;
-  std::unique_ptr<BitTree<16>> unknown_opcode_tree;
-  uint32_t unknown_opcode_tree_stamp = 0;
-  std::vector<OpcodeCtx> opcode_contexts;
-  std::vector<std::unique_ptr<CountModel>> count_models;
-  std::vector<uint32_t> count_model_stamp;
-  UninitArray<uint32_t> last_word_count;
-  // Two-level stamps for the per-(instruction x slot) caches: one stamp per
-  // instruction here; EnsureInstGroup zeroes that instruction's 16-slot
-  // stamp groups (and last word count) on its first touch each generation,
-  // so the per-slot stamp arrays are never bulk-cleared and start
-  // uninitialized. Per-decode clearing is 3.5 KB plus 128 B per distinct
-  // opcode used, instead of 115 KB.
-  std::vector<uint32_t> inst_group_stamp;
+  std::vector<ArenaPtr<OpcodeTree>> opcode_index_trees;
+  ArenaPtr<BitTree<16>> unknown_opcode_tree;
+  std::vector<ArenaPtr<OpcodeCtx>> opcode_contexts;
+  // Per-instruction contexts (operand caches + word-count model), created
+  // zeroed on an instruction's first use: a module uses a few dozen of the
+  // ~875 core instructions. One pointer table serves both; they are always
+  // created together.
+  std::vector<ArenaPtr<InstContext>> inst_contexts;
+  // Word-count models are shared per instruction class (ClassBucket): one per
+  // instruction was too sparse to learn — sharing compresses the corpus
+  // 0.83% smaller and touches ~7 KB less per decode. The last word count
+  // itself stays per instruction (InstGroup::last_word_count).
+  std::vector<ArenaPtr<CountModel>> class_count_models;
   // Models on rare paths (corpus-measured: raw counts 1/1080 files, exact
   // bound mispredictions 27/1080, opaque words 4/1080) are allocated on
   // first use so typical decodes never pay for their construction.
-  std::unique_ptr<UintModel> raw_known_count;
-  std::unique_ptr<UintModel> raw_unknown_count;
-  std::unique_ptr<UintModel> bound_value;
+  ArenaPtr<UintModel> raw_known_count;
+  ArenaPtr<UintModel> raw_unknown_count;
+  ArenaPtr<UintModel> bound_value;
   std::unique_ptr<std::array<ByteModel, 4>> operand_bytes;
 
   uint32_t prev_result_id = 0;
   std::array<Prob, 2> result_next{};
   Prob result_in_fwd;
-  BitTree<6> result_fwd_rank;
+  BitTree<kRankTreeBits> result_fwd_rank;
   std::array<UintModel, 4> result_delta;
 
   std::unique_ptr<std::vector<Prob>> type_in_list;
-  std::unique_ptr<std::vector<BitTree<6>>> type_rank;
+  std::unique_ptr<std::vector<BitTree<kRankTreeBits>>> type_rank;
   // Escape models allocate per slot on first escape: every module escapes
   // somewhere, but through only a handful of the 27/29 slots.
-  std::vector<std::unique_ptr<UintModel>> type_escape;
+  std::vector<ArenaPtr<UintModel>> type_escape;
 
   std::array<std::array<Prob, 9>, 3> id_in_list{};
-  std::array<std::array<BitTree<6>, 9>, 3> id_rank{};
-  std::array<std::array<std::unique_ptr<UintModel>, 9>, 3> id_escape{};
-  UninitArray<uint32_t> last_id;
-  UninitArray<uint32_t> last_id_stamp;  // valid only under inst_group_stamp
+  std::array<std::array<BitTree<kRankTreeBits>, 9>, 3> id_rank{};
+  std::array<std::array<ArenaPtr<UintModel>, 9>, 3> id_escape{};
 
-  std::vector<std::unique_ptr<ValueEnumModel>> value_enums;
-  std::vector<uint32_t> value_enum_stamp;
+  // Value-enum contexts are indexed by (value-enum ordinal, slot): only 56 of
+  // the 91 operand kinds are value enums, so indexing by raw kind wasted
+  // ~40% of a pointer table zeroed every decode.
+  std::vector<uint16_t> value_enum_ordinal;  // per operand kind
+  std::vector<ArenaPtr<ValueEnumModel>> value_enums;
   std::vector<std::unique_ptr<BitEnumModel>> bit_enums;
-  std::vector<uint32_t> bit_enum_stamp;
 
-  std::vector<std::unique_ptr<UintModel>> integer_values;
-  std::vector<uint32_t> integer_value_stamp;
-  UninitArray<uint32_t> last_literal;
-  UninitArray<uint32_t> last_literal_stamp;  // valid under inst_group_stamp
+  std::vector<ArenaPtr<UintModel>> integer_values;
   UintModel context_number;
   Prob context_high_signext;
-  std::unique_ptr<UintModel> spec_constant_op;  // rare: 16/1080 files
+  ArenaPtr<UintModel> spec_constant_op;  // rare: 16/1080 files
 
-  std::vector<std::unique_ptr<ExtInstNumberModel>> ext_inst_nums;
-  std::vector<uint32_t> ext_inst_num_stamp;
-  std::unique_ptr<UintModel> ext_inst_unknown;  // rare: 4/1080 files
+  std::vector<ArenaPtr<ExtInstNumberModel>> ext_inst_nums;
+  ArenaPtr<UintModel> ext_inst_unknown;  // rare: 4/1080 files
 
   Prob string_match;
   BitTree<6> string_rank;
@@ -450,25 +445,6 @@ struct ModelState {
   std::unique_ptr<ByteModel> string_bytes;
   std::vector<std::string> recent_strings;
 
- private:
-  void AdvanceGeneration() {
-    ++generation;
-    if (generation != 0) {
-      return;
-    }
-    generation = 1;
-    opcode_index_tree_stamp.assign(opcode_index_tree_stamp.size(), 0);
-    unknown_opcode_tree_stamp = 0;
-    for (OpcodeCtx& ctx : opcode_contexts) {
-      ctx.stamp = 0;
-    }
-    count_model_stamp.assign(count_model_stamp.size(), 0);
-    inst_group_stamp.assign(inst_group_stamp.size(), 0);
-    value_enum_stamp.assign(value_enum_stamp.size(), 0);
-    bit_enum_stamp.assign(bit_enum_stamp.size(), 0);
-    integer_value_stamp.assign(integer_value_stamp.size(), 0);
-    ext_inst_num_stamp.assign(ext_inst_num_stamp.size(), 0);
-  }
 };
 
 class EncodeIO {
@@ -727,9 +703,7 @@ uint32_t CodeGenericOperandWord(Bits& bits, ModelState& model,
     return bits.CodeBitsDirect(hint, 32);
   }
   if (!model.operand_bytes) {
-    // A freshly constructed ByteModel behaves exactly like a generation-
-    // bumped one (trees are stamp-guarded), so lazy creation is
-    // deterministic on both sides.
+    // Created on first use, identically on both sides.
     model.operand_bytes = std::make_unique<std::array<ByteModel, 4>>();
   }
   uint32_t out = 0;
@@ -760,10 +734,10 @@ uint32_t UnZigZag32(uint32_t value) {
 }
 
 template <class Bits>
-uint32_t CodeDelta(Bits& bits, UintModel& model, uint32_t value,
+uint32_t CodeDelta(Bits& bits, Arena& arena, UintModel& model, uint32_t value,
                    uint32_t base) {
   const uint32_t hint = ZigZag32(value - base);
-  const uint32_t coded = CodeUint(bits, model, hint);
+  const uint32_t coded = CodeUint(bits, arena, model, hint);
   return Bits::kEncoding ? value : base + UnZigZag32(coded);
 }
 
@@ -793,17 +767,16 @@ size_t Slot16(uint8_t slot) {
   return slot < 15 ? slot : 15;
 }
 
+// The previous instruction's core-table index, remembered by the tracker
+// (this used to binary-search the opcode table on every instruction: ~3.8%
+// of decode instructions).
 uint16_t PreviousOpcodeKey(const Tracker& tracker) {
   const uint16_t sentinel = NumCoreInstructions();
-  const uint16_t prev_opcode = tracker.prev_opcode();
   if (tracker.prev_opcode_class() == 0xFF) {
     return sentinel;
   }
-  const int index = FindInstructionIndex(prev_opcode);
-  if (index < 0 || index >= NumCoreInstructions()) {
-    return sentinel;
-  }
-  return static_cast<uint16_t>(index);
+  const uint16_t index = tracker.prev_instruction_index();
+  return index < sentinel ? index : sentinel;
 }
 
 bool IsSingleBit(uint32_t value) {
@@ -875,11 +848,11 @@ void TouchString(ModelState& model, const std::string& raw) {
 }
 
 template <class Bits>
-uint32_t CodeRankedId(Bits& bits, Prob& flag, BitTree<6>& tree,
-                      std::unique_ptr<UintModel>& escape,
+uint32_t CodeRankedId(Bits& bits, Prob& flag, BitTree<kRankTreeBits>& tree,
+                      Arena& arena, ArenaPtr<UintModel>& escape,
                       const RecencyList& list, uint32_t hint, uint32_t base) {
   const int rank = Bits::kEncoding ? list.Find(hint) : -1;
-  const bool in_list = rank >= 0 && rank < 64;
+  const bool in_list = rank >= 0 && rank < (1 << kRankTreeBits);
   if (bits.CodeBit(flag, in_list)) {
     const uint32_t coded_rank =
         tree.CodeValue(bits, in_list ? static_cast<uint32_t>(rank) : 0);
@@ -893,22 +866,9 @@ uint32_t CodeRankedId(Bits& bits, Prob& flag, BitTree<6>& tree,
     const uint32_t coded = bits.CodeUint32(delta);
     return Bits::kEncoding ? hint : base + UnZigZag32(coded);
   }
-  return CodeDelta(bits, EnsureUint(escape), hint, base);
+  return CodeDelta(bits, arena, EnsureUint(arena, escape), hint, base);
 }
 
-void TrainProb(Prob& p, bool bit) {
-  p.UpdateSteady(bit);
-}
-
-template <int kBits>
-void TrainBitTree(BitTree<kBits>& tree, uint32_t value) {
-  uint32_t node = 1;
-  for (int bit_index = kBits - 1; bit_index >= 0; --bit_index) {
-    const bool bit = ((value >> bit_index) & 1u) != 0;
-    TrainProb(tree.probs[node - 1], bit);
-    node = (node << 1) | static_cast<uint32_t>(bit);
-  }
-}
 
 template <class Bits>
 uint32_t CodeResultId(Bits& bits, ModelState& model,
@@ -920,7 +880,7 @@ uint32_t CodeResultId(Bits& bits, ModelState& model,
   if (!bits.CodeBit(model.result_next[ctx], sequential)) {
     const RecencyList& fwd = model.tracker.forward_refs();
     const int rank = Bits::kEncoding ? fwd.Find(hint) : -1;
-    const bool in_fwd = rank >= 0 && rank < 64;
+    const bool in_fwd = rank >= 0 && rank < (1 << kRankTreeBits);
     if (bits.CodeBit(model.result_in_fwd, in_fwd)) {
       const uint32_t coded_rank =
           model.result_fwd_rank.CodeValue(bits,
@@ -932,7 +892,7 @@ uint32_t CodeResultId(Bits& bits, ModelState& model,
         id = Bits::kEncoding ? hint : 0;
       }
     } else {
-      id = CodeDelta(bits, model.result_delta[ResultClassBucket(desc)], hint,
+      id = CodeDelta(bits, model.arena, model.result_delta[ResultClassBucket(desc)], hint,
                      predicted);
     }
   }
@@ -947,10 +907,10 @@ uint32_t CodeResultType(Bits& bits, ModelState& model,
   const size_t cls = ClassBucket(desc);
   uint32_t id = CodeRankedId(bits, (*model.type_in_list)[cls],
                              (*model.type_rank)[cls],
-                             model.type_escape[cls],
+                             model.arena, model.type_escape[cls],
                              model.tracker.recent_types(), hint,
                              model.prev_result_id);
-  model.tracker.OnIdUse(id);
+  model.tracker.OnResultTypeUse(id);
   return Bits::kEncoding ? hint : id;
 }
 
@@ -959,16 +919,17 @@ uint32_t CodeIdRef(Bits& bits, ModelState& model, uint16_t inst_index,
                    const OperandCursor::Field& field, uint32_t hint) {
   const int bucket = IdCategoryBucket(field.category);
   const uint32_t slot = Slot8(field.slot);
-  const size_t key = static_cast<size_t>(inst_index) * 16 + Slot16(field.slot);
+  InstGroup& group = model.inst_group(inst_index);
+  const size_t key = Slot16(field.slot);
   const uint32_t base =
-      model.last_id_stamp[key] == model.generation ? model.last_id[key]
-                                                   : model.prev_result_id;
+      group.last_id_valid[key] != 0 ? group.last_id[key]
+                                    : model.prev_result_id;
   uint32_t id = CodeRankedId(bits, model.id_in_list[bucket][slot],
                              model.id_rank[bucket][slot],
-                             model.id_escape[bucket][slot],
+                             model.arena, model.id_escape[bucket][slot],
                              model.tracker.recent_ids(), hint, base);
-  model.last_id[key] = id;
-  model.last_id_stamp[key] = model.generation;
+  group.last_id[key] = id;
+  group.last_id_valid[key] = 1;
   model.tracker.OnIdUse(id);
   return Bits::kEncoding ? hint : id;
 }
@@ -1000,18 +961,21 @@ uint32_t CodeValueEnum(Bits& bits, ModelState& model,
     }
     return bits.CodeUint32(hint);
   }
-  const size_t key = static_cast<size_t>(field.kind) * 16 + Slot16(field.slot);
+  // field.kind is a value-enum kind here (the cursor yields kValueEnum only
+  // for those), so its ordinal is valid.
+  const size_t key =
+      static_cast<size_t>(model.value_enum_ordinal[field.kind]) * 16 +
+      Slot16(field.slot);
   ValueEnumModel& ctx =
-      EnsureStamped(model.value_enums, model.value_enum_stamp, key,
-                    model.generation, ResetValueEnumModel);
+      EnsureContext(model.arena, model.value_enums[key]);
   if (bits.CodeBit(ctx.known, known)) {
-    index = ctx.index->CodeValue(bits, index);
+    index = ctx.index.CodeValue(bits, model.arena, index);
     if (!Bits::kEncoding && index < kind.num_enumerants) {
       return GetEnumerant(kind, static_cast<uint16_t>(index)).value;
     }
     return Bits::kEncoding ? hint : 0;
   }
-  return CodeUint(bits, ctx.escape, hint);
+  return CodeUint(bits, model.arena, ctx.escape, hint);
 }
 
 template <class Bits>
@@ -1040,8 +1004,7 @@ uint32_t CodeBitEnum(Bits& bits, ModelState& model,
     return Bits::kEncoding ? hint : value;
   }
   BitEnumModel& ctx =
-      EnsureStamped(model.bit_enums, model.bit_enum_stamp, field.kind,
-                    model.generation, ResetBitEnumModel);
+      EnsureContext(model.bit_enums[field.kind]);
   if (ctx.bits.empty()) {
     ctx.bits.resize(kind.num_enumerants);
   }
@@ -1060,7 +1023,7 @@ uint32_t CodeBitEnum(Bits& bits, ModelState& model,
   }
   const uint32_t residual_hint = hint & ~known_mask;
   if (bits.CodeBit(ctx.unknown, Bits::kEncoding && residual_hint != 0)) {
-    value |= CodeUint(bits, ctx.residual, residual_hint);
+    value |= CodeUint(bits, model.arena, ctx.residual, residual_hint);
   }
   return Bits::kEncoding ? hint : value;
 }
@@ -1070,32 +1033,31 @@ uint32_t CodeLiteralInteger(Bits& bits, ModelState& model,
                             const InstructionDesc* desc,
                             const OperandCursor::Field& field,
                             uint16_t inst_index, uint32_t hint) {
-  const size_t key = static_cast<size_t>(inst_index) * 16 + Slot16(field.slot);
-  if (model.last_literal_stamp[key] != model.generation) {
-    model.last_literal[key] = 0;
-    model.last_literal_stamp[key] = model.generation;
+  InstGroup& group = model.inst_group(inst_index);
+  const size_t key = Slot16(field.slot);
+  if (group.last_literal_valid[key] == 0) {
+    group.last_literal[key] = 0;
+    group.last_literal_valid[key] = 1;
   }
-  const uint32_t base = model.last_literal[key];
+  const uint32_t base = group.last_literal[key];
   if constexpr (Bits::kRawResidual) {
     const uint32_t delta = Bits::kEncoding ? ZigZag32(hint - base) : 0;
     const uint32_t coded = bits.CodeUint32(delta);
     const uint32_t value = Bits::kEncoding ? hint : base + UnZigZag32(coded);
-    model.last_literal[key] = value;
+    group.last_literal[key] = value;
     return Bits::kEncoding ? hint : value;
   }
   const size_t cls = ClassBucket(desc);
   UintModel& ctx =
-      EnsureStamped(model.integer_values, model.integer_value_stamp,
-                    cls * 9 + Slot8(field.slot), model.generation,
-                    [](UintModel& value) { value = UintModel{}; });
-  const uint32_t value = CodeDelta(bits, ctx, hint, base);
-  model.last_literal[key] = value;
+      EnsureContext(model.arena, model.integer_values[cls * 9 + Slot8(field.slot)]);
+  const uint32_t value = CodeDelta(bits, model.arena, ctx, hint, base);
+  group.last_literal[key] = value;
   return Bits::kEncoding ? hint : value;
 }
 
 template <class Bits>
 uint32_t CodeContextNumber(Bits& bits, ModelState& model, uint32_t hint) {
-  return CodeUint(bits, model.context_number, hint);
+  return CodeUint(bits, model.arena, model.context_number, hint);
 }
 
 template <class Bits>
@@ -1104,7 +1066,7 @@ uint32_t CodeSpecConstantOp(Bits& bits, ModelState& model, uint32_t hint) {
     (void)model;
     return bits.CodeUint32(hint);
   }
-  return CodeUint(bits, EnsureUint(model.spec_constant_op), hint);
+  return CodeUint(bits, model.arena, EnsureUint(model.arena, model.spec_constant_op), hint);
 }
 
 template <class Bits>
@@ -1114,14 +1076,14 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
     if constexpr (Bits::kRawResidual) {
       return bits.CodeUint32(hint);
     }
-    return CodeUint(bits, EnsureUint(model.ext_inst_unknown), hint);
+    return CodeUint(bits, model.arena, EnsureUint(model.arena, model.ext_inst_unknown), hint);
   }
   const int set_index = FindExtInstSetIndex(set);
   if (set_index < 0) {
     if constexpr (Bits::kRawResidual) {
       return bits.CodeUint32(hint);
     }
-    return CodeUint(bits, EnsureUint(model.ext_inst_unknown), hint);
+    return CodeUint(bits, model.arena, EnsureUint(model.arena, model.ext_inst_unknown), hint);
   }
   const InstructionDesc* inst =
       Bits::kEncoding ? FindExtInstruction(*set, hint) : nullptr;
@@ -1147,17 +1109,16 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
     return bits.CodeUint32(hint);
   }
   ExtInstNumberModel& ctx =
-      EnsureStamped(model.ext_inst_nums, model.ext_inst_num_stamp,
-                    static_cast<size_t>(set_index), model.generation,
-                    ResetExtInstNumberModel);
+      EnsureContext(model.arena,
+                    model.ext_inst_nums[static_cast<size_t>(set_index)]);
   if (bits.CodeBit(ctx.known, known)) {
-    index = ctx.index->CodeValue(bits, index);
+    index = ctx.index.CodeValue(bits, model.arena, index);
     if (!Bits::kEncoding && index < set->num_instructions) {
       return set->instructions[index].opcode;
     }
     return Bits::kEncoding ? hint : 0;
   }
-  return CodeUint(bits, ctx.escape, hint);
+  return CodeUint(bits, model.arena, ctx.escape, hint);
 }
 
 template <class Bits, size_t kInlineWords>
@@ -1287,19 +1248,11 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
         static_cast<size_t>(section) *
             (static_cast<size_t>(NumInstructionClasses()) + 1) +
         prev_class;
-    BitTree<10>& tree =
-        EnsureStampedTree(model.opcode_index_trees[tree_ctx],
-                          model.opcode_index_tree_stamp[tree_ctx],
-                          model.generation);
+    OpcodeTree& tree =
+        EnsureContext(model.arena, model.opcode_index_trees[tree_ctx]);
     const uint16_t prev_key = PreviousOpcodeKey(model.tracker);
-    OpcodeCtx& order1 = model.opcode_contexts[prev_key];
-    if (order1.stamp != model.generation) {
-      order1.count = 0;
-      if (order1.tree) {
-        *order1.tree = BitTree<10>{};
-      }
-      order1.stamp = model.generation;
-    }
+    OpcodeCtx& order1 =
+        EnsureContext(model.arena, model.opcode_contexts[prev_key]);
     uint32_t index = 0;
     if (Bits::kEncoding) {
       const int found = FindInstructionIndex(hint);
@@ -1307,16 +1260,10 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
       index = static_cast<uint32_t>(found);
     }
     if (order1.count < kOpcodeOrder1MinCount) {
-      index = tree.CodeValue(bits, index);
-      if (!order1.tree) {
-        order1.tree = std::make_unique<BitTree<10>>();
-      }
-      TrainBitTree(*order1.tree, index);
+      index = tree.CodeValue(bits, model.arena, index);
+      order1.tree.Train(model.arena, index);
     } else {
-      if (!order1.tree) {
-        order1.tree = std::make_unique<BitTree<10>>();
-      }
-      index = order1.tree->CodeValue(bits, index);
+      index = order1.tree.CodeValue(bits, model.arena, index);
     }
     if (order1.count != 0xffffffffu) {
       ++order1.count;
@@ -1336,8 +1283,7 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
       return opcode;
     }
     opcode = static_cast<uint16_t>(
-        EnsureStampedTree(model.unknown_opcode_tree,
-                          model.unknown_opcode_tree_stamp, model.generation)
+        EnsureContext(model.arena, model.unknown_opcode_tree)
             .CodeValue(bits, hint));
     *desc_out = nullptr;
     *inst_index_out = NumCoreInstructions();
@@ -1355,7 +1301,7 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
     if constexpr (Bits::kRawResidual) {
       return bits.CodeUint32(hint) & 0xffffu;
     }
-    count = CodeUint(bits, EnsureUint(model.raw_unknown_count), hint) & 0xffffu;
+    count = CodeUint(bits, model.arena, EnsureUint(model.arena, model.raw_unknown_count), hint) & 0xffffu;
     return count;
   }
 
@@ -1369,7 +1315,7 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
     if (desc->fixed_word_count) {
       return desc->min_word_count;
     }
-    const uint32_t last_count = model.last_word_count[inst_index];
+    const uint32_t last_count = model.inst_group(inst_index).last_word_count;
     if (bits.CodeBit(model.schema_zero,
                      Bits::kEncoding && hint == last_count)) {
       count = last_count;
@@ -1377,13 +1323,12 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
       const uint32_t extra = Bits::kEncoding ? hint - desc->min_word_count : 0;
       count = (desc->min_word_count + bits.CodeUint32(extra)) & 0xffffu;
     }
-    model.last_word_count[inst_index] = count;
+    model.inst_group(inst_index).last_word_count = count;
     return count;
   }
 
   CountModel& count_model =
-      EnsureStamped(model.count_models, model.count_model_stamp, inst_index,
-                    model.generation, ResetCountModel);
+      EnsureContext(model.arena, model.class_count_models[ClassBucket(desc)]);
   const bool hint_consistent = IsGrammarConsistent(desc, hint);
   const bool consistent =
       bits.CodeBit(count_model.consistent, hint_consistent);
@@ -1392,9 +1337,8 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
     if (desc->fixed_word_count) {
       count = desc->min_word_count;
     } else {
-      // EnsureInstGroup zeroed last_word_count on this instruction's first
-      // touch this generation.
-      const uint32_t last_count = model.last_word_count[inst_index];
+      // A fresh InstGroup starts with last_word_count = 0.
+      const uint32_t last_count = model.inst_group(inst_index).last_word_count;
       if (bits.CodeBit(count_model.same_as_last,
                        Bits::kEncoding && hint == last_count)) {
         count = last_count;
@@ -1403,13 +1347,13 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
                                         ? hint - desc->min_word_count
                                         : 0;
         count = (desc->min_word_count +
-                 CodeUint(bits, count_model.extra, extra_hint)) &
+                 CodeUint(bits, model.arena, count_model.extra, extra_hint)) &
                 0xffffu;
       }
-      model.last_word_count[inst_index] = count;
+      model.inst_group(inst_index).last_word_count = count;
     }
   } else {
-    count = CodeUint(bits, EnsureUint(model.raw_known_count), hint) & 0xffffu;
+    count = CodeUint(bits, model.arena, EnsureUint(model.arena, model.raw_known_count), hint) & 0xffffu;
   }
   return count;
 }
@@ -1421,6 +1365,9 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
   const bool stats = StatsEnabled();
   const auto stat = [&bits, stats](StatCat cat) {
     bits.SetCostSink(stats ? &g_stat_bits[cat] : nullptr);
+    if constexpr (Bits::kEncoding && !Bits::kRawResidual) {
+      g_stat_cat = stats ? static_cast<int>(cat) : -1;
+    }
   };
   stat(kStatHeader);
   const bool swapped = bits.CodeBit(model.swapped_flag, io.SwappedHint());
@@ -1480,7 +1427,7 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
     const uint16_t opcode =
         CodeOpcode(model, bits, opcode_hint, &desc, &inst_index);
     if (desc != nullptr) {
-      model.EnsureInstGroup(inst_index);
+      model.EnsureInstContext(inst_index);
     }
 
     bool opaque = true;
@@ -1698,7 +1645,8 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
     }
 
     model.tracker.OnInstructionEnd(inst_words.data(),
-                                   static_cast<uint32_t>(inst_words.size()));
+                                   static_cast<uint32_t>(inst_words.size()),
+                                   inst_index);
     body_pos += 1 + operand_words;
   }
 
@@ -1714,12 +1662,17 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
                         if constexpr (Bits::kRawResidual) {
                           return bits.CodeUint32(bound_hint);
                         }
-                        return CodeUint(bits, EnsureUint(model.bound_value),
+                        return CodeUint(bits, model.arena, EnsureUint(model.arena, model.bound_value),
                                         bound_hint);
                       }();
   io.PatchBound(bound);
 
   if (bits.exhausted()) {
+    if constexpr (std::is_same_v<Bits, BitDecoder>) {
+      if (!bits.range_exhausted()) {
+        return Status::kBadContainer;
+      }
+    }
     return Status::kTruncated;
   }
   return Status::kOk;
@@ -1743,6 +1696,7 @@ void EncodeModule(const uint8_t* data, size_t size,
   EncodeIO io(data, size);
   const Status status = CodeModule(model, bits, io, size / 4);
   (void)status;
+  g_stat_cat = -1;
   bits.Flush();
 }
 
@@ -1756,28 +1710,63 @@ void EncodeModuleRawResidual(const uint8_t* data, size_t size,
   bits.Flush();
 }
 
-struct ModuleDecoder::State {
-  ModelState model;
-};
+#ifdef ARIXV_MEMSTATS
+// Diagnostics build only: per-member heap and inline sizes of the model,
+// accumulated over decodes. "touched" excludes deliberately uninitialized
+// arrays, which only fault in where written.
+std::map<std::string, std::pair<uint64_t, uint64_t>> g_model_members;
+uint64_t g_model_decodes = 0;
+namespace {
+template <typename V>
+size_t VecBytes(const V& v) {
+  return v.capacity() * sizeof(typename V::value_type);
+}
+void RecordModelMemory(const ModelState& m) {
+  ++g_model_decodes;
+  const auto add = [](const char* name, size_t bytes, bool touched) {
+    auto& e = g_model_members[name];
+    e.first += bytes;
+    e.second += touched ? bytes : 0;
+  };
+  add("ModelState inline (sizeof)", sizeof(ModelState), true);
+  add("opcode_index_trees ptrs", VecBytes(m.opcode_index_trees), true);
+  add("opcode_contexts", VecBytes(m.opcode_contexts), true);
+  add("inst_contexts ptrs", VecBytes(m.inst_contexts), true);
+  add("type_in_list", VecBytes(*m.type_in_list), true);
+  add("type_rank", VecBytes(*m.type_rank), true);
+  add("type_escape ptrs", VecBytes(m.type_escape), true);
+  add("value_enums ptrs", VecBytes(m.value_enums), true);
+  add("bit_enums ptrs", VecBytes(m.bit_enums), true);
+  add("integer_values ptrs", VecBytes(m.integer_values), true);
+  add("ext_inst_nums ptrs", VecBytes(m.ext_inst_nums), true);
+  add("string_bytes ByteModel", sizeof(ByteModel), true);
+  add("operand_bytes ByteModels", m.operand_bytes ? sizeof(*m.operand_bytes) : 0,
+      true);
+  add("tracker ID map (stamps touched)", m.tracker.IdMapBytes(), false);
+  add("tracker ID map stamps", m.tracker.IdMapBytes() / (2 * 4 + sizeof(Tracker::IdInfo)) * 4, true);
+  size_t strings = VecBytes(m.recent_strings);
+  for (const std::string& str : m.recent_strings) strings += str.capacity() > 15 ? str.capacity() + 1 : 0;
+  add("recent_strings", strings, true);
+}
+}  // namespace
+#endif
 
-ModuleDecoder::ModuleDecoder() : state_(std::make_unique<State>()) {}
-ModuleDecoder::~ModuleDecoder() = default;
-ModuleDecoder::ModuleDecoder(ModuleDecoder&&) noexcept = default;
-ModuleDecoder& ModuleDecoder::operator=(ModuleDecoder&&) noexcept = default;
-
-Status ModuleDecoder::Decode(const uint8_t* payload, size_t payload_size,
-                             size_t expected_original_size,
-                             std::vector<uint8_t>& out) {
+Status DecodeModule(const uint8_t* payload, size_t payload_size,
+                    size_t expected_original_size, std::vector<uint8_t>& out) {
   if (expected_original_size < 20 || (expected_original_size % 4) != 0) {
     return Status::kBadContainer;
   }
   out.clear();
-  state_->model.BeginDecode();
+  // Heap-allocated: ModelState's inline models are too large for the stack.
+  const auto model = std::make_unique<ModelState>();
   RangeDecoder range(payload, payload_size);
   BitDecoder bits(range);
   DecodeIO io(out, expected_original_size);
   const Status status =
-      CodeModule(state_->model, bits, io, expected_original_size / 4);
+      CodeModule(*model, bits, io, expected_original_size / 4);
+#ifdef ARIXV_MEMSTATS
+  RecordModelMemory(*model);
+#endif
   if (status != Status::kOk) {
     out.clear();
     return status;
@@ -1786,44 +1775,25 @@ Status ModuleDecoder::Decode(const uint8_t* payload, size_t payload_size,
     out.clear();
     return Status::kTruncated;
   }
-  if (range.consumed_size() != payload_size) {
+  if (!bits.ConsumedExactly()) {
     out.clear();
     return Status::kBadContainer;
   }
   return Status::kOk;
 }
 
-Status DecodeModule(const uint8_t* payload, size_t payload_size,
-                    size_t expected_original_size, std::vector<uint8_t>& out) {
-  ModuleDecoder decoder;
-  return decoder.Decode(payload, payload_size, expected_original_size, out);
-}
-
-struct RawResidualModuleDecoder::State {
-  ModelState model;
-};
-
-RawResidualModuleDecoder::RawResidualModuleDecoder()
-    : state_(std::make_unique<State>()) {}
-RawResidualModuleDecoder::~RawResidualModuleDecoder() = default;
-RawResidualModuleDecoder::RawResidualModuleDecoder(
-    RawResidualModuleDecoder&&) noexcept = default;
-RawResidualModuleDecoder& RawResidualModuleDecoder::operator=(
-    RawResidualModuleDecoder&&) noexcept = default;
-
-Status RawResidualModuleDecoder::Decode(const uint8_t* payload,
-                                        size_t payload_size,
-                                        size_t expected_original_size,
-                                        std::vector<uint8_t>& out) {
+Status DecodeModuleRawResidual(const uint8_t* payload, size_t payload_size,
+                               size_t expected_original_size,
+                               std::vector<uint8_t>& out) {
   if (expected_original_size < 20 || (expected_original_size % 4) != 0) {
     return Status::kBadContainer;
   }
   out.clear();
-  state_->model.BeginRawDecode();
+  const auto model = std::make_unique<ModelState>();
   RawResidualDecoder bits(payload, payload_size);
   DecodeIO io(out, expected_original_size);
   const Status status =
-      CodeModule(state_->model, bits, io, expected_original_size / 4);
+      CodeModule(*model, bits, io, expected_original_size / 4);
   if (status != Status::kOk) {
     out.clear();
     return status;
@@ -1837,13 +1807,6 @@ Status RawResidualModuleDecoder::Decode(const uint8_t* payload,
     return Status::kBadContainer;
   }
   return Status::kOk;
-}
-
-Status DecodeModuleRawResidual(const uint8_t* payload, size_t payload_size,
-                               size_t expected_original_size,
-                               std::vector<uint8_t>& out) {
-  RawResidualModuleDecoder decoder;
-  return decoder.Decode(payload, payload_size, expected_original_size, out);
 }
 
 }  // namespace arixv

@@ -31,10 +31,12 @@ void EmptyStream() {
   std::vector<uint8_t> encoded;
   arixv::RangeEncoder enc(encoded);
   enc.Flush();
-  assert(encoded.size() == 5);
-  assert(encoded[0] == 0);
+  // Short flush, no LZMA dummy byte: the flush's leading cache byte is the
+  // dropped dummy, leaving the two pinned bytes.
+  assert(encoded.size() == static_cast<size_t>(arixv::kRangeFlushBytes - 1));
   arixv::RangeDecoder dec(encoded.data(), encoded.size());
   assert(!dec.exhausted());
+  assert(dec.consumed_size() == encoded.size());
 }
 
 void Truncation() {
@@ -167,9 +169,10 @@ void ProbabilityPrimitives() {
   std::vector<uint8_t> encoded;
   arixv::RangeEncoder range_enc(encoded);
   arixv::BitEncoder enc(range_enc);
+  arixv::Arena arena;
   arixv::UintModel uint_model;
   for (uint32_t v : values) {
-    assert(arixv::CodeUint(enc, uint_model, v) == v);
+    assert(arixv::CodeUint(enc, arena, uint_model, v) == v);
   }
   arixv::BitTree<1> tree1;
   arixv::BitTree<2> tree2;
@@ -187,18 +190,14 @@ void ProbabilityPrimitives() {
   assert(tree6.CodeValue(enc, 33) == 33);
   assert(tree7.CodeValue(enc, 65) == 65);
   assert(tree8.CodeValue(enc, 129) == 129);
-  arixv::Prob rank_slots[arixv::kRankCount + 1];
-  for (int rank = 0; rank <= arixv::kRankCount; ++rank) {
-    assert(arixv::CodeRank(enc, rank_slots, rank) ==
-           (rank == arixv::kRankCount ? arixv::kRankEscape : rank));
-  }
   enc.Flush();
 
   arixv::RangeDecoder range_dec(encoded.data(), encoded.size());
   arixv::BitDecoder dec(range_dec);
+  arixv::Arena darena;
   arixv::UintModel duint_model;
   for (uint32_t v : values) {
-    assert(arixv::CodeUint(dec, duint_model, 0) == v);
+    assert(arixv::CodeUint(dec, darena, duint_model, 0) == v);
   }
   arixv::BitTree<1> dtree1;
   arixv::BitTree<2> dtree2;
@@ -216,12 +215,6 @@ void ProbabilityPrimitives() {
   assert(dtree6.CodeValue(dec, 0) == 33);
   assert(dtree7.CodeValue(dec, 0) == 65);
   assert(dtree8.CodeValue(dec, 0) == 129);
-  arixv::Prob drank_slots[arixv::kRankCount + 1];
-  for (int rank = 0; rank <= arixv::kRankCount; ++rank) {
-    const int expected =
-        rank == arixv::kRankCount ? arixv::kRankEscape : rank;
-    assert(arixv::CodeRank(dec, drank_slots, 0) == expected);
-  }
   assert(!dec.exhausted());
 }
 

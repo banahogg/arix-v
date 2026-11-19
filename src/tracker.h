@@ -17,6 +17,8 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <type_traits>
 #include <vector>
 
 #include "grammar_tables.h"
@@ -47,6 +49,19 @@ constexpr int MaxRecencyListCap(int a, int b) { return a > b ? a : b; }
 constexpr int kRecencyListStorageCap =
     MaxRecencyListCap(MaxRecencyListCap(kRankListCap, kRankListCapIds),
                       kRankListCapTypes);
+static_assert(kRecencyListStorageCap <= 31,
+              "RecencyList match masks are 32-bit");
+
+// SSE2 (baseline on x86-64) fast path for the 16-entry recency lists.
+#if defined(__SSE2__) && !defined(ARIXV_NO_SIMD)
+#define ARIXV_RECENCY_SSE2 1
+#else
+#define ARIXV_RECENCY_SSE2 0
+#endif
+#if ARIXV_RECENCY_SSE2
+static_assert(kRecencyListStorageCap == 16,
+              "SSE2 recency path handles exactly four 4-lane vectors");
+#endif
 
 // Fixed-capacity move-to-front recency list for rank coding.
 class RecencyList {
@@ -62,10 +77,14 @@ class RecencyList {
   void Clear() { size_ = 0; }
 
  private:
+  // Bit i set iff live entry i equals id.
+  uint32_t MatchMask(uint32_t id) const;
+
   int cap_;
   int size_ = 0;
-  std::array<uint32_t, kRecencyListStorageCap> items_{};  // front = most recent
+  alignas(16) std::array<uint32_t, kRecencyListStorageCap> items_{};  // front = most recent
 };
+
 
 class Tracker {
  public:
@@ -82,20 +101,30 @@ class Tracker {
     kCount,
   };
 
+  // A plain aggregate: IdInfo{} (all zero) is the default — kUnknown, not
+  // defined, kOther, width 0, no ext set — which lets the ID map allocate its
+  // value array uninitialized. Always create one with IdInfo{}.
   struct IdInfo {
-    IdKind kind = IdKind::kUnknown;
-    bool defined = false;   // result ID has been seen
+    IdKind kind;
+    bool defined;   // result ID has been seen
     // For kind==kType: what type this ID declares.
-    TypeClass type_class = TypeClass::kOther;
-    uint32_t width = 0;         // OpTypeInt/OpTypeFloat bit width
-    const ExtInstSetDesc* ext_set = nullptr;  // kind==kExtInstSet
+    TypeClass type_class;
+    uint32_t width;         // OpTypeInt/OpTypeFloat bit width
+    const ExtInstSetDesc* ext_set;  // kind==kExtInstSet
   };
+  static_assert(std::is_trivially_default_constructible_v<IdInfo> &&
+                    static_cast<int>(IdKind::kUnknown) == 0 &&
+                    static_cast<int>(TypeClass::kOther) == 0,
+                "IdInfo{} must be the all-zero default");
 
   Tracker();
 
   // ---- Context inputs (const queries during coding) --------------------
   Section section() const { return section_; }
   uint16_t prev_opcode() const { return prev_opcode_; }
+  // Core-table index of the previous instruction; meaningful only when
+  // prev_opcode_class() != 0xFF (a known previous instruction).
+  uint16_t prev_instruction_index() const { return prev_inst_index_; }
   uint8_t prev_opcode_class() const { return prev_opcode_class_; }
   bool in_function() const { return in_function_; }
   bool in_block() const { return in_block_; }
@@ -126,11 +155,20 @@ class Tracker {
   // recency-list definition touches, prev-opcode context.
   void OnInstructionStart(uint32_t opcode, const InstructionDesc* desc,
                           uint32_t word_count);
+  // Use of an ID operand (coded from recent_ids()).
   void OnIdUse(uint32_t id);
+  // Use of an ID in a result-type slot (coded from recent_types()); unlike
+  // OnIdUse it leaves recent_ids() alone.
+  void OnResultTypeUse(uint32_t id);
   void OnResultId(uint32_t id);
-  void OnInstructionEnd(const uint32_t* words, uint32_t count);
+  // inst_index: the instruction's core-table index (NumCoreInstructions()
+  // for an unknown opcode), remembered as prev_instruction_index().
+  void OnInstructionEnd(const uint32_t* words, uint32_t count,
+                        uint16_t inst_index);
 
   void Reserve(size_t word_count);
+  // Heap bytes held by the ID map (diagnostics).
+  size_t IdMapBytes() const { return ids_.Bytes(); }
   void Reset();
 
  private:
@@ -145,6 +183,9 @@ class Tracker {
    public:
     const IdInfo* Find(uint32_t id) const;
     IdInfo& Ensure(uint32_t id);
+    size_t Bytes() const {
+      return capacity_ * (2 * sizeof(uint32_t) + sizeof(IdInfo));
+    }
     void Clear();
     // Prepare for roughly `expected_ids` distinct IDs. The count derives from
     // the untrusted header word count, so the resulting allocation is capped
@@ -155,20 +196,25 @@ class Tracker {
    private:
     void Rehash(size_t slot_count);
 
-    std::vector<uint32_t> keys_;      // size is a power of two
-    std::vector<IdInfo> values_;      // parallel to keys_
-    std::vector<uint32_t> slot_gen_;  // parallel; == generation_ if occupied
+    // Parallel arrays of capacity_ (a power of two) slots. Only slot_gen_ is
+    // initialized: a slot's key and value are written when it is claimed,
+    // and occupancy is decided by the stamp alone.
+    std::unique_ptr<uint32_t[]> keys_;
+    std::unique_ptr<IdInfo[]> values_;
+    std::unique_ptr<uint32_t[]> slot_gen_;  // == generation_ if occupied
+    size_t capacity_ = 0;
     uint32_t generation_ = 0;         // bumped by Clear(); 0 => all slots empty
     size_t size_ = 0;                 // occupied slots in the current generation
-    size_t mask_ = 0;                 // keys_.size() - 1 once allocated
+    size_t mask_ = 0;                 // capacity_ - 1 once allocated
     bool has_zero_ = false;
-    IdInfo zero_info_;
+    IdInfo zero_info_{};
   };
 
   IdInfo& Ensure(uint32_t id);
 
   Section section_ = Section::kCapabilities;
   uint16_t prev_opcode_ = 0xFFFF;
+  uint16_t prev_inst_index_ = 0xFFFF;
   uint8_t prev_opcode_class_ = 0xFF;
   bool in_function_ = false;
   bool in_block_ = false;
