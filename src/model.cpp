@@ -330,6 +330,12 @@ struct InstGroup {
   uint32_t last_word_count;
 };
 
+// Everything kept per known instruction, created together on its first use.
+struct InstContext {
+  InstGroup group;
+  CountModel count;
+};
+
 struct ModelState {
   // Owns every lazily created context (ArenaPtr members below); declared
   // first so it is destroyed last.
@@ -340,8 +346,7 @@ struct ModelState {
             static_cast<size_t>(Section::kCount) *
             (static_cast<size_t>(NumInstructionClasses()) + 1)),
         opcode_contexts(NumCoreInstructions() + 1),
-        count_models(NumCoreInstructions()),
-        inst_groups(NumCoreInstructions()),
+        inst_contexts(NumCoreInstructions()),
         type_in_list(std::make_unique<std::vector<Prob>>(
             static_cast<size_t>(NumInstructionClasses()) + 1)),
         type_rank(std::make_unique<std::vector<BitTree<kRankTreeBits>>>(
@@ -354,12 +359,17 @@ struct ModelState {
         ext_inst_nums(NumExtInstSets()),
         string_bytes(std::make_unique<ByteModel>()) {}
 
-  // Must run before any InstGroup access for inst_index; CodeModule calls it
-  // once per instruction with a known descriptor.
-  void EnsureInstGroup(uint16_t inst_index) {
-    (void)EnsureContext(arena, inst_groups[inst_index]);
+  // Must run before any inst_group/count_model access for inst_index;
+  // CodeModule calls it once per instruction with a known descriptor.
+  void EnsureInstContext(uint16_t inst_index) {
+    (void)EnsureContext(arena, inst_contexts[inst_index]);
   }
-  InstGroup& inst_group(uint16_t inst_index) { return *inst_groups[inst_index]; }
+  InstGroup& inst_group(uint16_t inst_index) {
+    return inst_contexts[inst_index]->group;
+  }
+  CountModel& count_model(uint16_t inst_index) {
+    return inst_contexts[inst_index]->count;
+  }
 
   Tracker tracker;
   Prob swapped_flag;
@@ -374,11 +384,11 @@ struct ModelState {
   std::vector<ArenaPtr<OpcodeTree>> opcode_index_trees;
   ArenaPtr<BitTree<16>> unknown_opcode_tree;
   std::vector<ArenaPtr<OpcodeCtx>> opcode_contexts;
-  std::vector<ArenaPtr<CountModel>> count_models;
-  // Per-instruction caches, created (zeroed) on an instruction's first use:
-  // a module uses a few dozen of the ~875 core instructions, so this replaces
-  // ~140 KB of flat per-(instruction x slot) arrays allocated per decode.
-  std::vector<ArenaPtr<InstGroup>> inst_groups;
+  // Per-instruction contexts (operand caches + word-count model), created
+  // zeroed on an instruction's first use: a module uses a few dozen of the
+  // ~875 core instructions. One pointer table serves both; they are always
+  // created together.
+  std::vector<ArenaPtr<InstContext>> inst_contexts;
   // Models on rare paths (corpus-measured: raw counts 1/1080 files, exact
   // bound mispredictions 27/1080, opaque words 4/1080) are allocated on
   // first use so typical decodes never pay for their construction.
@@ -1298,8 +1308,7 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
     return count;
   }
 
-  CountModel& count_model =
-      EnsureContext(model.arena, model.count_models[inst_index]);
+  CountModel& count_model = model.count_model(inst_index);
   const bool hint_consistent = IsGrammarConsistent(desc, hint);
   const bool consistent =
       bits.CodeBit(count_model.consistent, hint_consistent);
@@ -1398,7 +1407,7 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
     const uint16_t opcode =
         CodeOpcode(model, bits, opcode_hint, &desc, &inst_index);
     if (desc != nullptr) {
-      model.EnsureInstGroup(inst_index);
+      model.EnsureInstContext(inst_index);
     }
 
     bool opaque = true;
@@ -1702,8 +1711,7 @@ void RecordModelMemory(const ModelState& m) {
   add("ModelState inline (sizeof)", sizeof(ModelState), true);
   add("opcode_index_trees ptrs", VecBytes(m.opcode_index_trees), true);
   add("opcode_contexts", VecBytes(m.opcode_contexts), true);
-  add("count_models ptrs", VecBytes(m.count_models), true);
-  add("inst_groups ptrs", VecBytes(m.inst_groups), true);
+  add("inst_contexts ptrs", VecBytes(m.inst_contexts), true);
   add("type_in_list", VecBytes(*m.type_in_list), true);
   add("type_rank", VecBytes(*m.type_rank), true);
   add("type_escape ptrs", VecBytes(m.type_escape), true);
