@@ -225,20 +225,6 @@ struct ExtInstNumberModel {
   UintModel escape;
 };
 
-// Fixed-size POD array whose contents start *uninitialized*: every slot is
-// guarded by a validity flag at its use site, so zeroing at construction
-// (what std::vector does) would be pure per-decode waste.
-template <typename T>
-class UninitArray {
- public:
-  explicit UninitArray(size_t count) : data_(new T[count]) {}
-  T& operator[](size_t i) { return data_[i]; }
-  const T& operator[](size_t i) const { return data_[i]; }
-
- private:
-  std::unique_ptr<T[]> data_;
-};
-
 UintModel& EnsureUint(Arena& arena, ArenaPtr<UintModel>& model) {
   if (!model) {
     model.Make(arena);
@@ -333,6 +319,17 @@ void DumpStats() {
                static_cast<unsigned long long>(direct_total));
 }
 
+// Per-instruction caches: the last ID and last literal seen in each of the
+// 16 operand slots (each guarded by a valid flag) and the last word count.
+// InstGroup{} is the first-touch state.
+struct InstGroup {
+  uint32_t last_id[16];
+  uint32_t last_literal[16];
+  uint8_t last_id_valid[16];
+  uint8_t last_literal_valid[16];
+  uint32_t last_word_count;
+};
+
 struct ModelState {
   // Owns every lazily created context (ArenaPtr members below); declared
   // first so it is destroyed last.
@@ -344,38 +341,25 @@ struct ModelState {
             (static_cast<size_t>(NumInstructionClasses()) + 1)),
         opcode_contexts(NumCoreInstructions() + 1),
         count_models(NumCoreInstructions()),
-        last_word_count(NumCoreInstructions()),
-        inst_group_touched(NumCoreInstructions()),
+        inst_groups(NumCoreInstructions()),
         type_in_list(std::make_unique<std::vector<Prob>>(
             static_cast<size_t>(NumInstructionClasses()) + 1)),
         type_rank(std::make_unique<std::vector<BitTree<kRankTreeBits>>>(
             static_cast<size_t>(NumInstructionClasses()) + 1)),
         type_escape(static_cast<size_t>(NumInstructionClasses()) + 1),
-        last_id(NumCoreInstructions() * 16u),
-        last_id_valid(NumCoreInstructions() * 16u),
         value_enums(static_cast<size_t>(NumOperandKinds()) * 16),
         bit_enums(NumOperandKinds()),
         integer_values(
             (static_cast<size_t>(NumInstructionClasses()) + 1) * 9),
-        last_literal(NumCoreInstructions() * 16u),
-        last_literal_valid(NumCoreInstructions() * 16u),
         ext_inst_nums(NumExtInstSets()),
         string_bytes(std::make_unique<ByteModel>()) {}
 
-  // Must run before any last_id/last_literal/last_word_count access for
-  // inst_index; CodeModule calls it once per instruction.
+  // Must run before any InstGroup access for inst_index; CodeModule calls it
+  // once per instruction with a known descriptor.
   void EnsureInstGroup(uint16_t inst_index) {
-    if (inst_group_touched[inst_index] != 0) {
-      return;
-    }
-    inst_group_touched[inst_index] = 1;
-    const size_t base = static_cast<size_t>(inst_index) * 16;
-    for (size_t i = 0; i < 16; ++i) {
-      last_id_valid[base + i] = 0;
-      last_literal_valid[base + i] = 0;
-    }
-    last_word_count[inst_index] = 0;
+    (void)EnsureContext(arena, inst_groups[inst_index]);
   }
+  InstGroup& inst_group(uint16_t inst_index) { return *inst_groups[inst_index]; }
 
   Tracker tracker;
   Prob swapped_flag;
@@ -391,12 +375,10 @@ struct ModelState {
   ArenaPtr<BitTree<16>> unknown_opcode_tree;
   std::vector<ArenaPtr<OpcodeCtx>> opcode_contexts;
   std::vector<ArenaPtr<CountModel>> count_models;
-  UninitArray<uint32_t> last_word_count;
-  // Two-level validity flags for the per-(instruction x slot) caches: one
-  // flag per instruction here; EnsureInstGroup clears that instruction's
-  // 16-slot flags (and last word count) on its first touch, so the per-slot
-  // arrays start uninitialized and are never bulk-cleared.
-  std::vector<uint8_t> inst_group_touched;
+  // Per-instruction caches, created (zeroed) on an instruction's first use:
+  // a module uses a few dozen of the ~875 core instructions, so this replaces
+  // ~140 KB of flat per-(instruction x slot) arrays allocated per decode.
+  std::vector<ArenaPtr<InstGroup>> inst_groups;
   // Models on rare paths (corpus-measured: raw counts 1/1080 files, exact
   // bound mispredictions 27/1080, opaque words 4/1080) are allocated on
   // first use so typical decodes never pay for their construction.
@@ -420,15 +402,11 @@ struct ModelState {
   std::array<std::array<Prob, 9>, 3> id_in_list{};
   std::array<std::array<BitTree<kRankTreeBits>, 9>, 3> id_rank{};
   std::array<std::array<ArenaPtr<UintModel>, 9>, 3> id_escape{};
-  UninitArray<uint32_t> last_id;
-  UninitArray<uint8_t> last_id_valid;  // meaningful under inst_group_touched
 
   std::vector<ArenaPtr<ValueEnumModel>> value_enums;
   std::vector<std::unique_ptr<BitEnumModel>> bit_enums;
 
   std::vector<ArenaPtr<UintModel>> integer_values;
-  UninitArray<uint32_t> last_literal;
-  UninitArray<uint8_t> last_literal_valid;  // meaningful under inst_group_touched
   UintModel context_number;
   Prob context_high_signext;
   ArenaPtr<UintModel> spec_constant_op;  // rare: 16/1080 files
@@ -916,16 +894,17 @@ uint32_t CodeIdRef(Bits& bits, ModelState& model, uint16_t inst_index,
                    const OperandCursor::Field& field, uint32_t hint) {
   const int bucket = IdCategoryBucket(field.category);
   const uint32_t slot = Slot8(field.slot);
-  const size_t key = static_cast<size_t>(inst_index) * 16 + Slot16(field.slot);
+  InstGroup& group = model.inst_group(inst_index);
+  const size_t key = Slot16(field.slot);
   const uint32_t base =
-      model.last_id_valid[key] != 0 ? model.last_id[key]
+      group.last_id_valid[key] != 0 ? group.last_id[key]
                                     : model.prev_result_id;
   uint32_t id = CodeRankedId(bits, model.id_in_list[bucket][slot],
                              model.id_rank[bucket][slot],
                              model.arena, model.id_escape[bucket][slot],
                              model.tracker.recent_ids(), hint, base);
-  model.last_id[key] = id;
-  model.last_id_valid[key] = 1;
+  group.last_id[key] = id;
+  group.last_id_valid[key] = 1;
   model.tracker.OnIdUse(id);
   return Bits::kEncoding ? hint : id;
 }
@@ -1025,24 +1004,25 @@ uint32_t CodeLiteralInteger(Bits& bits, ModelState& model,
                             const InstructionDesc* desc,
                             const OperandCursor::Field& field,
                             uint16_t inst_index, uint32_t hint) {
-  const size_t key = static_cast<size_t>(inst_index) * 16 + Slot16(field.slot);
-  if (model.last_literal_valid[key] == 0) {
-    model.last_literal[key] = 0;
-    model.last_literal_valid[key] = 1;
+  InstGroup& group = model.inst_group(inst_index);
+  const size_t key = Slot16(field.slot);
+  if (group.last_literal_valid[key] == 0) {
+    group.last_literal[key] = 0;
+    group.last_literal_valid[key] = 1;
   }
-  const uint32_t base = model.last_literal[key];
+  const uint32_t base = group.last_literal[key];
   if constexpr (Bits::kRawResidual) {
     const uint32_t delta = Bits::kEncoding ? ZigZag32(hint - base) : 0;
     const uint32_t coded = bits.CodeUint32(delta);
     const uint32_t value = Bits::kEncoding ? hint : base + UnZigZag32(coded);
-    model.last_literal[key] = value;
+    group.last_literal[key] = value;
     return Bits::kEncoding ? hint : value;
   }
   const size_t cls = ClassBucket(desc);
   UintModel& ctx =
       EnsureContext(model.arena, model.integer_values[cls * 9 + Slot8(field.slot)]);
   const uint32_t value = CodeDelta(bits, model.arena, ctx, hint, base);
-  model.last_literal[key] = value;
+  group.last_literal[key] = value;
   return Bits::kEncoding ? hint : value;
 }
 
@@ -1306,7 +1286,7 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
     if (desc->fixed_word_count) {
       return desc->min_word_count;
     }
-    const uint32_t last_count = model.last_word_count[inst_index];
+    const uint32_t last_count = model.inst_group(inst_index).last_word_count;
     if (bits.CodeBit(model.schema_zero,
                      Bits::kEncoding && hint == last_count)) {
       count = last_count;
@@ -1314,7 +1294,7 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
       const uint32_t extra = Bits::kEncoding ? hint - desc->min_word_count : 0;
       count = (desc->min_word_count + bits.CodeUint32(extra)) & 0xffffu;
     }
-    model.last_word_count[inst_index] = count;
+    model.inst_group(inst_index).last_word_count = count;
     return count;
   }
 
@@ -1328,9 +1308,8 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
     if (desc->fixed_word_count) {
       count = desc->min_word_count;
     } else {
-      // EnsureInstGroup zeroed last_word_count on this instruction's first
-      // touch.
-      const uint32_t last_count = model.last_word_count[inst_index];
+      // A fresh InstGroup starts with last_word_count = 0.
+      const uint32_t last_count = model.inst_group(inst_index).last_word_count;
       if (bits.CodeBit(count_model.same_as_last,
                        Bits::kEncoding && hint == last_count)) {
         count = last_count;
@@ -1342,7 +1321,7 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
                  CodeUint(bits, model.arena, count_model.extra, extra_hint)) &
                 0xffffu;
       }
-      model.last_word_count[inst_index] = count;
+      model.inst_group(inst_index).last_word_count = count;
     }
   } else {
     count = CodeUint(bits, model.arena, EnsureUint(model.arena, model.raw_known_count), hint) & 0xffffu;
@@ -1724,18 +1703,13 @@ void RecordModelMemory(const ModelState& m) {
   add("opcode_index_trees ptrs", VecBytes(m.opcode_index_trees), true);
   add("opcode_contexts", VecBytes(m.opcode_contexts), true);
   add("count_models ptrs", VecBytes(m.count_models), true);
-  add("last_word_count (uninit)", NumCoreInstructions() * 4u, false);
-  add("inst_group_touched", VecBytes(m.inst_group_touched), true);
+  add("inst_groups ptrs", VecBytes(m.inst_groups), true);
   add("type_in_list", VecBytes(*m.type_in_list), true);
   add("type_rank", VecBytes(*m.type_rank), true);
   add("type_escape ptrs", VecBytes(m.type_escape), true);
-  add("last_id (uninit)", NumCoreInstructions() * 16u * 4u, false);
-  add("last_id_valid (uninit)", NumCoreInstructions() * 16u, false);
   add("value_enums ptrs", VecBytes(m.value_enums), true);
   add("bit_enums ptrs", VecBytes(m.bit_enums), true);
   add("integer_values ptrs", VecBytes(m.integer_values), true);
-  add("last_literal (uninit)", NumCoreInstructions() * 16u * 4u, false);
-  add("last_literal_valid (uninit)", NumCoreInstructions() * 16u, false);
   add("ext_inst_nums ptrs", VecBytes(m.ext_inst_nums), true);
   add("string_bytes ByteModel", sizeof(ByteModel), true);
   add("operand_bytes ByteModels", m.operand_bytes ? sizeof(*m.operand_bytes) : 0,
