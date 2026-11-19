@@ -1208,6 +1208,62 @@ and takes no page faults; in a long-lived process it is still ~4% faster.
 setup cost; batched faults/decode (and batched cross-tool speed) must be
 tracked alongside it for any change touching allocation or model setup.
 
+### Systematic model-size reduction (2026-11-18, host under load)
+
+Breakdown tool: `make build/memory_breakdown` (an `ARIXV_MEMSTATS` build:
+arena objects by type, every fixed model table, allocated vs. touched).
+Metrics, all load-independent: heap bytes requested per decode, bytes
+touched per decode (zero-initialized or written; deliberately uninitialized
+arrays only fault where written), page faults per decode in 64-file batch
+processes and in one long-lived process, stateless decode instructions per
+pass, and exact corpus encoded size. No wall-clock numbers (loaded host).
+
+**Starting point (0e9f38c):** ~500 KB heap and ~265 KB touched per decode
+for a median 2.4 KB module; 7.10 batched / 3.17 long-lived faults per
+decode. Touched memory by component: opcode-index trees 123 KB (46%),
+count models 28.8 KB, byte trees 18.7 KB, order-1 opcode table 14 KB,
+value-enum models 13.6 KB and pointers 11.6 KB, uint models 10 KB, ...
+
+**Landed (byte-identical unless noted):**
+
+| commit | change | effect |
+|---|---|---|
+| 6be7bf2 | opcode trees: root+mid inline, 64 leaves in lazy 16-table groups | opcode trees 123 → 39 KB touched; batched faults 7.10 → 3.04 |
+| e1a15d8 | byte trees: lazy leaf tables | 18.7 → 7.5 KB; faults → 2.84 |
+| 7fc0f3e | `UintModel`: short rows packed inline, long rows + `rest` lazy | uint family ~50 → ~22 KB; faults → 1.93; Ir −0.75% |
+| f7b7a15 | opcode leaves in 4-table groups | opcode trees 39 → 26 KB; faults → 1.55 / 0.59 |
+| a93663e | ID map reserved for word_count / 4 | faults → 0.32 / 0.29; Ir −0.7% (/2 neutral, /8 rehashes) |
+| 147828e | order-1 opcode contexts in the arena | Ir −1.0% (first branched as a tradeoff; faults only +0.01-0.06 on the leaner model) |
+| f64fee3 | lazy per-instruction operand caches | heap −121 KB per decode (also first branched) |
+| a55e164 | merge per-instruction caches and count models | heap 184 → 174 KB |
+| 4a6e7e2 | lazy-leaf trees for enum / ext-inst indices | value-enum models 8.3 → 4.2 KB; Ir −0.6% |
+| 89d3763 | value-enum contexts by value-enum ordinal | pointer table 11.6 → 7.2 KB; Ir −0.7% |
+| 40e7cf2 | **format:** word-count models shared per instruction class | **corpus −0.83%** (1,021,506 → 1,013,012 bytes), ~7 KB less touched, faults → 0.12 / 0.16, Ir +0.25% |
+
+**Net:** heap per decode ~500 → 154 KB (−69%); touched ~265 → ~91 KB
+(−66%); page faults per decode 7.10 → 0.12 in batch processes (−98%) and
+3.17 → 0.16 long-lived; stateless instructions 301.0M → 290.0M per pass
+(−3.7%); corpus 0.83% smaller. Every byte-identical step kept corpus and
+raw-residual output identical; the final tree passes `make test`, `make
+asan`, a 3000-iteration fuzz, valgrind memcheck with full leak checking
+(corpus decodes, `arixv_test`, 40 mutated blobs), and the scalar/SIMD
+cross-check; each byte-identical commit also passed the 720-case
+mutated-blob differential against the pre-work CLI.
+
+**Branched (plausibly acceptable tradeoffs):**
+- `size/tradeoff-no-order1-opcode`: drop order-1 opcode contexts —
+  corpus +1.07%, ~18 KB less touched, instructions −4.0%.
+- `size/tradeoff-eight-operand-slots`: 8 operand-cache slots instead of 16
+  — corpus +8 bytes, ~3 KB less touched, instructions −0.04%.
+
+**Measurement notes:** fault counts at this level are sensitive to heap
+layout (which allocation sits at the top of the heap when glibc trims), so
+two changes that first looked like fault regressions were re-tested on the
+final footprint and landed; compare faults only between builds measured
+the same way. Remaining touched memory (~91 KB) is model state decodes
+genuinely use: per-instruction contexts, order-1 opcode contexts, opcode
+leaf groups, each under ~16 KB.
+
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
 `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest
