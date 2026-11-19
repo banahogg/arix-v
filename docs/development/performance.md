@@ -1184,6 +1184,30 @@ processes ((faults at 21 iterations − at 1) / 20 per file).
   `make asan`, 3000-iteration fuzz, the 720-case mutated-blob differential,
   and valgrind memcheck with full leak checking pass.
 
+### Reusable vs stateless revisited: the removal was based on a warm-heap benchmark (2026-11-18)
+
+`0b0076c` removed the reusable `arixv::Decoder` because stateless decode
+measured within ~2% of it in `arixv_decode_bench`. That benchmark encodes
+every input first and then decodes in a tight loop, so its heap is warm and
+never trimmed — the one setting where per-call model setup is nearly free.
+Re-measured with the cross-tool runner (`tools/bench/bench.cpp`, which
+interleaves encode and decode per file), built at `21199df` (the last commit
+with the reusable decoder) both as-is and with every decode routed through
+one process-wide `arixv::Decoder`, plus current `HEAD` (stateless, with
+geometric arena blocks). All files, core 2, idle host:
+
+| runner | batched 64-file processes | batched faults/decode | one process, default glibc |
+|---|---|---|---|
+| 21199df stateless | 58.5 / 63.0 / 63.3 MiB/s | 10.56 | 79.7 MiB/s |
+| 21199df reusable `Decoder` | **85.3 / 85.4 / 85.2 MiB/s** | **0** | **84.8 MiB/s** |
+| HEAD stateless (0e9f38c) | 69.4 / 69.3 / 69.2 MiB/s | 7.10 | 81.7 MiB/s |
+
+In the script-like pattern the reusable decoder is ~23% faster than `HEAD`
+and takes no page faults; in a long-lived process it is still ~4% faster.
+**Methodology lesson:** `arixv_decode_bench` alone understates per-call
+setup cost; batched faults/decode (and batched cross-tool speed) must be
+tracked alongside it for any change touching allocation or model setup.
+
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
 `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest

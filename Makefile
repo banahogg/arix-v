@@ -54,6 +54,10 @@ $(BUILD_DIR)/ans_microbench: tools/bench/ans_microbench.cpp $(LIB_SRCS) $(LIB_HD
 $(BUILD_DIR)/ans_symbol_microbench: tools/bench/ans_symbol_microbench.cpp $(LIB_SRCS) $(LIB_HDRS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(TRACE_CXXFLAGS) tools/bench/ans_symbol_microbench.cpp $(LIB_SRCS) $(LDFLAGS) -o $@
 
+# Per-decode memory breakdown; needs the -DARIXV_MEMSTATS diagnostics build.
+$(BUILD_DIR)/memory_breakdown: tools/bench/memory_breakdown.cpp $(LIB_SRCS) $(LIB_HDRS) | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -DARIXV_MEMSTATS tools/bench/memory_breakdown.cpp $(LIB_SRCS) $(LDFLAGS) -o $@
+
 $(BUILD_DIR)/fuzz_roundtrip: $(FUZZ_SRCS) $(LIB_HDRS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(FUZZ_SRCS) $(LDFLAGS) -o $@
 

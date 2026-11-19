@@ -17,7 +17,24 @@
 #include <new>
 #include <type_traits>
 
+#ifdef ARIXV_MEMSTATS
+#include <map>
+#include <string>
+#include <utility>
+#endif
+
 namespace arixv {
+
+#ifdef ARIXV_MEMSTATS
+// Diagnostics build only: every arena object by type (count, bytes), and the
+// bytes of blocks the arenas requested.
+inline std::map<std::string, std::pair<uint64_t, uint64_t>> g_arena_objects;
+inline uint64_t g_arena_block_bytes = 0;
+template <typename T>
+const char* ArenaTypeName() {
+  return __PRETTY_FUNCTION__;
+}
+#endif
 
 class Arena {
  public:
@@ -39,6 +56,11 @@ class Arena {
     static_assert(std::is_trivially_destructible_v<T>,
                   "arena objects are never destroyed individually");
     static_assert(alignof(T) <= kMaxAlign, "arena alignment too small");
+#ifdef ARIXV_MEMSTATS
+    auto& entry = g_arena_objects[ArenaTypeName<T>()];
+    ++entry.first;
+    entry.second += sizeof(T);
+#endif
     return new (Allocate(sizeof(T), alignof(T))) T{};
   }
 
@@ -67,6 +89,9 @@ class Arena {
         next_block_ = next_block_ < kMaxBlockBytes ? next_block_ * 2
                                                    : kMaxBlockBytes;
       }
+#ifdef ARIXV_MEMSTATS
+      g_arena_block_bytes += sizeof(Block) + payload;
+#endif
       void* raw = std::malloc(sizeof(Block) + payload);
       if (raw == nullptr) {
         throw std::bad_alloc();

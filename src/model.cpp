@@ -12,6 +12,9 @@
 #include <memory>
 #include <string>
 #include <type_traits>
+#ifdef ARIXV_MEMSTATS
+#include <map>
+#endif
 #include <unordered_map>
 #include <vector>
 
@@ -140,9 +143,64 @@ struct CountModel {
   UintModel extra;
 };
 
+// Opcode-index tree, symbol-for-symbol identical to BitTree<10> (chunks of
+// 2, 4, 4 bits: 1 root, 4 mid, 64 leaf tables) but with the 64 leaf tables —
+// 2 KB of BitTree<10>'s 2.2 KB — allocated lazily in four 16-table groups,
+// one per top-chunk value. A context only reaches the leaves under the top
+// values it actually sees, and a fresh group is zeroed (uniform), exactly
+// like the eager tree's untouched tables.
+struct OpcodeTree {
+  static_assert(BitTree<10>::kFirstChunk == 2 && BitTree<10>::NumTables() == 69,
+                "OpcodeTree mirrors BitTree<10>'s 2/4/4 chunk layout");
+  using LeafGroup = std::array<SymbolCdf, 16>;
+  SymbolCdf root;
+  std::array<SymbolCdf, 4> mid;
+  std::array<ArenaPtr<LeafGroup>, 4> leaf;
+
+  template <typename Coder>
+  uint32_t CodeValue(Coder& coder, Arena& arena, uint32_t value) {
+    if constexpr (Coder::kRawResidual) {
+      (void)arena;
+      return coder.CodeBitsDirect(value, 10);
+    } else {
+#ifdef ARIXV_TRACE_DECISIONS
+      if (Coder::kEncoding && g_tree_trace != nullptr) {
+        g_tree_trace->push_back({this, 10, value});
+      }
+#endif
+      StatSiteScope<Coder> site(kSiteBitTree);
+      const uint32_t top = coder.template CodeSymbol<4, kSymbolRateCap>(
+          root, (value >> 8) & 3u);
+      const uint32_t m = coder.template CodeSymbol<16, kSymbolRateCap>(
+          mid[top], (value >> 4) & 15u);
+      const uint32_t low = coder.template CodeSymbol<16, kSymbolRateCap>(
+          Leaf(arena, top)[m], value & 15u);
+      return Coder::kEncoding ? value : ((top << 8) | (m << 4) | low);
+    }
+  }
+
+  // Steady-rate shadow update along value's path, as BitTree<10>::Train.
+  void Train(Arena& arena, uint32_t value) {
+    const uint32_t top = (value >> 8) & 3u;
+    const uint32_t m = (value >> 4) & 15u;
+    SymbolCdfTrain<4, kSymbolRateCap>(root, static_cast<int>(top));
+    SymbolCdfTrain<16, kSymbolRateCap>(mid[top], static_cast<int>(m));
+    SymbolCdfTrain<16, kSymbolRateCap>(Leaf(arena, top)[m],
+                                       static_cast<int>(value & 15u));
+  }
+
+ private:
+  LeafGroup& Leaf(Arena& arena, uint32_t top) {
+    if (!leaf[top]) {
+      leaf[top].Make(arena);
+    }
+    return *leaf[top];
+  }
+};
+
 struct OpcodeCtx {
   uint32_t count = 0;
-  ArenaPtr<BitTree<10>> tree;
+  ArenaPtr<OpcodeTree> tree;
 };
 
 struct ValueEnumModel {
@@ -325,7 +383,7 @@ struct ModelState {
   Prob bound_matches;
 
   std::array<Prob, static_cast<size_t>(Section::kCount) * 2> known_opcode{};
-  std::vector<ArenaPtr<BitTree<10>>> opcode_index_trees;
+  std::vector<ArenaPtr<OpcodeTree>> opcode_index_trees;
   ArenaPtr<BitTree<16>> unknown_opcode_tree;
   std::vector<OpcodeCtx> opcode_contexts;
   std::vector<ArenaPtr<CountModel>> count_models;
@@ -1177,7 +1235,7 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
         static_cast<size_t>(section) *
             (static_cast<size_t>(NumInstructionClasses()) + 1) +
         prev_class;
-    BitTree<10>& tree =
+    OpcodeTree& tree =
         EnsureContext(model.arena, model.opcode_index_trees[tree_ctx]);
     const uint16_t prev_key = PreviousOpcodeKey(model.tracker);
     OpcodeCtx& order1 = model.opcode_contexts[prev_key];
@@ -1188,16 +1246,16 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
       index = static_cast<uint32_t>(found);
     }
     if (order1.count < kOpcodeOrder1MinCount) {
-      index = tree.CodeValue(bits, index);
+      index = tree.CodeValue(bits, model.arena, index);
       if (!order1.tree) {
         order1.tree.Make(model.arena);
       }
-      order1.tree->Train(index);
+      order1.tree->Train(model.arena, index);
     } else {
       if (!order1.tree) {
         order1.tree.Make(model.arena);
       }
-      index = order1.tree->CodeValue(bits, index);
+      index = order1.tree->CodeValue(bits, model.arena, index);
     }
     if (order1.count != 0xffffffffu) {
       ++order1.count;
@@ -1645,6 +1703,53 @@ void EncodeModuleRawResidual(const uint8_t* data, size_t size,
   bits.Flush();
 }
 
+#ifdef ARIXV_MEMSTATS
+// Diagnostics build only: per-member heap and inline sizes of the model,
+// accumulated over decodes. "touched" excludes deliberately uninitialized
+// arrays, which only fault in where written.
+std::map<std::string, std::pair<uint64_t, uint64_t>> g_model_members;
+uint64_t g_model_decodes = 0;
+namespace {
+template <typename V>
+size_t VecBytes(const V& v) {
+  return v.capacity() * sizeof(typename V::value_type);
+}
+void RecordModelMemory(const ModelState& m) {
+  ++g_model_decodes;
+  const auto add = [](const char* name, size_t bytes, bool touched) {
+    auto& e = g_model_members[name];
+    e.first += bytes;
+    e.second += touched ? bytes : 0;
+  };
+  add("ModelState inline (sizeof)", sizeof(ModelState), true);
+  add("opcode_index_trees ptrs", VecBytes(m.opcode_index_trees), true);
+  add("opcode_contexts", VecBytes(m.opcode_contexts), true);
+  add("count_models ptrs", VecBytes(m.count_models), true);
+  add("last_word_count (uninit)", NumCoreInstructions() * 4u, false);
+  add("inst_group_touched", VecBytes(m.inst_group_touched), true);
+  add("type_in_list", VecBytes(*m.type_in_list), true);
+  add("type_rank", VecBytes(*m.type_rank), true);
+  add("type_escape ptrs", VecBytes(m.type_escape), true);
+  add("last_id (uninit)", NumCoreInstructions() * 16u * 4u, false);
+  add("last_id_valid (uninit)", NumCoreInstructions() * 16u, false);
+  add("value_enums ptrs", VecBytes(m.value_enums), true);
+  add("bit_enums ptrs", VecBytes(m.bit_enums), true);
+  add("integer_values ptrs", VecBytes(m.integer_values), true);
+  add("last_literal (uninit)", NumCoreInstructions() * 16u * 4u, false);
+  add("last_literal_valid (uninit)", NumCoreInstructions() * 16u, false);
+  add("ext_inst_nums ptrs", VecBytes(m.ext_inst_nums), true);
+  add("string_bytes ByteModel", sizeof(ByteModel), true);
+  add("operand_bytes ByteModels", m.operand_bytes ? sizeof(*m.operand_bytes) : 0,
+      true);
+  add("tracker ID map (stamps touched)", m.tracker.IdMapBytes(), false);
+  add("tracker ID map stamps", m.tracker.IdMapBytes() / (2 * 4 + sizeof(Tracker::IdInfo)) * 4, true);
+  size_t strings = VecBytes(m.recent_strings);
+  for (const std::string& str : m.recent_strings) strings += str.capacity() > 15 ? str.capacity() + 1 : 0;
+  add("recent_strings", strings, true);
+}
+}  // namespace
+#endif
+
 Status DecodeModule(const uint8_t* payload, size_t payload_size,
                     size_t expected_original_size, std::vector<uint8_t>& out) {
   if (expected_original_size < 20 || (expected_original_size % 4) != 0) {
@@ -1658,6 +1763,9 @@ Status DecodeModule(const uint8_t* payload, size_t payload_size,
   DecodeIO io(out, expected_original_size);
   const Status status =
       CodeModule(*model, bits, io, expected_original_size / 4);
+#ifdef ARIXV_MEMSTATS
+  RecordModelMemory(*model);
+#endif
   if (status != Status::kOk) {
     out.clear();
     return status;

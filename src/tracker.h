@@ -167,6 +167,8 @@ class Tracker {
                         uint16_t inst_index);
 
   void Reserve(size_t word_count);
+  // Heap bytes held by the ID map (diagnostics).
+  size_t IdMapBytes() const { return ids_.Bytes(); }
   void Reset();
 
  private:
@@ -181,6 +183,9 @@ class Tracker {
    public:
     const IdInfo* Find(uint32_t id) const;
     IdInfo& Ensure(uint32_t id);
+    size_t Bytes() const {
+      return capacity_ * (2 * sizeof(uint32_t) + sizeof(IdInfo));
+    }
     void Clear();
     // Prepare for roughly `expected_ids` distinct IDs. The count derives from
     // the untrusted header word count, so the resulting allocation is capped
