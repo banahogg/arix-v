@@ -81,7 +81,9 @@
 #define ARIXV_KUINT_HIGH_BITS 8
 #endif
 #ifndef ARIXV_KUINT_REST_BITS
-#define ARIXV_KUINT_REST_BITS 24
+// Derived so that overriding ARIXV_KUINT_HIGH_BITS alone stays valid (24 for
+// the default 8).
+#define ARIXV_KUINT_REST_BITS (32 - ARIXV_KUINT_HIGH_BITS)
 #endif
 
 namespace arixv {
@@ -186,6 +188,12 @@ constexpr int kUintHighBits = ARIXV_KUINT_HIGH_BITS;
 
 // Remaining uint32 payload bits after kUintHighBits.
 constexpr int kUintRestBits = ARIXV_KUINT_REST_BITS;
+// A 32-bit value has up to 31 mantissa bits below its leading 1; the shared
+// `rest` probabilities must cover every one past kUintHighBits, or CodeUint
+// indexes past them (an override of ARIXV_KUINT_HIGH_BITS alone used to do
+// exactly that with the old fixed default of 24).
+static_assert(kUintHighBits >= 0 && kUintHighBits + kUintRestBits >= 31,
+              "kUintRestBits must cover the mantissa bits past kUintHighBits");
 
 }  // namespace arixv
 
