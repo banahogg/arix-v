@@ -112,3 +112,42 @@ Suggested order: 1 + 2 (one type-tracking change serves both, ~40% of the
 output), then 5, then 4 and 7; measure 6 along the way.
 
 ## Log
+
+### 1. Result type coded after the operands — landed (2026-11-18)
+
+**Oracle first** (throwaway encoder instrumentation): for each of the
+191,777 result-type instructions, candidates were each ID operand's Result
+Type, then that type's element type (pointee, component, element, return
+type). 54% matched (47,046 at candidate 0, 56,777 at candidate 1, 506
+beyond); the per-opcode choice is nearly deterministic (static entropy
+~1.3 KB). Estimated cost 69.6 KB → ~43.1 KB.
+
+**Implementation:** the tracker records each ID's Result Type and, for type
+declarations, its first ID operand (the element type). For instructions
+whose operand parsing does not depend on the Result Type (everything but
+`kInstConstantNumber`), the Result Type is coded after the operands as a
+per-instruction 8-symbol choice (7 candidates + none), learned adaptively —
+no per-opcode rules; a miss falls back to the ranked recent-types coding.
+The decoder writes a placeholder and patches it (byte-swap aware). The
+decoder builds candidates only up to the decoded index, with operand types
+taken from the lookup `CodeIdRef` already does.
+
+| | corpus bytes | Δ | train total | holdout total | decode Ir | wall (quiet host) |
+|---|---|---|---|---|---|---|
+| main (049e8ad) | 1,013,012 | — | 0.16217 | 0.17205 | 290.0M | 86.7 MiB/s |
+| **landed: choice symbol** | **993,748** | **−1.90%** | 0.15912 (−1.88%) | 0.16874 (−1.92%) | 299.6M (+3.3%) | 84.5 MiB/s (−2.4%) |
+| variant: "same choice as last" flag first | 996,324 | −1.65% | | | 296.5M (+2.3%) | 83.9 MiB/s (−3.6%) |
+
+`result_type` entropy 69.6 KB → 50.2 KB. Means improve −0.7% / −0.8%
+(train / holdout), medians −0.8% / −1.4%. The flag variant ran fewer
+instructions but was slower in wall time (an extra dependent step and a
+data-dependent branch before the choice), so the symbol-only form wins on
+both axes. Decoder cost history: +4.05% instructions with eager candidate
+lists → +3.5% with lazy candidates → +3.3% with captured operand types.
+Memory: heap per decode 154 → 159 KB (IdInfo +8 bytes per ID), ~2 KB more
+touched. Tiny modules can lose a little to the choice symbol's learning
+cost (the 19-instruction golden vector grew 86 → 88 bytes).
+
+Checks: `make test` (golden vector regenerated), `make asan`, 3000-iteration
+fuzz, valgrind memcheck with full leak checking (corpus decodes,
+`arixv_test`, 80 mutated/truncated blobs), scalar/SIMD cross-check.

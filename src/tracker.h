@@ -111,6 +111,11 @@ class Tracker {
     TypeClass type_class;
     uint32_t width;         // OpTypeInt/OpTypeFloat bit width
     const ExtInstSetDesc* ext_set;  // kind==kExtInstSet
+    uint32_t result_type;   // the defining instruction's Result Type, or 0
+    // For kind==kType: the declaration's first ID operand — the pointee of a
+    // pointer, the component of a vector, the element of an array, the
+    // return type of a function type — or 0.
+    uint32_t element_type;
   };
   static_assert(std::is_trivially_default_constructible_v<IdInfo> &&
                     static_cast<int>(IdKind::kUnknown) == 0 &&
@@ -137,6 +142,16 @@ class Tracker {
   // Width of the type `type_id` if it is a known int/float type (for
   // LiteralContextDependentNumber), else 0.
   uint32_t TypeWidth(uint32_t type_id) const;
+  // Result Type of the instruction that defined id (0 if unknown).
+  uint32_t ResultTypeOf(uint32_t id) const {
+    const IdInfo* info = Find(id);
+    return info ? info->result_type : 0;
+  }
+  // Element type recorded for a type ID (0 if none).
+  uint32_t ElementTypeOf(uint32_t type_id) const {
+    const IdInfo* info = Find(type_id);
+    return info ? info->element_type : 0;
+  }
 
   // ---- Candidate lists for rank coding (M3) -----------------------------
   const RecencyList& recent_ids() const { return recent_ids_; }
@@ -156,15 +171,19 @@ class Tracker {
   void OnInstructionStart(uint32_t opcode, const InstructionDesc* desc,
                           uint32_t word_count);
   // Use of an ID operand (coded from recent_ids()).
-  void OnIdUse(uint32_t id);
+  // Returns the ID's recorded Result Type (0 if none), read from the entry
+  // this call already looks up.
+  uint32_t OnIdUse(uint32_t id);
   // Use of an ID in a result-type slot (coded from recent_types()); unlike
   // OnIdUse it leaves recent_ids() alone.
   void OnResultTypeUse(uint32_t id);
   void OnResultId(uint32_t id);
   // inst_index: the instruction's core-table index (NumCoreInstructions()
   // for an unknown opcode), remembered as prev_instruction_index().
+  // first_id_operand: the instruction's first ID operand (after any Result
+  // Type / Result ID), or 0; recorded as a type declaration's element type.
   void OnInstructionEnd(const uint32_t* words, uint32_t count,
-                        uint16_t inst_index);
+                        uint16_t inst_index, uint32_t first_id_operand);
 
   void Reserve(size_t word_count);
   // Heap bytes held by the ID map (diagnostics).

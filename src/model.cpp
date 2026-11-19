@@ -328,6 +328,9 @@ struct InstGroup {
   uint8_t last_id_valid[16];
   uint8_t last_literal_valid[16];
   uint32_t last_word_count;
+  // Which operand-derived candidate the deferred Result Type matched (see
+  // CodeDeferredResultType): 0-6, or 7 for none.
+  BitTree<3> result_type_choice;
 };
 
 // Everything kept per known instruction, created on its first use.
@@ -378,6 +381,8 @@ struct ModelState {
 
 
   Tracker tracker;
+  // Result Type of the ID operand CodeIdRef just coded (from its OnIdUse).
+  uint32_t last_id_operand_type = 0;
   Prob swapped_flag;
   Prob version_canonical;
   BitTree<4> version_major;
@@ -474,6 +479,11 @@ class EncodeIO {
   }
   void EmitBodyWord(uint32_t word) { assert(word == words_[emitted_++]); }
   void PatchBound(uint32_t word) { assert(word == words_[3]); }
+  void PatchBodyWord(size_t index, uint32_t word) {
+    assert(word == words_[5 + index]);
+    (void)index;
+    (void)word;
+  }
 
  private:
   std::vector<uint32_t> words_;
@@ -511,6 +521,18 @@ class DecodeIO {
       word = ByteSwap32(word);
     }
     StoreLe32(word, data_ + 12);
+  }
+
+  // Overwrites a body word already emitted (a deferred Result Type).
+  void PatchBodyWord(size_t index, uint32_t word) {
+    const size_t at = (5 + index) * 4;
+    if (at > write_pos_ || write_pos_ - at < 4) {
+      return;  // never written (overflowed); the decode fails anyway
+    }
+    if (swapped_) {
+      word = ByteSwap32(word);
+    }
+    StoreLe32(word, data_ + at);
   }
 
  private:
@@ -914,6 +936,70 @@ uint32_t CodeResultType(Bits& bits, ModelState& model,
   return Bits::kEncoding ? hint : id;
 }
 
+// Result Type coded after the instruction's operands. Candidates are each ID
+// operand's own Result Type, then that type's element type (pointee,
+// component, element, return type), deduplicated in operand order; which
+// one matches is learned per instruction — arithmetic takes its operands'
+// type, a load its pointer's pointee — with no per-opcode rules. A miss
+// (choice 7, or any index past the candidates) falls back to the ranked
+// recent-types coding.
+constexpr int kMaxResultTypeCandidates = 7;
+
+template <class Bits>
+uint32_t CodeDeferredResultType(Bits& bits, ModelState& model,
+                                const InstructionDesc* desc,
+                                uint16_t inst_index,
+                                const uint32_t* operand_types,
+                                int num_ids, uint32_t hint) {
+  // Builds the candidate list, stopping once it has `limit` entries: the
+  // decoder only needs candidates up to the index it decoded (none on a
+  // miss), so it skips most of the per-operand type lookups.
+  uint32_t cand[kMaxResultTypeCandidates];
+  const auto build = [&](int limit) {
+    int count = 0;
+    const auto add = [&cand, &count](uint32_t type) {
+      if (type == 0) {
+        return;
+      }
+      for (int i = 0; i < count; ++i) {
+        if (cand[i] == type) {
+          return;
+        }
+      }
+      cand[count++] = type;
+    };
+    for (int i = 0; i < num_ids && count < limit; ++i) {
+      const uint32_t type = operand_types[i];
+      add(type);
+      if (count < limit) {
+        add(model.tracker.ElementTypeOf(type));
+      }
+    }
+    return count;
+  };
+  uint32_t choice = kMaxResultTypeCandidates;
+  if constexpr (Bits::kEncoding) {
+    const int count = build(kMaxResultTypeCandidates);
+    for (int i = 0; i < count; ++i) {
+      if (cand[i] == hint) {
+        choice = static_cast<uint32_t>(i);
+        break;
+      }
+    }
+  }
+  // (A "same choice as last time" flag in front of this symbol ran ~1% fewer
+  // instructions but was slower in wall time and cost 0.25% ratio.)
+  choice = model.inst_group(inst_index).result_type_choice.CodeValue(bits,
+                                                                   choice);
+  if (choice < static_cast<uint32_t>(kMaxResultTypeCandidates) &&
+      (Bits::kEncoding ||
+       build(static_cast<int>(choice) + 1) > static_cast<int>(choice))) {
+    model.tracker.OnResultTypeUse(cand[choice]);
+    return Bits::kEncoding ? hint : cand[choice];
+  }
+  return CodeResultType(bits, model, desc, hint);
+}
+
 template <class Bits>
 uint32_t CodeIdRef(Bits& bits, ModelState& model, uint16_t inst_index,
                    const OperandCursor::Field& field, uint32_t hint) {
@@ -930,7 +1016,7 @@ uint32_t CodeIdRef(Bits& bits, ModelState& model, uint16_t inst_index,
                              model.tracker.recent_ids(), hint, base);
   group.last_id[key] = id;
   group.last_id_valid[key] = 1;
-  model.tracker.OnIdUse(id);
+  model.last_id_operand_type = model.tracker.OnIdUse(id);
   return Bits::kEncoding ? hint : id;
 }
 
@@ -1464,6 +1550,17 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
     uint32_t consumed = 0;
     uint32_t current_result_type = 0;
     const ExtInstSetDesc* current_ext_set = nullptr;
+    // Result Type is coded after the operands unless operand parsing depends
+    // on it (context-dependent literal widths).
+    const bool defer_result_type = desc != nullptr && !opaque &&
+                                   desc->has_result_type &&
+                                   !HasInstructionFlag(desc, kInstConstantNumber);
+    bool result_type_deferred = false;
+    size_t result_type_body_index = 0;
+    uint32_t result_type_hint = 0;
+    uint32_t id_operands[8];
+    uint32_t id_operand_types[8];
+    int num_id_operands = 0;
     while (consumed < operand_words) {
       const uint32_t remaining = operand_words - consumed;
       OperandCursor::Field cursor_field;
@@ -1506,6 +1603,15 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
             stage_single_word(CodeResultId(bits, model, desc, hint0));
             break;
           case OperandCategory::kIdResultType: {
+            if (defer_result_type && !result_type_deferred) {
+              // The encoder stages the true word; the decoder a placeholder
+              // patched after the operands.
+              result_type_deferred = true;
+              result_type_body_index = body_pos + 1 + consumed;
+              result_type_hint = hint0;
+              stage_single_word(Bits::kEncoding ? hint0 : 0u);
+              break;
+            }
             stat(kStatResultType);
             const uint32_t word = CodeResultType(bits, model, desc, hint0);
             stage_single_word(word);
@@ -1519,6 +1625,10 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
             const uint32_t word =
                 CodeIdRef(bits, model, inst_index, field, hint0);
             stage_single_word(word);
+            if (num_id_operands < 8) {
+              id_operand_types[num_id_operands] = model.last_id_operand_type;
+              id_operands[num_id_operands++] = word;
+            }
             if (desc && desc->opcode == 12 && field.slot == 2) {
               const Tracker::IdInfo* info = model.tracker.Find(word);
               current_ext_set = info ? info->ext_set : nullptr;
@@ -1644,9 +1754,18 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
       consumed += static_cast<uint32_t>(coded_words.size());
     }
 
+    if (result_type_deferred && inst_words.size() > 1) {
+      stat(kStatResultType);
+      const uint32_t type = CodeDeferredResultType(
+          bits, model, desc, inst_index, id_operand_types, num_id_operands,
+          result_type_hint);
+      inst_words.data()[1] = type;
+      io.PatchBodyWord(result_type_body_index, type);
+    }
     model.tracker.OnInstructionEnd(inst_words.data(),
                                    static_cast<uint32_t>(inst_words.size()),
-                                   inst_index);
+                                   inst_index,
+                                   num_id_operands > 0 ? id_operands[0] : 0);
     body_pos += 1 + operand_words;
   }
 

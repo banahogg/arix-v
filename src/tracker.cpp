@@ -285,7 +285,7 @@ void Tracker::OnInstructionStart(uint32_t opcode, const InstructionDesc* desc,
   cur_desc_ = desc;
 }
 
-void Tracker::OnIdUse(uint32_t id) {
+uint32_t Tracker::OnIdUse(uint32_t id) {
   IdInfo& info = Ensure(id);
   if (!info.defined) {
     forward_refs_.Touch(id);
@@ -294,6 +294,7 @@ void Tracker::OnIdUse(uint32_t id) {
   if (info.kind == IdKind::kType) {
     recent_types_.Touch(id);
   }
+  return info.result_type;
 }
 
 // Result types are coded from recent_types(), so touching recent_ids() here
@@ -323,7 +324,8 @@ void Tracker::OnResultId(uint32_t id) {
 }
 
 void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
-                               uint16_t inst_index) {
+                               uint16_t inst_index,
+                               uint32_t first_id_operand) {
   const InstructionDesc* desc = cur_desc_;
   const uint32_t opcode = cur_opcode_;
 
@@ -347,9 +349,11 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
     if (result_id != 0) {
       IdInfo& info = Ensure(result_id);
       info.defined = true;
+      info.result_type = desc->has_result_type ? words[1] : 0;
       forward_refs_.Remove(result_id);
       if (HasInstructionFlag(desc, kInstDeclaresType)) {
         info.kind = IdKind::kType;
+        info.element_type = first_id_operand;
         info.type_class = ToTrackerTypeClass(desc->type_class);
         info.width =
             HasInstructionFlag(desc, kInstTypeWidth) ? words[desc->aux_word] : 0;
