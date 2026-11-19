@@ -7,22 +7,26 @@ multi-bit symbols). No corpus-trained tables are shipped; all shipped
 knowledge is derived from the pinned SPIR-V grammars plus
 hand-set scalar constants (`src/tuning.h`).
 
-**Results** (2026-07-12, 1070-file decode-verified intersection, 20 decode
-iterations per file, one core of a Ryzen 9 5950X; total = Σout/Σin; decode is
-MiB/s of original SPIR-V output):
+**Results** (2026-11-18, `scripts/bench/benchmark_spv_compressors.py`,
+1070-file decode-verified intersection, 20 decode iterations per file, one
+core of a Ryzen 9 5950X; total = Σout/Σin; decode is MiB/s of original SPIR-V
+output):
 
 | tool | mean | median | total | decode |
 |---|---|---|---|---|
-| smol-v | 0.3865 | 0.3831 | 0.3715 | 1229.98 MiB/s |
-| yari-v | 0.3395 | 0.3373 | 0.3367 | 691.10 MiB/s |
-| zstd -19 | 0.3438 | 0.3330 | 0.2756 | 728.23 MiB/s |
-| smol-v + zstd -19 | 0.2647 | 0.2534 | 0.1950 | 649.06 MiB/s |
-| **ARIX-V** | **0.2240** | **0.2136** | **0.1715** | **46.30 MiB/s** |
+| smol-v | 0.3865 | 0.3831 | 0.3715 | 1214.36 MiB/s |
+| yari-v | 0.3395 | 0.3373 | 0.3367 | 731.13 MiB/s |
+| zstd -19 | 0.3438 | 0.3330 | 0.2756 | 647.55 MiB/s |
+| smol-v + zstd -19 | 0.2647 | 0.2534 | 0.1950 | 621.80 MiB/s |
+| **ARIX-V** | **0.2203** | **0.2104** | **0.1681** | **66.20 MiB/s** |
 
-The ARIX-V row predates the decoder work recorded in
-`docs/development/performance.md` (stateless decode is now ~80 MiB/s on the
-same machine) and is due to be re-measured with
-`scripts/bench/benchmark_spv_compressors.py`.
+The script runs each tool in short-lived batch processes that encode each
+file just before decoding it. ARIX-V allocates a fresh model (~0.5 MB) per
+`Decode` call, so in that setting it also pays glibc heap trimming and
+cold-heap page faults; in a long-running process with a warm heap
+(`build/arixv_decode_bench`) the same decoder measures ~84 MiB/s. See
+`docs/development/performance.md` for the decoder history (46 MiB/s on this
+table in July).
 
 ARIX-V round-trips all 1080 corpus files (including the three big-endian
 modules the other tools reject) and arbitrary non-SPIR-V bytes (byte-fallback

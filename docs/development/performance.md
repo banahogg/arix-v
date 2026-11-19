@@ -1112,6 +1112,27 @@ rate bookkeeping ~3.6%, binary `Prob` warm-up ~3%.
   ratio ~1.009, with interference outliers in both builds) — a small
   non-regressing win, consistent with the instruction cut.
 
+### Cross-tool benchmark refresh and heap-trim sensitivity (2026-11-18)
+
+`scripts/bench/benchmark_spv_compressors.py --decode-iters=20`, pinned to
+core 2 on an idle host, 1070-file intersection (same skips as July: smol-v
+3, yari-v 10): ARIX-V mean/median/total 0.2203 / 0.2104 / 0.1681 (July
+0.2240 / 0.2136 / 0.1715), encode 41.42 MiB/s, **decode 66.20 MiB/s (July
+46.30, +43%)**; the other tools' rows match July within timing noise.
+
+The script's 66.2 MiB/s sits well below `arixv_decode_bench`'s ~84 MiB/s,
+a wider gap than in July. Its runner (`tools/bench/bench.cpp`) times each
+`Decode` call the same way, but runs in short-lived 64-file batch processes
+that encode each file just before decoding it. In one process over every
+4th file, `build/arixv_bench` decodes at 74.6-74.9 MiB/s by default and
+78.8-81.5 MiB/s with `GLIBC_TUNABLES=glibc.malloc.trim_threshold=268435456`:
+the stateless decoder's ~0.5 MB of per-call model allocations are returned
+to the kernel by heap trimming and faulted back in, and fresh batch
+processes add cold-heap first-touch costs on top. The other tools allocate
+little per call. *Follow-up candidate:* shrink or reuse the per-call
+footprint (e.g. the four 56 KB per-instruction arrays and arena blocks) so
+stateless decode is insensitive to the allocator's trim policy.
+
 Post-pass profile (reusable, instruction share): `CodeModule` body 46.7%,
 `CodeUint` 15.2%, `RecencyList::Touch` 9.2%, cursor `Consume`+`Next` 8.0%,
 `CodeByte` 4.1%, out-of-line `DecodeBit` 4.0% (plain flags). The largest
