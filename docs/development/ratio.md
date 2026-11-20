@@ -185,3 +185,63 @@ decode 159 → 172 KB (one list per used type), arena unchanged at ~86 KB. The
 Checks: `make all`, `make test`, `make asan`, 3000-iteration fuzz, valgrind
 memcheck with full leak checking (corpus decodes, `arixv_test`, 120
 mutated/truncated/overwritten blobs), scalar/SIMD cross-check.
+
+### 5. String model: grammar dictionary, match model, order-0 starts (2026-11-19)
+
+**Oracle first.** Strings that miss the 64-entry recent-string list are
+~177K bytes coding at ~5.9 bits/byte: per-module cold start dominates
+(order-1 contexts start uniform in every module). An offline simulator of
+today's byte coding (125.9 KB vs 130.7 KB measured) estimated: order-1
+contexts starting from a running order-0 model −9.2 KB; whole-string
+dictionary of grammar names −12.4 KB; order-2 match model −7.7 KB alone and
+more combined; priming the match history with grammar names −4.5 KB more.
+Exact 64K-entry match table vs hashed: 4096 entries −0.1 KB, 1024 −0.9 KB.
+
+**Implementation** (all knowledge generated from the pinned grammar by
+`scripts/gen_grammar_tables.py`):
+- dictionary: every `extensions` name in the core grammar plus every
+  extended-instruction-set name, sorted (203 names). After a recent-list
+  miss, a flag per instruction class, then an 8-bit index.
+- match model: predicts the byte that last followed the same two bytes;
+  a flag per current match length (capped at 15); misses fall back to
+  order-1 bytes. History = primer, then every string of the module. The
+  primer is every core enumerant name (grammar order, first occurrence),
+  then the dictionary — a rule with no selection: BuiltIn names alone
+  measured 779 bytes better on the full corpus, but picking a subset by
+  corpus score is the kind of choice the evaluation rules keep off the
+  holdout. The 1024-entry primed table is generated constant data; a decode
+  copies it into its own arena on first use (no process-wide state).
+  `arixv_test` rebuilds it from the primer to check the hash agrees.
+- order-1 string-byte contexts and leaves start as copies (counts included)
+  of an order-0 model updated on every string byte.
+
+| | corpus bytes | Δ | train total | holdout total | decode Ir |
+|---|---|---|---|---|---|
+| item 2 (9803c73) | 973,376 | — | 0.15540 | 0.16575 | 312.5M |
+| primer: BuiltIn names + dictionary | 935,823 | −3.86% | 0.14927 | 0.15949 | |
+| **primer: all enumerant names + dictionary** | **936,602** | **−3.78%** | 0.14941 (−3.9%) | 0.15960 (−3.7%) | 313.5M (+0.3%) |
+
+`string` entropy 130.7 KB → ~93 KB. Mean ratio −6.9% / −7.0% (train /
+holdout), median −6.0% / −5.2%: small modules gain most. The first build
+measured +4.7% instructions, almost all from GCC's per-file inlining budget
+(model.cpp grew, so `DecodeIO::EmitBodyWord` and `BitTree` chunk coding
+were outlined). Both are now force-inlined; with the same pins HEAD measures
+311.8M, so the string model's own cost is +0.5%.
+
+**Size.** Library objects (-O2, text+data): 238.4 → 286.9 KB (+48.5 KB):
+- generated data +35.7 KB: primer 24.1 KB (7.9 KB with BuiltIn names
+  only), dictionary 5.8 KB of characters + 1.6 KB of pointers, match table
+  4.1 KB;
+- model.cpp code +12.7 KB: +11.7 KB string model (instantiated for the
+  encoder, decoder and raw-residual coders), +1 KB the inline pins.
+
+**Decode memory:** heap requested per decode 172.3 → 177.2 KB (+4.9 KB,
++2.8%; arena blocks are part of this figure): the 4 KB match table (nearly
+every module has a string that misses), the larger string model state
+(~0.85 KB), and the history (~0.3 KB), less ~0.3 KB of byte-tree leaves.
+
+Checks: `make test` (generator in sync, table self-check, golden vector
+regenerated, still 88 bytes), `make asan`, 3000-iteration fuzz, valgrind
+memcheck with full leak checking (corpus decodes, `arixv_test`, 180
+mutated/truncated/overwritten blobs), scalar/SIMD cross-check, all 1080
+corpus files round-trip. Wall time not yet measured.

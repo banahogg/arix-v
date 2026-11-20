@@ -14,6 +14,10 @@ namespace arixv {
 
 bool IsSpirvModelEligible(const uint8_t* data, size_t size);
 
+// Self-check for tests: the generated primed string match table equals one
+// rebuilt from the primer with this file's hash.
+bool PrimedStringMatchTableIsConsistent();
+
 void EncodeModule(const uint8_t* data, size_t size,
                   std::vector<uint8_t>& out_payload);
 

@@ -191,6 +191,18 @@ int FindExtInstSetIndex(const ExtInstSetDesc* set);  // -1 if not generated
 const InstructionDesc* FindExtInstruction(const ExtInstSetDesc& set,
                                           uint32_t ext_opcode);
 
+// --- Grammar strings ----------------------------------------------------
+
+// Sorted extension and extended-instruction-set names from the grammar.
+uint16_t NumGrammarStrings();
+const char* GetGrammarString(uint16_t index);
+// Every core enumerant name, then the grammar strings, each NUL-terminated:
+// the string model's initial match history.
+std::string_view GetStringPrimer();
+// The string match table after inserting the primer (generated constant
+// data, see StringMatchTable in model.cpp); *bits receives its log2 size.
+const uint32_t* GetPrimedStringMatchTable(int* bits);
+
 // --- Well-known values the tracker needs by name --------------------------
 
 // Kind indices for the handful of kinds the tracker special-cases; generated

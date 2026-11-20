@@ -227,8 +227,8 @@ struct BitTree {
   static constexpr int Chunk() { return kPrefix == 0 ? kFirstChunk : 4; }
 
   template <int kPrefix, typename Coder>
-  uint32_t CodeFrom(Coder& coder, uint32_t value, uint32_t prefix_value,
-                    uint32_t base) {
+  ARIXV_FORCE_INLINE uint32_t CodeFrom(Coder& coder, uint32_t value,
+                                       uint32_t prefix_value, uint32_t base) {
     constexpr int kChunk = Chunk<kPrefix>();
     constexpr int kShift = kBits - kPrefix - kChunk;
     const uint32_t want =

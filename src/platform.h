@@ -14,4 +14,12 @@
 #define ARIXV_FORCE_INLINE inline
 #endif
 
+#if defined(_MSC_VER)
+#define ARIXV_NOINLINE __declspec(noinline)
+#elif defined(__clang__) || defined(__GNUC__)
+#define ARIXV_NOINLINE __attribute__((noinline))
+#else
+#define ARIXV_NOINLINE
+#endif
+
 #endif  // ARIXV_PLATFORM_H_

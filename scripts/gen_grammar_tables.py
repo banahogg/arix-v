@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -937,6 +938,85 @@ def main() -> None:
     lines.append("    }")
     lines.append("  }")
     lines.append("  return nullptr;")
+    lines.append("}")
+    lines.append("")
+    # String-model knowledge: names the grammar itself spells out.
+    def collect_extensions(node: object, out: set[str]) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "extensions" and isinstance(value, list):
+                    out.update(str(v) for v in value)
+                else:
+                    collect_extensions(value, out)
+        elif isinstance(node, list):
+            for value in node:
+                collect_extensions(value, out)
+
+    extension_names: set[str] = set()
+    collect_extensions(core, extension_names)
+    grammar_strings = sorted(extension_names | {s.name for s in ext_sets})
+    # Every enumerant name of every core operand kind, in grammar order, first
+    # occurrence only: a rule with no selection among kinds.
+    enumerant_names: list[str] = []
+    seen_enumerants: set[str] = set()
+    for kind in core["operand_kinds"]:
+        for e in kind.get("enumerants", []):
+            name = str(e["enumerant"])
+            if name not in seen_enumerants:
+                seen_enumerants.add(name)
+                enumerant_names.append(name)
+    for name in grammar_strings + enumerant_names:
+        if not re.fullmatch(r"[A-Za-z0-9_.]+", name):
+            raise SystemExit(f"unexpected characters in grammar string {name!r}")
+    checked_uint("grammar string count", len(grammar_strings), 65535)
+    lines.append("// Every extension name the core grammar lists plus every generated")
+    lines.append("// extended-instruction-set name, sorted: whole-string dictionary for")
+    lines.append("// OpExtension / OpExtInstImport-style literals.")
+    lines.append("constexpr const char* kGrammarStrings[] = {")
+    for name in grammar_strings:
+        lines.append(f'    "{name}",')
+    lines.append("};")
+    lines.append("")
+    lines.append("// String match-model primer: every core enumerant name (grammar order,")
+    lines.append("// first occurrence), then the dictionary above, each NUL-terminated.")
+    lines.append("constexpr char kStringPrimer[] =")
+    for name in enumerant_names + grammar_strings:
+        lines.append(f'    "{name}\\0"')
+    lines.append("    ;")
+    lines.append("")
+    # The primed order-2 match table, so decoders need no runtime (or
+    # process-wide) initialization. Must match StringMatchHash in model.cpp
+    # (tests/arixv_test.cpp rebuilds it from the primer and compares).
+    match_bits = 10
+    primer = b"".join(n.encode() + b"\0" for n in enumerant_names + grammar_strings)
+    table = [0] * (1 << match_bits)
+    for v in range(2, len(primer)):
+        key = (primer[v - 2] << 8) | primer[v - 1]
+        table[((key * 0x9E3779B1) & 0xFFFFFFFF) >> (32 - match_bits)] = v
+    lines.append(f"constexpr int kStringMatchTableBits = {match_bits};")
+    lines.append("// Per order-2 context hash: primer position of the byte that last")
+    lines.append("// followed that context, 0 = none.")
+    lines.append("constexpr uint32_t kPrimedStringMatch[] = {")
+    for i in range(0, len(table), 12):
+        lines.append("    " + ", ".join(str(x) for x in table[i:i + 12]) + ",")
+    lines.append("};")
+    lines.append("")
+    lines.append("const uint32_t* GetPrimedStringMatchTable(int* bits) {")
+    lines.append("  *bits = kStringMatchTableBits;")
+    lines.append("  return kPrimedStringMatch;")
+    lines.append("}")
+    lines.append("")
+    lines.append("uint16_t NumGrammarStrings() {")
+    lines.append("  return static_cast<uint16_t>(ArraySize(kGrammarStrings));")
+    lines.append("}")
+    lines.append("")
+    lines.append("const char* GetGrammarString(uint16_t index) {")
+    lines.append("  return kGrammarStrings[index];")
+    lines.append("}")
+    lines.append("")
+    lines.append("std::string_view GetStringPrimer() {")
+    lines.append("  // The literal's own terminating NUL is not part of the primer.")
+    lines.append("  return std::string_view(kStringPrimer, sizeof(kStringPrimer) - 1);")
     lines.append("}")
     lines.append("")
     lines.append("const WellKnownKinds& GetWellKnownKinds() {")

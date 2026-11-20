@@ -155,6 +155,13 @@ constexpr int kRankListCapTypes = ARIXV_KRANK_LIST_CAP_TYPES;
 constexpr int kSymbolRateCap = 5;
 constexpr int kByteSymbolRateCap = 7;
 
+// String match model: log2 entries of the order-2 context hash table
+// (positions of the byte that last followed each context; 1024 entries is a
+// 4 KB table, within ~1 KB of an exact 64K-entry one on the corpus). The
+// primed table is generated (scripts/gen_grammar_tables.py, match_bits), so
+// this is not a build-time knob; arixv_test checks the two agree.
+constexpr int kStringMatchBits = 10;
+
 // Depth of the rank-coding bit trees for the ID/type/forward-ref recency
 // lists. Must cover every list position, so it tracks the largest cap.
 constexpr int kRankTreeBits = 4;

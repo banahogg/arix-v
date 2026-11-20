@@ -4,6 +4,7 @@
 #include "model.h"
 
 #include <algorithm>
+#include <cstring>
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -339,6 +340,82 @@ struct InstContext {
   InstGroup group;
 };
 
+// Literal-string model, all learned per module from grammar-derived starts:
+// - a whole-string dictionary of grammar names (extensions, ext-inst sets);
+// - an order-2 match model over every string seen so far, primed with the
+//   grammar's enumerant names and the dictionary (GetStringPrimer());
+// - order-1 bytes whose contexts start as a copy of a running order-0
+//   model rather than uniform, so a module's first strings still code well.
+struct StringMatchTable {
+  // Virtual history position of the byte that followed the context last
+  // time (primer first, then this module's strings); 0 = none.
+  std::array<uint32_t, 1u << kStringMatchBits> pos;
+};
+
+// Must match the generator's table construction.
+inline uint32_t StringMatchHash(uint8_t a, uint8_t b) {
+  const uint32_t key = (static_cast<uint32_t>(a) << 8) | b;
+  return (key * 0x9E3779B1u) >> (32 - kStringMatchBits);
+}
+
+struct StringModel {
+  explicit StringModel(size_t classes) : dict_flag(classes) {}
+
+  // Order-1 byte trees (bytes.tree[prev]) and the order-0 tree they start
+  // from; both allocate leaves in bytes.arena.
+  ByteModel bytes;
+  ByteTree order0{};
+
+  std::vector<Prob> dict_flag;  // per instruction class
+  BitTree<8> dict_index;
+
+  std::array<Prob, 16> match_flag{};  // per current match length (capped)
+  ArenaPtr<StringMatchTable> match;   // copied from the primed table on first use
+  std::vector<uint8_t> history;       // this module's string bytes
+
+  uint8_t At(uint32_t v) const {
+    const std::string_view primer = GetStringPrimer();
+    return v < primer.size() ? static_cast<uint8_t>(primer[v])
+                             : history[v - primer.size()];
+  }
+  uint32_t End() const {
+    return static_cast<uint32_t>(GetStringPrimer().size() + history.size());
+  }
+  StringMatchTable& Table() {
+    if (!match) {
+      // Private copy of the generated primed table (constant data, so no
+      // shared or process-wide state).
+      match.Make(bytes.arena);
+      int bits = 0;
+      const uint32_t* primed = GetPrimedStringMatchTable(&bits);
+      std::memcpy(match->pos.data(), primed, sizeof(match->pos));
+    }
+    return *match;
+  }
+  // Earlier position that followed the two bytes before End() (verified,
+  // since the table is hashed); 0 if none.
+  uint32_t Lookup() {
+    const uint32_t v = End();
+    if (v < 2) {
+      return 0;
+    }
+    const uint8_t c0 = At(v - 2);
+    const uint8_t c1 = At(v - 1);
+    const uint32_t slot = Table().pos[StringMatchHash(c0, c1)];
+    return slot >= 2 && slot < v && At(slot - 2) == c0 && At(slot - 1) == c1
+               ? slot
+               : 0;
+  }
+  // Appends b at End(), pointing its context's table slot at it.
+  void Push(uint8_t b) {
+    const uint32_t v = End();
+    if (v >= 2) {
+      Table().pos[StringMatchHash(At(v - 2), At(v - 1))] = v;
+    }
+    history.push_back(b);
+  }
+};
+
 struct ModelState {
   // Owns every lazily created context (ArenaPtr members below); declared
   // first so it is destroyed last.
@@ -361,7 +438,8 @@ struct ModelState {
         integer_values(
             (static_cast<size_t>(NumInstructionClasses()) + 1) * 9),
         ext_inst_nums(NumExtInstSets()),
-        string_bytes(std::make_unique<ByteModel>()) {
+        strings(std::make_unique<StringModel>(
+            static_cast<size_t>(NumInstructionClasses()) + 1)) {
     size_t value_enum_kinds = 0;
     for (uint16_t k = 0; k < NumOperandKinds(); ++k) {
       if (GetOperandKind(k).category == OperandCategory::kValueEnum) {
@@ -452,7 +530,7 @@ struct ModelState {
   Prob string_match;
   BitTree<6> string_rank;
   Prob string_canonical;
-  std::unique_ptr<ByteModel> string_bytes;
+  std::unique_ptr<StringModel> strings;
   std::vector<std::string> recent_strings;
 
 };
@@ -514,7 +592,7 @@ class DecodeIO {
   void SetSwapped(bool swapped) { swapped_ = swapped; }
 
   void EmitHeaderWord(uint32_t word) { Append(word); }
-  void EmitBodyWord(uint32_t word) { Append(word); }
+  ARIXV_FORCE_INLINE void EmitBodyWord(uint32_t word) { Append(word); }
 
   bool Complete() const { return !overflowed_ && write_pos_ == out_.size(); }
 
@@ -541,7 +619,7 @@ class DecodeIO {
   }
 
  private:
-  void Append(uint32_t word) {
+  ARIXV_FORCE_INLINE void Append(uint32_t word) {
     if (write_pos_ > out_.size() || out_.size() - write_pos_ < 4) {
       overflowed_ = true;
       return;
@@ -1234,8 +1312,77 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
   return CodeUint(bits, model.arena, ctx.escape, hint);
 }
 
+// One string byte under order-1 context `prev`. A context's tables start as
+// a copy of the running order-0 model (counts included) instead of uniform.
+template <class Bits>
+uint8_t CodeStringByte(Bits& bits, StringModel& m, uint8_t prev, uint8_t b) {
+  if constexpr (Bits::kRawResidual) {
+    return static_cast<uint8_t>(bits.CodeBitsDirect(b, kByteBits));
+  } else {
+    StatSiteScope<Bits> site(kSiteByte);
+    Arena& arena = m.bytes.arena;
+    ArenaPtr<ByteTree>& tree = m.bytes.tree[prev];
+    if (!tree) {
+      tree.Make(arena);
+      tree->root = m.order0.root;
+    }
+    const uint32_t high = bits.template CodeSymbol<16, kByteSymbolRateCap>(
+        tree->root, (b >> 4) & 15u);
+    ArenaPtr<SymbolCdf>& leaf0 = m.order0.leaf[high];
+    if (!leaf0) {
+      leaf0.Make(arena);
+    }
+    ArenaPtr<SymbolCdf>& leaf = tree->leaf[high];
+    if (!leaf) {
+      leaf.Make(arena);
+      *leaf = *leaf0;
+    }
+    const uint32_t low = bits.template CodeSymbol<16, kByteSymbolRateCap>(
+        *leaf, b & 15u);
+    SymbolCdfUpdate<16, kByteSymbolRateCap>(m.order0.root,
+                                            static_cast<int>(high));
+    SymbolCdfUpdate<16, kByteSymbolRateCap>(*leaf0, static_cast<int>(low));
+    return Bits::kEncoding ? b : static_cast<uint8_t>((high << 4) | low);
+  }
+}
+
+// Adds a string coded another way (list hit, dictionary, word fallback) to
+// the match history: its bytes through the first NUL.
+void PushStringHistory(StringModel& m, const std::string& raw) {
+  for (char ch : raw) {
+    m.Push(static_cast<uint8_t>(ch));
+    if (ch == '\0') {
+      break;
+    }
+  }
+}
+
+int FindGrammarString(const std::string& raw) {
+  // raw is canonical (NUL-terminated, zero padded); compare up to the NUL.
+  const char* s = raw.c_str();
+  int lo = 0;
+  int hi = NumGrammarStrings();
+  while (lo < hi) {
+    const int mid = (lo + hi) / 2;
+    const int c = std::strcmp(GetGrammarString(static_cast<uint16_t>(mid)), s);
+    if (c == 0) {
+      return mid;
+    }
+    if (c < 0) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return -1;
+}
+
+// Kept out of line: strings are a small share of decisions, and inlining
+// this into CodeModule shifts the compiler's inlining of hotter paths.
 template <class Bits, size_t kInlineWords>
-void CodeString(Bits& bits, ModelState& model, const uint32_t* hint_words,
+ARIXV_NOINLINE void CodeString(Bits& bits, ModelState& model,
+                               const InstructionDesc* desc,
+                const uint32_t* hint_words,
                 uint32_t remaining, uint32_t* span_out,
                 WordBuffer<kInlineWords>& words) {
   std::string raw;
@@ -1267,16 +1414,56 @@ void CodeString(Bits& bits, ModelState& model, const uint32_t* hint_words,
         coded_rank < static_cast<uint32_t>(model.recent_strings.size())) {
       raw = model.recent_strings[coded_rank];
     }
+    PushStringHistory(*model.strings, raw);
   } else {
+    StringModel& sm = *model.strings;
     const bool canonical = Bits::kEncoding && IsCanonicalStringBytes(raw);
-    if (bits.CodeBit(model.string_canonical, canonical)) {
+    const int dict = canonical ? FindGrammarString(raw) : -1;
+    if (bits.CodeBit(sm.dict_flag[ClassBucket(desc)], dict >= 0)) {
+      const uint32_t index = sm.dict_index.CodeValue(
+          bits, dict >= 0 ? static_cast<uint32_t>(dict) : 0u);
+      if (!Bits::kEncoding) {
+        // An out-of-range index (corrupt input) decodes as the empty string.
+        raw = index < NumGrammarStrings()
+                  ? std::string(GetGrammarString(static_cast<uint16_t>(index)))
+                  : std::string();
+        raw.push_back('\0');
+        while ((raw.size() & 3u) != 0) {
+          raw.push_back('\0');
+        }
+      }
+      PushStringHistory(sm, raw);
+    } else if (bits.CodeBit(model.string_canonical, canonical)) {
       const std::string source = raw;
       std::string coded;
       uint8_t prev = 0;
+      // Match state: the history position predicted to repeat next (0 =
+      // none) and how many predictions in a row have held.
+      uint32_t match = 0;
+      uint32_t match_len = 0;
       while (coded.size() < static_cast<size_t>(remaining) * 4u) {
         const uint8_t hint =
             Bits::kEncoding ? static_cast<uint8_t>(source[coded.size()]) : 0;
-        const uint8_t b = CodeByte(bits, *model.string_bytes, prev, hint);
+        if (match == 0) {
+          match = sm.Lookup();
+          match_len = 0;
+        }
+        uint8_t b = 0;
+        bool predicted = false;
+        if (match != 0) {
+          const uint8_t guess = sm.At(match);
+          Prob& flag = sm.match_flag[match_len < 15 ? match_len : 15];
+          predicted = bits.CodeBit(flag, hint == guess);
+          b = guess;
+        }
+        if (predicted) {
+          ++match;  // still < End(): it trails the byte being appended
+          ++match_len;
+        } else {
+          match = 0;
+          b = CodeStringByte(bits, sm, prev, hint);
+        }
+        sm.Push(b);
         coded.push_back(static_cast<char>(b));
         prev = b;
         if (b == 0) {
@@ -1305,6 +1492,7 @@ void CodeString(Bits& bits, ModelState& model, const uint32_t* hint_words,
           }
         }
       }
+      PushStringHistory(sm, raw);
     }
   }
 
@@ -1728,7 +1916,8 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
               }
               string_hint_ptr = string_hints.data();
             }
-            CodeString(bits, model, string_hint_ptr, remaining, &consume_span,
+            CodeString(bits, model, desc, string_hint_ptr, remaining,
+                       &consume_span,
                        coded_words);
             if (consume_span > remaining) {
               consume_span = remaining;
@@ -1826,6 +2015,22 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
 
 }  // namespace
 
+bool PrimedStringMatchTableIsConsistent() {
+  int bits = 0;
+  const uint32_t* generated = GetPrimedStringMatchTable(&bits);
+  if (bits != kStringMatchBits) {
+    return false;
+  }
+  StringMatchTable rebuilt{};
+  const std::string_view primer = GetStringPrimer();
+  for (size_t v = 2; v < primer.size(); ++v) {
+    rebuilt.pos[StringMatchHash(static_cast<uint8_t>(primer[v - 2]),
+                                static_cast<uint8_t>(primer[v - 1]))] =
+        static_cast<uint32_t>(v);
+  }
+  return std::memcmp(rebuilt.pos.data(), generated, sizeof(rebuilt.pos)) == 0;
+}
+
 bool IsSpirvModelEligible(const uint8_t* data, size_t size) {
   if (size < 20 || (size % 4) != 0) {
     return false;
@@ -1885,7 +2090,8 @@ void RecordModelMemory(const ModelState& m) {
   add("bit_enums ptrs", VecBytes(m.bit_enums), true);
   add("integer_values ptrs", VecBytes(m.integer_values), true);
   add("ext_inst_nums ptrs", VecBytes(m.ext_inst_nums), true);
-  add("string_bytes ByteModel", sizeof(ByteModel), true);
+  add("strings StringModel", sizeof(StringModel), true);
+  add("strings history", VecBytes(m.strings->history), true);
   add("operand_bytes ByteModels", m.operand_bytes ? sizeof(*m.operand_bytes) : 0,
       true);
   add("tracker ID map (stamps touched)", m.tracker.IdMapBytes(), false);
