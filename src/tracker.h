@@ -71,6 +71,9 @@ class RecencyList {
   int Find(uint32_t id) const;
   // Move-to-front (inserting if absent, evicting the oldest past cap).
   void Touch(uint32_t id);
+  // Moves old_id's entry to the front holding `id`; if old_id is absent,
+  // inserts id at the front without checking whether it is already listed.
+  void Replace(uint32_t old_id, uint32_t id);
   void Remove(uint32_t id);
   int size() const { return size_; }
   uint32_t at(int rank) const { return items_[static_cast<size_t>(rank)]; }
@@ -79,6 +82,8 @@ class RecencyList {
  private:
   // Bit i set iff live entry i equals id.
   uint32_t MatchMask(uint32_t id) const;
+  // Writes id at slot 0 after moving slots [0, last) up by one.
+  void ShiftIn(int last, uint32_t id);
 
   int cap_;
   int size_ = 0;
@@ -170,6 +175,9 @@ class Tracker {
   const RecencyList& recent_ids() const { return recent_ids_; }
   const RecencyList& recent_types() const { return recent_types_; }
   const RecencyList& forward_refs() const { return forward_refs_; }
+  // Ends of recent result-ID runs, most recent first: a result ID r that
+  // continues a run (r - 1 listed) replaces that entry at the front.
+  const RecencyList& result_runs() const { return result_runs_; }
 
   // ---- Mutations (called from shared model code only) --------------------
   // Order per instruction, identical on both sides:
@@ -265,6 +273,7 @@ class Tracker {
   RecencyList recent_ids_{kRankListCapIds};
   RecencyList recent_types_{kRankListCapTypes};
   RecencyList forward_refs_{kRankListCapIds};
+  RecencyList result_runs_{kRankListCap};
   // Per-type recency lists (see TypedList), created on a type's first value.
   std::vector<RecencyList> typed_lists_;
   // values_list of `type`, created on first use (0 if the type is unknown).

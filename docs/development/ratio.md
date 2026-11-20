@@ -245,3 +245,53 @@ regenerated, still 88 bytes), `make asan`, 3000-iteration fuzz, valgrind
 memcheck with full leak checking (corpus decodes, `arixv_test`, 180
 mutated/truncated/overwritten blobs), scalar/SIMD cross-check, all 1080
 corpus files round-trip. Wall time not yet measured.
+
+### 4. Result-ID prediction: next unseen ID and run cursors (2026-11-19)
+
+**Oracle first** (encoder dump of every ID definition and use, replayed
+offline; the simulator puts today's coding at 144.1 KB vs 145.8 KB
+measured). 41% of result IDs (99K of 239K) missed both "previous + 1" and
+the forward-reference list, and paid a zigzag delta of up to 18 bits. Two
+patterns account for most of that:
+- compilers skip IDs already used elsewhere (constants and types created
+  while a body is built): "smallest never-seen ID above the previous
+  result" catches 23% of the escapes; −4.0 KB;
+- 86 modules (8%) have shuffled-looking ID spaces (most results jump by
+  ≥256) and carry 43% of result-ID cost. Their IDs come in interleaved runs,
+  so "one past a recent run end" (16 runs) catches many; −6.9 KB on them.
+Rejected: coding the rank among unseen IDs instead of the delta (−1.4 KB,
+needs an order-statistics structure over the ID space); a cursor plus delta
+(the index costs more than it saves); direct `bitlen(bound)` coding for
+shuffled modules (the adaptive length coding already matches it);
+filtering seen IDs out of the run candidates (unstable positions, worse).
+
+**Implementation:** prediction = smallest ID above the previous result
+that the tracker has never seen, scanning at most `kResultScanCap` = 64 IDs
+(a bound on decode work for hostile input; 64 measured the same as
+unbounded, 16 worse). On a miss: a flag "continues a recent run" plus that
+run's position in a 16-entry list of run ends (a `RecencyList`; continuing
+a run replaces its entry at the front via the new `RecencyList::Replace`),
+then the forward-reference rank as before, then the delta, now from the
+prediction.
+
+| | corpus bytes | Δ | train total | holdout total | decode Ir |
+|---|---|---|---|---|---|
+| item 5 (659f60f) | 936,602 | — | 0.14941 | 0.15960 | 313.5M |
+| first version (run update = Remove + Touch) | 921,880 | −1.57% | | | 323.7M (+3.3%) |
+| **landed (in-place `Replace`)** | **921,880** | **−1.57%** | 0.14685 (−1.7%) | 0.15732 (−1.4%) | 320.3M (+2.2%) |
+
+`result_id` entropy 145.8 → 131.1 KB. Decode cost: the run-list update and
+the scan, partly offset by fewer escape deltas (`CodeUint` −18M Ir per
+3 passes). Memory: +124 B heap per decode. Library: +1.8 KB. The
+19-instruction golden vector shrinks 88 → 85 bytes.
+
+Checks: `make test`, `make asan`, 3000-iteration fuzz, valgrind memcheck
+with full leak checking (corpus decodes, `arixv_test`, 180
+mutated/truncated/overwritten blobs), scalar/SIMD cross-check, all 1080
+corpus files round-trip.
+
+Wall time (quiet host, load 0.2, `taskset -c 4`, `arixv_decode_bench
+--iters=10` on all 1080 files, 12 interleaved rounds): median 77.59 →
+77.47 MiB/s, a median paired difference of about −0.3%. This is within run
+noise and far below the +2.2% Ir, because the scan and the run-list update
+are cheap, well-predicted work next to the coder's dependent chains.

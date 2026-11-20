@@ -155,6 +155,14 @@ constexpr int kRankListCapTypes = ARIXV_KRANK_LIST_CAP_TYPES;
 constexpr int kSymbolRateCap = 5;
 constexpr int kByteSymbolRateCap = 7;
 
+// Result-ID prediction: the smallest never-seen ID above the previous
+// result ID, scanning at most this many already-seen IDs (bounds decode work
+// on hostile input; falls back to previous + 1).
+#ifndef ARIXV_KRESULT_SCAN_CAP
+#define ARIXV_KRESULT_SCAN_CAP 64
+#endif
+constexpr int kResultScanCap = ARIXV_KRESULT_SCAN_CAP;
+
 // String match model: log2 entries of the order-2 context hash table
 // (positions of the byte that last followed each context; 1024 entries is a
 // 4 KB table, within ~1 KB of an exact 64K-entry one on the corpus). The

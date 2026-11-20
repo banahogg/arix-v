@@ -214,6 +214,32 @@ void RecencyList::Touch(uint32_t id) {
       ++size_;
     }
   }
+  ShiftIn(last, id);
+}
+
+void RecencyList::Replace(uint32_t old_id, uint32_t id) {
+  if (cap_ <= 0) {
+    return;
+  }
+  const uint32_t mask = MatchMask(old_id);
+  if (mask == 0) {
+    // Insert as a new entry (callers never list id itself already).
+    const int last = size_ < cap_ ? size_ : cap_ - 1;
+    if (size_ < cap_) {
+      ++size_;
+    }
+    ShiftIn(last, id);
+    return;
+  }
+  const int at = __builtin_ctz(mask);
+  if (at == 0) {
+    items_[0] = id;
+    return;
+  }
+  ShiftIn(at, id);
+}
+
+void RecencyList::ShiftIn(int last, uint32_t id) {
   // Shift [0, last) up by one with a fixed-width select instead of a
   // variable-length memmove call; slots past `last` keep their value.
 #if ARIXV_RECENCY_SSE2
@@ -340,6 +366,9 @@ void Tracker::OnResultId(uint32_t id) {
   if (id > max_seen_id_) {
     max_seen_id_ = id;
   }
+  // Continuing a run moves that run to the front as `id`; anything else
+  // starts a new run.
+  result_runs_.Replace(id - 1, id);
 }
 
 void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
@@ -433,6 +462,7 @@ void Tracker::Reset() {
   recent_ids_.Clear();
   recent_types_.Clear();
   forward_refs_.Clear();
+  result_runs_.Clear();
   typed_lists_.clear();
   cur_desc_ = nullptr;
   cur_opcode_ = 0;

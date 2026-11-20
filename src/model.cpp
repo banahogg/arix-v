@@ -494,6 +494,8 @@ struct ModelState {
 
   uint32_t prev_result_id = 0;
   std::array<Prob, 2> result_next{};
+  Prob result_in_run;
+  BitTree<kRankTreeBits> result_run_rank;
   Prob result_in_fwd;
   BitTree<kRankTreeBits> result_fwd_rank;
   std::array<UintModel, 4> result_delta;
@@ -978,27 +980,57 @@ uint32_t CodeRankedId(Bits& bits, Prob& flag, BitTree<kRankTreeBits>& tree,
 template <class Bits>
 uint32_t CodeResultId(Bits& bits, ModelState& model,
                       const InstructionDesc* desc, uint32_t hint) {
-  const uint32_t predicted = model.prev_result_id + 1;
+  // Compilers skip IDs they already used (constants and types created while
+  // a function body is built), so predict the smallest never-seen ID above
+  // the previous result rather than just previous + 1.
+  const Tracker& tracker = model.tracker;
+  uint32_t predicted = model.prev_result_id + 1;
+  for (int step = 0; step < kResultScanCap; ++step) {
+    const uint32_t candidate = model.prev_result_id + 1 + static_cast<uint32_t>(step);
+    if (candidate == 0) {
+      break;  // wrapped
+    }
+    if (tracker.Find(candidate) == nullptr) {
+      predicted = candidate;
+      break;
+    }
+  }
   const bool sequential = Bits::kEncoding && hint == predicted;
-  const size_t ctx = model.tracker.in_function() ? 1u : 0u;
+  const size_t ctx = tracker.in_function() ? 1u : 0u;
   uint32_t id = predicted;
   if (!bits.CodeBit(model.result_next[ctx], sequential)) {
-    const RecencyList& fwd = model.tracker.forward_refs();
-    const int rank = Bits::kEncoding ? fwd.Find(hint) : -1;
-    const bool in_fwd = rank >= 0 && rank < (1 << kRankTreeBits);
-    if (bits.CodeBit(model.result_in_fwd, in_fwd)) {
-      const uint32_t coded_rank =
-          model.result_fwd_rank.CodeValue(bits,
-                                          in_fwd ? static_cast<uint32_t>(rank)
-                                                 : 0);
-      if (!Bits::kEncoding && coded_rank < static_cast<uint32_t>(fwd.size())) {
-        id = fwd.at(static_cast<int>(coded_rank));
+    // Then: continues one of the recent runs (interleaved ID allocation).
+    const RecencyList& runs = tracker.result_runs();
+    const int run = Bits::kEncoding ? runs.Find(hint - 1) : -1;
+    const RecencyList& fwd = tracker.forward_refs();
+    if (bits.CodeBit(model.result_in_run, run >= 0)) {
+      const uint32_t coded_run = model.result_run_rank.CodeValue(
+          bits, run >= 0 ? static_cast<uint32_t>(run) : 0u);
+      if (!Bits::kEncoding) {
+        id = coded_run < static_cast<uint32_t>(runs.size())
+                 ? runs.at(static_cast<int>(coded_run)) + 1
+                 : 0;
       } else {
-        id = Bits::kEncoding ? hint : 0;
+        id = hint;
       }
     } else {
-      id = CodeDelta(bits, model.arena, model.result_delta[ResultClassBucket(desc)], hint,
-                     predicted);
+      const int rank = Bits::kEncoding ? fwd.Find(hint) : -1;
+      const bool in_fwd = rank >= 0 && rank < (1 << kRankTreeBits);
+      if (bits.CodeBit(model.result_in_fwd, in_fwd)) {
+        const uint32_t coded_rank =
+            model.result_fwd_rank.CodeValue(bits,
+                                            in_fwd ? static_cast<uint32_t>(rank)
+                                                   : 0);
+        if (!Bits::kEncoding && coded_rank < static_cast<uint32_t>(fwd.size())) {
+          id = fwd.at(static_cast<int>(coded_rank));
+        } else {
+          id = Bits::kEncoding ? hint : 0;
+        }
+      } else {
+        id = CodeDelta(bits, model.arena,
+                       model.result_delta[ResultClassBucket(desc)], hint,
+                       predicted);
+      }
     }
   }
   model.tracker.OnResultId(id);
