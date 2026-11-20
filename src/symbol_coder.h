@@ -159,6 +159,40 @@ inline void SymbolCdfTrain(SymbolCdf& t, int s) {
   SymbolCdfAdapt<kN>(t, s, kRateCap, t.d[0]);
 }
 
+// Sets t to a prior proportional to w[0..kN) (cold-start priors derived from
+// the grammar). Every symbol keeps frequency >= 1, so a zero weight means
+// "unlikely", never "impossible". The warm-up count starts at `count`, so
+// early adaptation is as fast as from the uniform start.
+template <int kN>
+inline void SymbolCdfSetPrior(SymbolCdf& t, const uint32_t* w,
+                              uint16_t count = 0) {
+  using K = SymbolCdfConst<kN>;
+  uint64_t total = 0;
+  for (int i = 0; i < kN; ++i) total += w[i];
+  uint32_t freq[kN];
+  if (total == 0) {
+    t = SymbolCdf{};
+    t.d[0] = count;
+    return;
+  }
+  const uint32_t spread = kSymbolScale - kN;  // after the one-each floor
+  uint32_t sum = 0;
+  int largest = 0;
+  for (int i = 0; i < kN; ++i) {
+    freq[i] = 1 + static_cast<uint32_t>(w[i] * spread / total);
+    sum += freq[i];
+    if (freq[i] > freq[largest]) largest = i;
+  }
+  freq[largest] += kSymbolScale - sum;  // rounding slack: sum <= scale
+  uint32_t c = 0;
+  for (int i = 1; i < 16; ++i) {
+    if (i <= kN) c += freq[i - 1];
+    const uint32_t cdf = i < kN ? c : K::kUniform[i];
+    t.d[i] = static_cast<uint16_t>(cdf - K::kUniform[i]);
+  }
+  t.d[0] = count;
+}
+
 // Buffers symbols in coding order; Flush rANS-encodes them in reverse and
 // appends the words, so the decoder (reading backward from the end) sees
 // them in forward order.

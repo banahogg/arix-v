@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -577,6 +578,54 @@ def enum_constant_name(class_name: str) -> str:
     )
 
 
+# --- Cold-start priors (ratio backlog item 7) -------------------------------
+# A prior is a SymbolCdf (symbol_coder.h) proportional to integer weights.
+# prior_cdf mirrors SymbolCdfSetPrior exactly; tests/arixv_test.cpp rebuilds
+# every emitted table with the C++ function and compares.
+SYMBOL_SCALE = 1 << 15
+OPCODE_PRIOR_LEGAL_WEIGHT = 64  # must equal kOpcodePriorLegalWeight
+
+# Instructions the logical-layout rules allow in any section.
+ANYWHERE_OPS = {"OpNop", "OpLine", "OpNoLine", "OpExtInst",
+                "OpExtInstWithForwardRefsKHR"}
+
+
+def prior_cdf(n: int, w: list[int]) -> tuple[int, ...]:
+    def uniform(i: int) -> int:
+        return i * (SYMBOL_SCALE // n) if i <= n else SYMBOL_SCALE + (i - n)
+    total = sum(w)
+    if total == 0:
+        return (0,) * 16
+    spread = SYMBOL_SCALE - n
+    freq = [1 + (x * spread) // total for x in w]
+    largest = 0
+    for i in range(n):
+        if freq[i] > freq[largest]:
+            largest = i
+    freq[largest] += SYMBOL_SCALE - sum(freq)
+    d = [0] * 16
+    c = 0
+    for i in range(1, 16):
+        if i <= n:
+            c += freq[i - 1]
+        cdf = c if i < n else uniform(i)
+        d[i] = (cdf - uniform(i)) & 0xFFFF
+    return tuple(d)
+
+
+def opcode_legal_in_section(inst: "Instruction", section: int) -> bool:
+    """Whether the module's logical layout allows inst while the tracker is in
+    `section` (sections only advance). Soft: illegal opcodes stay codable."""
+    if inst.name in ANYWHERE_OPS:
+        return True
+    advancing = inst.section != 0 or inst.name == "OpCapability"
+    decls = SECTION_VALUES["FunctionDecls"]
+    if section < decls:
+        return advancing and inst.section >= section
+    return (not advancing or inst.section >= decls
+            or inst.name in {"OpVariable", "OpUndef"})
+
+
 def main() -> None:
     global GRAMMAR_DIR
     args = sys.argv[1:]
@@ -1017,6 +1066,130 @@ def main() -> None:
     lines.append("std::string_view GetStringPrimer() {")
     lines.append("  // The literal's own terminating NUL is not part of the primer.")
     lines.append("  return std::string_view(kStringPrimer, sizeof(kStringPrimer) - 1);")
+    lines.append("}")
+    lines.append("")
+    # Cold-start priors: a deduplicated pool of SymbolCdf tables, the
+    # per-section opcode-index tree priors, and uniform-over-[0, n) priors for
+    # 8-bit index trees (enum and extended-instruction indices).
+    pool: list[tuple[int, ...]] = [(0,) * 16]
+    pool_index = {pool[0]: 0}
+
+    def intern(cdf: tuple[int, ...]) -> int:
+        if cdf not in pool_index:
+            pool_index[cdf] = len(pool)
+            pool.append(cdf)
+        return pool_index[cdf]
+
+    num_sections = len(SECTION_VALUES)
+    if len(core_instructions) > 1024:
+        raise SystemExit("opcode prior assumes at most 1024 core instructions")
+    legal_masks: list[list[int]] = []
+    section_priors: list[list[int]] = []
+    for section in range(num_sections):
+        weight = [0] * 1024
+        mask = [0] * 32
+        for i, inst in enumerate(core_instructions):
+            if opcode_legal_in_section(inst, section):
+                weight[i] = OPCODE_PRIOR_LEGAL_WEIGHT
+                mask[i >> 5] |= 1 << (i & 31)
+            else:
+                weight[i] = 1
+        root = intern(prior_cdf(4, [sum(weight[t << 8:(t + 1) << 8]) for t in range(4)]))
+        mids = []
+        leaves = []
+        for top in range(4):
+            mids.append(intern(prior_cdf(16, [
+                sum(weight[(top << 8) | (m << 4):((top << 8) | (m << 4)) + 16])
+                for m in range(16)])))
+        for leaf in range(64):
+            leaves.append(intern(prior_cdf(16, weight[leaf << 4:(leaf + 1) << 4])))
+        section_priors.append([root] + mids + leaves)
+        legal_masks.append(mask)
+    index_root = [intern(prior_cdf(16, [max(0, min(16, n - 16 * h)) for h in range(16)]))
+                  for n in range(257)]
+    index_leaf = [intern(prior_cdf(16, [1 if l < r else 0 for l in range(16)])) if r else 0
+                  for r in range(16)]
+    # Header priors. Versions: major is the grammar's; minor is uniform over
+    # 0..the grammar's minor. Generator IDs: the registered tool IDs in
+    # spir-v.xml (one level above the grammar directory), which are
+    # contiguous from 0.
+    major = int(core["major_version"])
+    minor = int(core["minor_version"])
+    if major > 15 or minor > 15:
+        raise SystemExit("version prior assumes 4-bit major/minor")
+    version_major_prior = intern(prior_cdf(16, [1 if v == major else 0 for v in range(16)]))
+    version_minor_prior = intern(prior_cdf(16, [1 if v <= minor else 0 for v in range(16)]))
+    registry = ET.parse(GRAMMAR_DIR.parent / "spir-v.xml").getroot()
+    vendor_ids = sorted(
+        parse_int(e.get("value"))
+        for block in registry.iter("ids") if block.get("type") == "vendor"
+        for e in block.iter("id")
+    )
+    if vendor_ids != list(range(len(vendor_ids))) or len(vendor_ids) > 256:
+        raise SystemExit("expected registered generator IDs 0..n-1 with n <= 256")
+    checked_uint("prior pool size", len(pool), 65535)
+    lines.append("// Cold-start prior pool: SymbolCdf contents (offsets from uniform,")
+    lines.append("// warm-up count 0). Entry 0 is the uniform table.")
+    lines.append("constexpr uint16_t kPriorCdfs[][16] = {")
+    for cdf in pool:
+        lines.append("    {" + ", ".join(str(x) for x in cdf) + "},")
+    lines.append("};")
+    lines.append("")
+    lines.append(f"constexpr uint32_t kOpcodePriorLegalWeightGenerated = {OPCODE_PRIOR_LEGAL_WEIGHT};")
+    lines.append("static_assert(kOpcodePriorLegalWeightGenerated == kOpcodePriorLegalWeight,")
+    lines.append('              "rerun scripts/gen_grammar_tables.py");')
+    lines.append("// Per section: which core instruction indices the logical layout allows")
+    lines.append("// (bit i of word i / 32), and the opcode-index tree prior built from it")
+    lines.append("// (pool indices: root, mid[0..3], leaf[0..63]).")
+    lines.append(f"constexpr uint32_t kOpcodeSectionLegal[{num_sections}][32] = {{")
+    for mask in legal_masks:
+        lines.append("    {" + ", ".join(f"0x{x:08x}u" for x in mask) + "},")
+    lines.append("};")
+    lines.append(f"constexpr uint16_t kOpcodeSectionPrior[{num_sections}][69] = {{")
+    for row in section_priors:
+        lines.append("    {" + ", ".join(str(x) for x in row) + "},")
+    lines.append("};")
+    lines.append("// 8-bit index trees over [0, n): root prior by n (n >= 256: uniform),")
+    lines.append("// prior of the partial leaf holding n % 16 valid low nibbles.")
+    lines.append("constexpr uint16_t kIndexRootPrior[257] = {")
+    for i in range(0, 257, 16):
+        lines.append("    " + ", ".join(str(x) for x in index_root[i:i + 16]) + ",")
+    lines.append("};")
+    lines.append("constexpr uint16_t kIndexLeafPrior[16] = {")
+    lines.append("    " + ", ".join(str(x) for x in index_leaf) + ",")
+    lines.append("};")
+    lines.append("")
+    lines.append(f"constexpr uint16_t kVersionMajorPrior = {version_major_prior};")
+    lines.append(f"constexpr uint16_t kVersionMinorPrior = {version_minor_prior};")
+    lines.append("// Tool IDs registered in spir-v.xml (contiguous from 0).")
+    lines.append(f"constexpr uint32_t kNumRegisteredGenerators = {len(vendor_ids)};")
+    lines.append("")
+    lines.append("uint16_t GetVersionMajorPrior() { return kVersionMajorPrior; }")
+    lines.append("")
+    lines.append("uint16_t GetVersionMinorPrior() { return kVersionMinorPrior; }")
+    lines.append("")
+    lines.append("uint32_t NumRegisteredGenerators() { return kNumRegisteredGenerators; }")
+    lines.append("")
+    lines.append("const uint16_t* GetPriorCdf(uint16_t index) { return kPriorCdfs[index]; }")
+    lines.append("")
+    lines.append("uint16_t NumPriorCdfs() {")
+    lines.append("  return static_cast<uint16_t>(ArraySize(kPriorCdfs));")
+    lines.append("}")
+    lines.append("")
+    lines.append("const uint16_t* GetOpcodeSectionPrior(uint8_t section) {")
+    lines.append("  return kOpcodeSectionPrior[section];")
+    lines.append("}")
+    lines.append("")
+    lines.append("const uint32_t* GetOpcodeSectionLegal(uint8_t section) {")
+    lines.append("  return kOpcodeSectionLegal[section];")
+    lines.append("}")
+    lines.append("")
+    lines.append("uint16_t GetIndexRootPrior(uint32_t n) {")
+    lines.append("  return kIndexRootPrior[n < 256 ? n : 256];")
+    lines.append("}")
+    lines.append("")
+    lines.append("uint16_t GetIndexLeafPrior(uint32_t partial) {")
+    lines.append("  return kIndexLeafPrior[partial & 15u];")
     lines.append("}")
     lines.append("")
     lines.append("const WellKnownKinds& GetWellKnownKinds() {")

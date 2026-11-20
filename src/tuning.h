@@ -163,6 +163,16 @@ constexpr int kByteSymbolRateCap = 7;
 #endif
 constexpr int kResultScanCap = ARIXV_KRESULT_SCAN_CAP;
 
+// Grammar cold-start priors (docs/development/ratio.md item 7): initial
+// bit-0 probability (of kProbScale) for a validity flag — known opcode,
+// grammar enumerant, word count consistent with the grammar, canonical header
+// fields — so a fresh flag starts on the spec-valid side: 1/32. Insensitive
+// from 1/32 to 1/2048 on the corpus; the weakest of those is kept.
+#ifndef ARIXV_KVALID_FLAG_PRIOR
+#define ARIXV_KVALID_FLAG_PRIOR (ARIXV_KPROB_SCALE / 32)
+#endif
+constexpr uint16_t kValidFlagPrior = static_cast<uint16_t>(ARIXV_KVALID_FLAG_PRIOR);
+
 // String match model: log2 entries of the order-2 context hash table
 // (positions of the byte that last followed each context; 1024 entries is a
 // 4 KB table, within ~1 KB of an exact 64K-entry one on the corpus). The

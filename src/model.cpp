@@ -138,18 +138,32 @@ bool IsCanonicalVersion(uint32_t word) {
   return byte0 == 0 && byte3 == 0 && major < 16 && minor < 16;
 }
 
+// A fresh Prob on the spec-valid side (bit 1) of a validity flag.
+inline Prob ValidFlag() { return Prob::WithValue(kValidFlagPrior); }
+// The same for flags whose spec-valid side is bit 0.
+inline Prob ValidFlagZero() {
+  return Prob::WithValue(static_cast<uint16_t>(kProbScale - kValidFlagPrior));
+}
+
 struct CountModel {
-  Prob consistent;
+  Prob consistent = ValidFlag();  // count fits the grammar's word counts
   Prob same_as_last;
   UintModel extra;
 };
+
+// Copies a generated cold-start prior (GetPriorCdf pool index) into t.
+inline void LoadPrior(SymbolCdf& t, uint16_t pool_index) {
+  std::memcpy(t.d, GetPriorCdf(pool_index), sizeof(t.d));
+}
 
 // Opcode-index tree, symbol-for-symbol identical to BitTree<10> (chunks of
 // 2, 4, 4 bits: 1 root, 4 mid, 64 leaf tables) but with the 64 leaf tables —
 // 2 KB of BitTree<10>'s 2.2 KB — allocated lazily in four 16-table groups,
 // one per top-chunk value. A context only reaches the leaves under the top
-// values it actually sees, and a fresh group is zeroed (uniform), exactly
-// like the eager tree's untouched tables.
+// values it actually sees. A fresh group starts from the section prior when
+// the tree has one (GetOpcodeSectionPrior: instructions the module layout
+// allows in that section), else uniform like the eager tree's untouched
+// tables.
 struct OpcodeTree {
   static_assert(BitTree<10>::kFirstChunk == 2 && BitTree<10>::NumTables() == 69,
                 "OpcodeTree mirrors BitTree<10>'s 2/4/4 chunk layout");
@@ -157,9 +171,17 @@ struct OpcodeTree {
   SymbolCdf root;
   std::array<SymbolCdf, 4> mid;
   std::array<ArenaPtr<LeafGroup>, 16> leaf;  // by (top, mid >> 2)
+  // Seeds root and mid from a section prior (GetOpcodeSectionPrior); the
+  // caller passes the same prior to CodeValue, which seeds leaf groups as
+  // they are created (not stored here: it would cost 16 bytes per tree).
+  void SetPrior(const uint16_t* p) {
+    LoadPrior(root, p[0]);
+    for (uint32_t i = 0; i < 4; ++i) LoadPrior(mid[i], p[1 + i]);
+  }
 
   template <typename Coder>
-  uint32_t CodeValue(Coder& coder, Arena& arena, uint32_t value) {
+  uint32_t CodeValue(Coder& coder, Arena& arena, uint32_t value,
+                     const uint16_t* prior = nullptr) {
     if constexpr (Coder::kRawResidual) {
       (void)arena;
       return coder.CodeBitsDirect(value, 10);
@@ -175,7 +197,7 @@ struct OpcodeTree {
       const uint32_t m = coder.template CodeSymbol<16, kSymbolRateCap>(
           mid[top], (value >> 4) & 15u);
       const uint32_t low = coder.template CodeSymbol<16, kSymbolRateCap>(
-          Leaf(arena, top, m), value & 15u);
+          Leaf(arena, top, m, prior), value & 15u);
       return Coder::kEncoding ? value : ((top << 8) | (m << 4) | low);
     }
   }
@@ -186,17 +208,30 @@ struct OpcodeTree {
     const uint32_t m = (value >> 4) & 15u;
     SymbolCdfTrain<4, kSymbolRateCap>(root, static_cast<int>(top));
     SymbolCdfTrain<16, kSymbolRateCap>(mid[top], static_cast<int>(m));
-    SymbolCdfTrain<16, kSymbolRateCap>(Leaf(arena, top, m),
+    SymbolCdfTrain<16, kSymbolRateCap>(Leaf(arena, top, m, nullptr),
                                        static_cast<int>(value & 15u));
   }
 
  private:
-  SymbolCdf& Leaf(Arena& arena, uint32_t top, uint32_t m) {
+  SymbolCdf& Leaf(Arena& arena, uint32_t top, uint32_t m,
+                  const uint16_t* prior) {
     ArenaPtr<LeafGroup>& group = leaf[(top << 2) | (m >> 2)];
     if (!group) {
-      group.Make(arena);
+      MakeGroup(arena, group, top, m, prior);
     }
     return (*group)[m & 3u];
+  }
+
+  // Cold path (once per group per tree), kept out of the coding loop.
+  ARIXV_NOINLINE static void MakeGroup(Arena& arena, ArenaPtr<LeafGroup>& group,
+                                       uint32_t top, uint32_t m,
+                                       const uint16_t* prior) {
+    group.Make(arena);
+    if (prior != nullptr) {
+      for (uint32_t i = 0; i < 4; ++i) {
+        LoadPrior((*group)[i], prior[5 + ((top << 4) | (m & ~3u) | i)]);
+      }
+    }
   }
 };
 
@@ -209,22 +244,43 @@ struct OpcodeCtx {
 };
 
 struct ValueEnumModel {
-  Prob known;
+  Prob known = ValidFlag();  // a grammar enumerant
   LazyLeafTree8<kSymbolRateCap> index;
   UintModel escape;
 };
 
 struct BitEnumModel {
   std::vector<Prob> bits;
-  Prob unknown;
+  Prob unknown = ValidFlagZero();  // bits outside the grammar's enumerants
   UintModel residual;
 };
 
 struct ExtInstNumberModel {
-  Prob known;
+  Prob known = ValidFlag();  // an instruction of the set's grammar
   LazyLeafTree8<kSymbolRateCap> index;
   UintModel escape;
 };
+
+// Grammar cold-start prior for an 8-bit index tree: a valid index is one of
+// the grammar's n entries, so the tree starts uniform over [0, n) (other
+// values keep the minimum frequency) instead of uniform over all 256.
+struct IndexLeafPrior {
+  uint32_t n;
+  void operator()(uint32_t high, SymbolCdf& leaf) const {
+    if (high == (n >> 4) && (n & 15u) != 0) {
+      LoadPrior(leaf, GetIndexLeafPrior(n & 15u));
+    }
+  }
+};
+
+template <typename T>
+T& EnsureIndexContext(Arena& arena, ArenaPtr<T>& slot, uint32_t n) {
+  if (!slot) {
+    slot.Make(arena);
+    LoadPrior(slot->index.root, GetIndexRootPrior(n));
+  }
+  return *slot;
+}
 
 UintModel& EnsureUint(Arena& arena, ArenaPtr<UintModel>& model) {
   if (!model) {
@@ -447,6 +503,17 @@ struct ModelState {
       }
     }
     value_enums.resize(value_enum_kinds * 16);
+    // Grammar cold-start priors for the header (see docs/development/ratio.md
+    // item 7): versions the grammar defines, registered tool IDs, and the
+    // spec-valid side of the header flags.
+    LoadPrior(version_major.tables[0], GetVersionMajorPrior());
+    LoadPrior(version_minor.tables[0], GetVersionMinorPrior());
+    LoadPrior(generator_id.root, GetIndexRootPrior(NumRegisteredGenerators()));
+    version_canonical = ValidFlag();
+    schema_zero = ValidFlag();
+    bound_matches = ValidFlag();
+    string_canonical = ValidFlag();
+    known_opcode.fill(ValidFlag());
   }
 
   // Must run before any inst_group access for inst_index;
@@ -458,7 +525,6 @@ struct ModelState {
     return inst_contexts[inst_index]->group;
   }
 
-
   Tracker tracker;
   // Result Type of the ID operand CodeIdRef just coded (from its OnIdUse).
   uint32_t last_id_operand_type = 0;
@@ -467,6 +533,9 @@ struct ModelState {
   BitTree<4> version_major;
   BitTree<4> version_minor;
   ByteModel generator_bytes;
+  Prob generator_registered = ValidFlag();
+  LazyLeafTree8<kSymbolRateCap> generator_id{};
+  ArenaPtr<UintModel> generator_id_escape;  // unregistered tools only
   Prob schema_zero;
   Prob bound_matches;
 
@@ -786,18 +855,31 @@ uint32_t CodeDirect32(Bits& bits, uint32_t hint) {
   return Bits::kEncoding ? hint : value;
 }
 
+// Header word 2: the tool's own version (low 16 bits, two order-1 bytes),
+// then its tool ID (high 16 bits) as an index into the registry's
+// contiguous IDs, escaping for unregistered ones.
 template <class Bits>
 uint32_t CodeGenerator(Bits& bits, ModelState& model, uint32_t hint) {
   uint8_t prev = 0;
   uint32_t out = 0;
-  for (int byte = 0; byte < 4; ++byte) {
+  for (int byte = 0; byte < 2; ++byte) {
     const uint8_t b = CodeByte(
         bits, model.generator_bytes, prev,
         static_cast<uint8_t>((hint >> (byte * 8)) & 0xffu));
     out |= static_cast<uint32_t>(b) << (byte * 8);
     prev = b;
   }
-  return Bits::kEncoding ? hint : out;
+  const uint32_t registered = NumRegisteredGenerators();
+  uint32_t id = hint >> 16;
+  if (bits.CodeBit(model.generator_registered, id < registered)) {
+    id = model.generator_id.CodeValue(bits, model.arena, id,
+                                      IndexLeafPrior{registered});
+  } else {
+    id = CodeUint(bits, model.arena,
+                  EnsureUint(model.arena, model.generator_id_escape), id) &
+         0xffffu;
+  }
+  return Bits::kEncoding ? hint : (out | (id << 16));
 }
 
 template <class Bits>
@@ -1189,10 +1271,11 @@ uint32_t CodeValueEnum(Bits& bits, ModelState& model,
   const size_t key =
       static_cast<size_t>(model.value_enum_ordinal[field.kind]) * 16 +
       Slot16(field.slot);
-  ValueEnumModel& ctx =
-      EnsureContext(model.arena, model.value_enums[key]);
+  ValueEnumModel& ctx = EnsureIndexContext(model.arena, model.value_enums[key],
+                                           kind.num_enumerants);
   if (bits.CodeBit(ctx.known, known)) {
-    index = ctx.index.CodeValue(bits, model.arena, index);
+    index = ctx.index.CodeValue(bits, model.arena, index,
+                                IndexLeafPrior{kind.num_enumerants});
     if (!Bits::kEncoding && index < kind.num_enumerants) {
       return GetEnumerant(kind, static_cast<uint16_t>(index)).value;
     }
@@ -1331,11 +1414,12 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
     }
     return bits.CodeUint32(hint);
   }
-  ExtInstNumberModel& ctx =
-      EnsureContext(model.arena,
-                    model.ext_inst_nums[static_cast<size_t>(set_index)]);
+  ExtInstNumberModel& ctx = EnsureIndexContext(
+      model.arena, model.ext_inst_nums[static_cast<size_t>(set_index)],
+      set->num_instructions);
   if (bits.CodeBit(ctx.known, known)) {
-    index = ctx.index.CodeValue(bits, model.arena, index);
+    index = ctx.index.CodeValue(bits, model.arena, index,
+                                IndexLeafPrior{set->num_instructions});
     if (!Bits::kEncoding && index < set->num_instructions) {
       return set->instructions[index].opcode;
     }
@@ -1581,8 +1665,14 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
         static_cast<size_t>(section) *
             (static_cast<size_t>(NumInstructionClasses()) + 1) +
         prev_class;
-    OpcodeTree& tree =
-        EnsureContext(model.arena, model.opcode_index_trees[tree_ctx]);
+    const uint16_t* prior =
+        GetOpcodeSectionPrior(static_cast<uint8_t>(section));
+    ArenaPtr<OpcodeTree>& tree_slot = model.opcode_index_trees[tree_ctx];
+    if (!tree_slot) {
+      tree_slot.Make(model.arena);
+      tree_slot->SetPrior(prior);
+    }
+    OpcodeTree& tree = *tree_slot;
     const uint16_t prev_key = PreviousOpcodeKey(model.tracker);
     OpcodeCtx& order1 =
         EnsureContext(model.arena, model.opcode_contexts[prev_key]);
@@ -1593,7 +1683,7 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
       index = static_cast<uint32_t>(found);
     }
     if (order1.count < kOpcodeOrder1MinCount) {
-      index = tree.CodeValue(bits, model.arena, index);
+      index = tree.CodeValue(bits, model.arena, index, prior);
       order1.tree.Train(model.arena, index);
     } else {
       index = order1.tree.CodeValue(bits, model.arena, index);

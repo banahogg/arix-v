@@ -32,6 +32,14 @@ struct Prob {
   // stage 16 already uses kProbShift.
   uint16_t state = kProbInit;
 
+  // A fresh (warm-up count 0) probability whose bit-0 probability is
+  // value / kProbScale, for cold-start priors.
+  static Prob WithValue(uint16_t value) {
+    Prob p;
+    p.state = value & kValueMask;
+    return p;
+  }
+
   uint16_t raw() const { return state; }
   uint16_t value() const { return state & kValueMask; }
   static uint16_t ValueFromRaw(uint16_t raw) { return raw & kValueMask; }
@@ -69,6 +77,12 @@ struct Prob {
   // settling to the steady kProbShift rate. Deterministic and symmetric: both
   // sides see identical update sequences.
   uint16_t n = 0;
+
+  static Prob WithValue(uint16_t value) {
+    Prob p;
+    p.v = value;
+    return p;
+  }
 
   uint16_t raw() const { return v; }
   uint16_t value() const { return v; }

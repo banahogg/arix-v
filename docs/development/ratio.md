@@ -295,3 +295,85 @@ Wall time (quiet host, load 0.2, `taskset -c 4`, `arixv_decode_bench
 77.47 MiB/s, a median paired difference of about −0.3%. This is within run
 noise and far below the +2.2% Ir, because the scan and the run-list update
 are cheap, well-predicted work next to the coder's dependent chains.
+
+### 7. Grammar-derived cold-start priors (2026-11-19)
+
+**Oracle first** (encoder cost split by context age: the CDF's or flag's
+warm-up count when the decision is coded). Decisions in never-used contexts
+cost 132.9 KB of 909 KB (14.6%), and contexts with 1–3 updates another
+138.5 KB. The grammar-shaped part of the fresh cost: opcode 34.5 KB,
+value enum 14.1, word count 11.2, header 4.1, bit enum 1.9, ext-inst
+number 0.9. The rest (ID ranks, result types, literals) has no grammar
+prior to offer.
+
+**Implementation.** A prior is a SymbolCdf proportional to integer
+weights, with every symbol at frequency ≥ 1, so nothing becomes uncodable.
+The generator builds all of them, mirroring `SymbolCdfSetPrior` (now in
+`symbol_coder.h`) in Python, into a deduplicated pool of 313 tables. A
+decoder only copies a table when it creates a context: no runtime
+construction and no process-wide state. A runtime-built prototype cost
++38% Ir. `tests/grammar_tables_test.cpp` rebuilds every table with the C++
+function and compares.
+- **Opcode index trees**, per module section: instructions the logical
+  layout allows in the tracker's current section get weight 64
+  (`kOpcodePriorLegalWeight`), all others weight 1. Rule
+  (`opcode_legal_in_section` in the generator): before the function
+  sections, instructions of this or a later section. In the function
+  sections, body instructions, `OpFunction*`, `OpVariable` and `OpUndef`.
+  Anywhere: `OpNop`, `OpLine`, `OpNoLine`, `OpExtInst*`. Only 25 opcodes in
+  the corpus break the rule (mostly ARM graph instructions after the
+  types). Weight 16 and weight 1024 were both worse by about 0.15%. Seeding
+  the shadow-trained order-1 trees saved 86 bytes and was dropped.
+- **Enum and extended-instruction indices**: uniform over the grammar's
+  n entries instead of all 256 values.
+- **Header**: major version is the grammar's and minor is uniform over
+  0..the grammar's minor. The generator's tool ID (high 16 bits) is now a
+  "registered" flag plus an index over the contiguous IDs registered in
+  `spir-v.xml` (52), with an escape. The tool's own version keeps the two
+  order-1 bytes.
+- **Validity flags** start at P(invalid) = 1/32 (`kValidFlagPrior`):
+  known opcode, known enumerant or ext-inst, word count consistent with
+  the grammar, no unknown bit-enum bits, canonical version, schema 0, tight
+  bound, canonical string. Sizes are flat from 1/32 to 1/2048 (±0.03%), and
+  the weakest is kept.
+
+| | corpus bytes | Δ vs item 4 | train total | holdout total | train mean | holdout mean |
+|---|---|---|---|---|---|---|
+| item 4 (bcd30e2) | 921,880 | — | 0.14685 | 0.15732 | 0.19711 | 0.19604 |
+| + index priors | 916,574 | −0.58% | 0.14599 | 0.15642 | 0.19460 | 0.19365 |
+| + opcode section priors | 906,180 | −1.70% | 0.14431 | 0.15467 | 0.18981 | 0.18910 |
+| + header priors | 904,426 | −1.89% | 0.14403 | 0.15438 | 0.18880 | 0.18817 |
+| **+ validity flags (landed)** | **895,010** | **−2.92%** | 0.14251 (−3.0%) | 0.15279 (−2.9%) | 0.18496 (−6.2%) | 0.18444 (−5.9%) |
+
+Median ratio: train 0.19059 → 0.18112 (−5.0%), holdout 0.18902 → 0.17991
+(−4.8%). As intended, small modules gain most. By field: opcode 154.5 →
+141.1 KB, value enum 33.4 → 26.9, word count 47.7 → 43.5, header 4.9 → 3.1.
+The golden vectors: the 19-instruction module 85 → 73 bytes, and the
+header-only vector stays 14 bytes with new contents.
+
+Costs: decode Ir 320.3M → 321.5M (+0.37%). Heap +133 B per decode.
+Library 288.8 → 303.9 KB (+15.1 KB, mostly the prior pool). A first
+version kept a prior pointer in every `OpcodeTree` (+2.1 KB heap); the
+section prior is now passed to `CodeValue` instead.
+
+Wall time (quiet host, `taskset -c 4`, `arixv_decode_bench --iters=10`
+on all 1080 files, interleaved): first version −1.65% (11 rounds, every
+round slower). Hardware counters showed L1 instruction-cache misses
+1.3M → 2.5M per run, from leaf creation and prior copies inlined into
+every tree-coding site. Moving leaf creation out of line
+(`ARIXV_NOINLINE` `MakeGroup` / `MakeLeaf`) restores the miss count and
+halves the extra instructions. Landed version: median 76.50 → 75.30 MiB/s,
+median paired −1.26% (11 rounds, −0.24% to −2.59%). The remainder is
+lower IPC, not instructions or cache misses. The profile shows
+`OpcodeTree::CodeValue` at 9.0 → 10.1% of cycles and LTO inlining moving
+between `Tracker::Ensure` and `OnInstructionEnd`, so part of it is likely
+code layout.
+
+Not done: Capability (300 enumerants) overflows the 8-bit enum index and
+always escapes, but the corpus has only 1,750 `OpCapability` operands
+(worth ≤ 0.2%).
+
+Checks: `make test` (including the new prior-table tests), `make asan`,
+3000-iteration fuzz, valgrind memcheck with full leak checking (corpus
+decodes, `arixv_test`, 180 mutated/truncated/overwritten blobs),
+scalar/SIMD cross-check on 108 files, all 1080 corpus files round-trip.

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "arena.h"
+#include "platform.h"
 #include "range_coder.h"
 #include "symbol_coder.h"
 #include "tuning.h"
@@ -356,10 +357,26 @@ struct LazyLeafTree8 {
   SymbolCdf root;
   std::array<ArenaPtr<SymbolCdf>, 16> leaf;
 
-  template <typename Coder>
-  uint32_t CodeValue(Coder& coder, Arena& arena, uint32_t value) {
+  // Cold path (once per leaf), kept out of the coding loop.
+  template <typename LeafPrior>
+  ARIXV_NOINLINE static void MakeLeaf(Arena& arena, ArenaPtr<SymbolCdf>& slot,
+                                      uint32_t high,
+                                      const LeafPrior& init_leaf) {
+    slot.Make(arena);
+    init_leaf(high, *slot);
+  }
+
+  struct NoLeafPrior {
+    void operator()(uint32_t, SymbolCdf&) const {}
+  };
+
+  // init_leaf(high, leaf) seeds a leaf table when it is first created.
+  template <typename Coder, typename LeafPrior = NoLeafPrior>
+  uint32_t CodeValue(Coder& coder, Arena& arena, uint32_t value,
+                     const LeafPrior& init_leaf = LeafPrior{}) {
     if constexpr (Coder::kRawResidual) {
       (void)arena;
+      (void)init_leaf;
       return coder.CodeBitsDirect(value, kByteBits);
     } else {
 #ifdef ARIXV_TRACE_DECISIONS
@@ -372,7 +389,7 @@ struct LazyLeafTree8 {
           root, (value >> 4) & 15u);
       ArenaPtr<SymbolCdf>& low_table = leaf[high];
       if (!low_table) {
-        low_table.Make(arena);
+        MakeLeaf(arena, low_table, high, init_leaf);
       }
       const uint32_t low = coder.template CodeSymbol<16, kRateCap>(
           *low_table, value & 15u);

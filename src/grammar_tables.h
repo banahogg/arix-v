@@ -219,4 +219,31 @@ struct WellKnownKinds {
 };
 const WellKnownKinds& GetWellKnownKinds();
 
+// --- Cold-start priors (generated; see docs/development/ratio.md item 7) -----
+// Pool of SymbolCdf contents (16 uint16 offsets from the uniform CDF, warm-up
+// count 0); index 0 is the uniform table.
+const uint16_t* GetPriorCdf(uint16_t index);
+uint16_t NumPriorCdfs();
+// Relative weight of an instruction the logical layout allows in a section
+// against one it does not (1).
+constexpr uint32_t kOpcodePriorLegalWeight = 64;
+// Opcode-index tree prior for a section (Section value): 69 pool indices,
+// root, mid[0..3], then leaf[(top << 4) | mid].
+const uint16_t* GetOpcodeSectionPrior(uint8_t section);
+// The legality mask that prior was built from: 32 words, bit i = core
+// instruction index i (tests rebuild the prior from it).
+const uint32_t* GetOpcodeSectionLegal(uint8_t section);
+// Priors for an 8-bit index tree over [0, n): the root for n (n >= 256 is
+// uniform), and the leaf holding the last partial nibble group (n % 16 valid
+// entries; 0 means uniform).
+uint16_t GetIndexRootPrior(uint32_t n);
+uint16_t GetIndexLeafPrior(uint32_t partial);
+// Header priors (pool indices): the grammar's major version, and minor
+// versions 0..the grammar's minor.
+uint16_t GetVersionMajorPrior();
+uint16_t GetVersionMinorPrior();
+// Number of generator (tool) IDs registered in spir-v.xml; they are
+// contiguous from 0.
+uint32_t NumRegisteredGenerators();
+
 }  // namespace arixv
