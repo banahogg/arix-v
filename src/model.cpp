@@ -43,7 +43,10 @@ class WordBuffer {
  public:
   void clear() {
     size_ = 0;
-    spill_.clear();
+    if (inline_cap_ == 0) {
+      spill_.clear();
+      inline_cap_ = kInlineWords;
+    }
   }
 
   bool empty() const { return size_ == 0; }
@@ -52,65 +55,63 @@ class WordBuffer {
   uint32_t back() const { return data()[size_ - 1]; }
 
   const uint32_t* data() const {
-    return spill_.empty() ? inline_words_.data() : spill_.data();
+    return inline_cap_ != 0 ? inline_words_.data() : spill_.data();
   }
 
   uint32_t* data() {
-    return spill_.empty() ? inline_words_.data() : spill_.data();
+    return inline_cap_ != 0 ? inline_words_.data() : spill_.data();
   }
 
   uint32_t operator[](size_t index) const { return data()[index]; }
 
-  void push_back(uint32_t word) {
-    if (spill_.empty() && size_ < inline_words_.size()) {
+  ARIXV_FORCE_INLINE void push_back(uint32_t word) {
+    if (size_ < inline_cap_) {
       inline_words_[size_++] = word;
       return;
     }
-    if (spill_.empty()) {
-      spill_.assign(inline_words_.begin(), inline_words_.end());
-    }
-    spill_.push_back(word);
-    size_ = spill_.size();
+    PushBackSlow(word);
   }
 
   // Shrink-only: growing would expose unwritten words.
   void resize(size_t size) {
     assert(size <= size_);
-    if (!spill_.empty()) {
+    if (inline_cap_ == 0) {
       spill_.resize(size);
     }
     size_ = size;
   }
 
  private:
+  ARIXV_NOINLINE void PushBackSlow(uint32_t word) {
+    if (inline_cap_ != 0) {
+      spill_.assign(inline_words_.begin(), inline_words_.end());
+      inline_cap_ = 0;
+    }
+    spill_.push_back(word);
+    size_ = spill_.size();
+  }
+
   std::array<uint32_t, kInlineWords> inline_words_{};
   std::vector<uint32_t> spill_;
   size_t size_ = 0;
+  size_t inline_cap_ = kInlineWords;
 };
 
-// Keeps the decode-only direct-word path out of the operand switch while
-// retaining a compile-time split for encoding. The hot call operator is
-// explicitly inlined on the supported GCC/Clang toolchains.
+// Stages single-word operands directly without touching coded_words on either
+// encode or decode.
 template <class Bits>
 class SingleWordStager {
  public:
-  SingleWordStager(WordBuffer<kInlineOperandWords>& coded_words,
+  SingleWordStager(WordBuffer<kInlineOperandWords>& /*coded_words*/,
                    uint32_t& direct_word, bool& has_direct_word)
-      : coded_words_(coded_words),
-        direct_word_(direct_word),
-        has_direct_word_(has_direct_word) {}
+      : direct_word_(direct_word), has_direct_word_(has_direct_word) {}
 
   ARIXV_FORCE_INLINE void operator()(uint32_t word) {
-    if constexpr (!Bits::kEncoding) {
-      direct_word_ = word;
-      has_direct_word_ = true;
-    } else {
-      coded_words_.push_back(word);
-    }
+    direct_word_ = word;
+    has_direct_word_ = true;
   }
 
  private:
-  WordBuffer<kInlineOperandWords>& coded_words_;
   uint32_t& direct_word_;
   bool& has_direct_word_;
 };
@@ -553,6 +554,25 @@ struct StringModel {
   }
 };
 
+struct ValueEnumOrdinalTable {
+  std::vector<uint16_t> ordinal;
+  size_t count = 0;
+};
+
+const ValueEnumOrdinalTable& GetValueEnumOrdinals() {
+  static const ValueEnumOrdinalTable kTable = []() {
+    ValueEnumOrdinalTable t;
+    t.ordinal.resize(NumOperandKinds());
+    for (uint16_t k = 0; k < NumOperandKinds(); ++k) {
+      if (GetOperandKind(k).category == OperandCategory::kValueEnum) {
+        t.ordinal[k] = static_cast<uint16_t>(t.count++);
+      }
+    }
+    return t;
+  }();
+  return kTable;
+}
+
 struct ModelState {
   // Owns every lazily created context (ArenaPtr members below); declared
   // first so it is destroyed last.
@@ -565,25 +585,16 @@ struct ModelState {
         opcode_contexts(NumCoreInstructions() + 1),
         inst_contexts(NumCoreInstructions()),
         class_count_models(static_cast<size_t>(NumInstructionClasses()) + 1),
-        type_in_list(std::make_unique<std::vector<Prob>>(
-            static_cast<size_t>(NumInstructionClasses()) + 1)),
-        type_rank(std::make_unique<std::vector<BitTree<kRankTreeBits>>>(
-            static_cast<size_t>(NumInstructionClasses()) + 1)),
+        type_in_list(static_cast<size_t>(NumInstructionClasses()) + 1),
+        type_rank(static_cast<size_t>(NumInstructionClasses()) + 1),
         type_escape(static_cast<size_t>(NumInstructionClasses()) + 1),
-        value_enum_ordinal(NumOperandKinds()),
+        value_enums(GetValueEnumOrdinals().count * 16),
         bit_enums(NumOperandKinds()),
         integer_values(
             (static_cast<size_t>(NumInstructionClasses()) + 1) * 9),
         ext_inst_nums(NumExtInstSets()),
         strings(std::make_unique<StringModel>(
             static_cast<size_t>(NumInstructionClasses()) + 1)) {
-    size_t value_enum_kinds = 0;
-    for (uint16_t k = 0; k < NumOperandKinds(); ++k) {
-      if (GetOperandKind(k).category == OperandCategory::kValueEnum) {
-        value_enum_ordinal[k] = static_cast<uint16_t>(value_enum_kinds++);
-      }
-    }
-    value_enums.resize(value_enum_kinds * 16);
     id_slots.reserve(32);  // the corpus averages ~37 slots per module
     // Grammar cold-start priors for the header (see docs/development/ratio.md
     // item 7): versions the grammar defines, registered tool IDs, and the
@@ -676,8 +687,8 @@ struct ModelState {
   BitTree<kRankTreeBits> result_fwd_rank;
   std::array<UintModel, 4> result_delta;
 
-  std::unique_ptr<std::vector<Prob>> type_in_list;
-  std::unique_ptr<std::vector<BitTree<kRankTreeBits>>> type_rank;
+  std::vector<Prob> type_in_list;
+  std::vector<BitTree<kRankTreeBits>> type_rank;
   // Escape models allocate per slot on first escape: every module escapes
   // somewhere, but through only a handful of the 27/29 slots.
   std::vector<ArenaPtr<UintModel>> type_escape;
@@ -690,7 +701,6 @@ struct ModelState {
   // Value-enum contexts are indexed by (value-enum ordinal, slot): only 56 of
   // the 91 operand kinds are value enums, so indexing by raw kind wasted
   // ~40% of a pointer table zeroed every decode.
-  std::vector<uint16_t> value_enum_ordinal;  // per operand kind
   std::vector<ArenaPtr<ValueEnumModel>> value_enums;
   std::vector<std::unique_ptr<BitEnumModel>> bit_enums;
 
@@ -762,12 +772,14 @@ class EncodeIO {
 
 class DecodeIO {
  public:
-  DecodeIO(std::vector<uint8_t>& out, size_t expected_size) : out_(out) {
+  DecodeIO(std::vector<uint8_t>& out, size_t expected_size) {
     // The module header has already validated this size.  Allocate it once so
     // the hot path can write each decoded word directly instead of growing the
     // vector one byte at a time.
-    out_.resize(expected_size);
-    data_ = out_.data();
+    out.resize(expected_size);
+    data_ = out.data();
+    ptr_ = data_;
+    end_ = data_ + expected_size;
   }
 
   bool SwappedHint() const { return false; }
@@ -781,10 +793,10 @@ class DecodeIO {
   void EmitHeaderWord(uint32_t word) { Append(word); }
   ARIXV_FORCE_INLINE void EmitBodyWord(uint32_t word) { Append(word); }
 
-  bool Complete() const { return !overflowed_ && write_pos_ == out_.size(); }
+  bool Complete() const { return !overflowed_ && ptr_ == end_; }
 
   void PatchBound(uint32_t word) {
-    if (out_.size() < 16) {
+    if (static_cast<size_t>(end_ - data_) < 16) {
       return;
     }
     if (swapped_) {
@@ -796,7 +808,8 @@ class DecodeIO {
   // Overwrites a body word already emitted (a deferred Result Type).
   void PatchBodyWord(size_t index, uint32_t word) {
     const size_t at = (5 + index) * 4;
-    if (at > write_pos_ || write_pos_ - at < 4) {
+    const size_t written = static_cast<size_t>(ptr_ - data_);
+    if (at > written || written - at < 4) {
       return;  // never written (overflowed); the decode fails anyway
     }
     if (swapped_) {
@@ -807,20 +820,20 @@ class DecodeIO {
 
  private:
   ARIXV_FORCE_INLINE void Append(uint32_t word) {
-    if (write_pos_ > out_.size() || out_.size() - write_pos_ < 4) {
+    if (static_cast<size_t>(end_ - ptr_) < 4) {
       overflowed_ = true;
       return;
     }
     if (swapped_) {
       word = ByteSwap32(word);
     }
-    StoreLe32(word, data_ + write_pos_);
-    write_pos_ += 4;
+    StoreLe32(word, ptr_);
+    ptr_ += 4;
   }
 
-  std::vector<uint8_t>& out_;
   uint8_t* data_ = nullptr;
-  size_t write_pos_ = 0;
+  uint8_t* ptr_ = nullptr;
+  uint8_t* end_ = nullptr;
   bool overflowed_ = false;
   bool swapped_ = false;
 };
@@ -999,9 +1012,9 @@ uint32_t CodeGenerator(Bits& bits, ModelState& model, uint32_t hint) {
 }
 
 template <class Bits>
-uint32_t CodeGenericOperandWord(Bits& bits, ModelState& model,
-                                std::array<uint8_t, 4>& prev_bytes,
-                                uint32_t hint) {
+ARIXV_NOINLINE uint32_t CodeGenericOperandWord(Bits& bits, ModelState& model,
+                                               std::array<uint8_t, 4>& prev_bytes,
+                                               uint32_t hint) {
   if constexpr (Bits::kRawResidual) {
     (void)model;
     (void)prev_bytes;
@@ -1233,8 +1246,8 @@ template <class Bits>
 uint32_t CodeResultType(Bits& bits, ModelState& model,
                         const InstructionDesc* desc, uint32_t hint) {
   const size_t cls = ClassBucket(desc);
-  uint32_t id = CodeRankedId(bits, (*model.type_in_list)[cls],
-                             (*model.type_rank)[cls],
+  uint32_t id = CodeRankedId(bits, model.type_in_list[cls],
+                             model.type_rank[cls],
                              model.arena, model.type_escape[cls],
                              model.tracker.recent_types(), hint,
                              model.prev_result_id);
@@ -1254,9 +1267,9 @@ uint32_t CodeResultType(Bits& bits, ModelState& model,
 // candidates) falls back to ranked recent-types coding.
 constexpr int kMaxResultTypeCandidates = 7;
 
-// Non-template so the type-algebra candidate builder is compiled once instead
-// of once per coder template (keeps CodeModule within GCC's inlining budget).
-int BuildDeferredResultTypeCandidates(
+// Non-template and noinline so the type-algebra candidate builder is compiled
+// once instead of cloned across coders by LTO.
+ARIXV_NOINLINE int BuildDeferredResultTypeCandidates(
     const Tracker& tracker, const uint32_t* id_operands,
     const uint32_t* operand_types, int num_ids, int total_ids,
     const uint32_t* inst_words, uint32_t word_count,
@@ -1552,11 +1565,22 @@ uint32_t CodeDeferredResultType(Bits& bits, ModelState& model,
   uint32_t cand[kMaxResultTypeCandidates];
   uint32_t choice = kMaxResultTypeCandidates;
   if constexpr (Bits::kEncoding) {
-    if (num_ids > 0 && num_literal_ints == 0 && operand_types[0] != 0 &&
-        operand_types[0] == hint) {
-      cand[0] = hint;
-      choice = 0;
-    } else {
+    if (num_ids > 0 && num_literal_ints == 0 && operand_types[0] != 0) {
+      if (operand_types[0] == hint) {
+        cand[0] = hint;
+        choice = 0;
+      } else {
+        const Tracker::IdInfo* t0 = model.tracker.Find(operand_types[0]);
+        if (t0 != nullptr && t0->kind == Tracker::IdKind::kType &&
+            (total_ids == 1 ||
+             t0->type_class != Tracker::TypeClass::kPointer) &&
+            t0->element_type != 0 && t0->element_type == hint) {
+          cand[1] = hint;
+          choice = 1;
+        }
+      }
+    }
+    if (choice == static_cast<uint32_t>(kMaxResultTypeCandidates)) {
       const int count = BuildDeferredResultTypeCandidates(
           model.tracker, id_operands, operand_types, num_ids, total_ids,
           inst_words, word_count, first_literal_word, num_literal_ints, cand,
@@ -1578,12 +1602,23 @@ uint32_t CodeDeferredResultType(Bits& bits, ModelState& model,
       model.tracker.OnResultTypeUse(cand[choice]);
       return hint;
     } else {
-      // Fast path: when there are no literal indices and operand 0 has a known
-      // Result Type, candidate 0 is always operand_types[0] (no hash lookup).
-      if (choice == 0 && num_ids > 0 && num_literal_ints == 0 &&
-          operand_types[0] != 0) {
-        model.tracker.OnResultTypeUse(operand_types[0]);
-        return operand_types[0];
+      // Fast paths for the two dominant candidates (arithmetic/value ops and
+      // element-type derivations like OpLoad), avoiding the full builder call.
+      if (num_ids > 0 && num_literal_ints == 0 && operand_types[0] != 0) {
+        if (choice == 0) {
+          model.tracker.OnResultTypeUse(operand_types[0]);
+          return operand_types[0];
+        }
+        if (choice == 1) {
+          const Tracker::IdInfo* t0 = model.tracker.Find(operand_types[0]);
+          if (t0 != nullptr && t0->kind == Tracker::IdKind::kType &&
+              (total_ids == 1 ||
+               t0->type_class != Tracker::TypeClass::kPointer) &&
+              t0->element_type != 0 && t0->element_type != operand_types[0]) {
+            model.tracker.OnResultTypeUse(t0->element_type);
+            return t0->element_type;
+          }
+        }
       }
       if (BuildDeferredResultTypeCandidates(
               model.tracker, id_operands, operand_types, num_ids, total_ids,
@@ -1834,7 +1869,7 @@ uint32_t CodeValueEnum(Bits& bits, ModelState& model,
   // field.kind is a value-enum kind here (the cursor yields kValueEnum only
   // for those), so its ordinal is valid.
   const size_t key =
-      static_cast<size_t>(model.value_enum_ordinal[field.kind]) * 16 +
+      static_cast<size_t>(GetValueEnumOrdinals().ordinal[field.kind]) * 16 +
       Slot16(field.slot);
   ValueEnumModel& ctx = EnsureIndexContext(model.arena, model.value_enums[key],
                                            kind.num_enumerants);
@@ -3202,8 +3237,8 @@ void RecordModelMemory(const ModelState& m) {
   add("opcode_index_trees ptrs", VecBytes(m.opcode_index_trees), true);
   add("opcode_contexts", VecBytes(m.opcode_contexts), true);
   add("inst_contexts ptrs", VecBytes(m.inst_contexts), true);
-  add("type_in_list", VecBytes(*m.type_in_list), true);
-  add("type_rank", VecBytes(*m.type_rank), true);
+  add("type_in_list", VecBytes(m.type_in_list), true);
+  add("type_rank", VecBytes(m.type_rank), true);
   add("type_escape ptrs", VecBytes(m.type_escape), true);
   add("value_enums ptrs", VecBytes(m.value_enums), true);
   add("bit_enums ptrs", VecBytes(m.bit_enums), true);

@@ -109,10 +109,17 @@ class BitEncoder {
     if (g_stat_cat >= 0) {
       ++g_stat_adaptive[g_stat_cat][g_stat_site];
     }
-    uint16_t c[17];
-    (void)SymbolCdfLookup<kN>(t, kSymbolScale, c);
-    const uint32_t lo = c[s];
-    const uint32_t f = static_cast<uint32_t>(c[s + 1]) - lo;
+    using K = SymbolCdfConst<kN>;
+    const uint32_t lo =
+        s == 0 ? 0u : static_cast<uint16_t>(t.d[s] + K::kUniform[s]);
+    uint32_t hi;
+    if constexpr (kN < 16) {
+      hi = static_cast<uint16_t>(t.d[s + 1] + K::kUniform[s + 1]);
+    } else {
+      hi = s + 1 < 16 ? static_cast<uint16_t>(t.d[s + 1] + K::kUniform[s + 1])
+                      : kSymbolScale;
+    }
+    const uint32_t f = hi - lo;
     if (cost_sink_ != nullptr) {
       *cost_sink_ -= std::log2(static_cast<double>(f) / kSymbolScale);
     }
