@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "arena.h"
+#include "platform.h"
 #include "range_coder.h"
 #include "symbol_coder.h"
 #include "tuning.h"
@@ -227,8 +228,8 @@ struct BitTree {
   static constexpr int Chunk() { return kPrefix == 0 ? kFirstChunk : 4; }
 
   template <int kPrefix, typename Coder>
-  uint32_t CodeFrom(Coder& coder, uint32_t value, uint32_t prefix_value,
-                    uint32_t base) {
+  ARIXV_FORCE_INLINE uint32_t CodeFrom(Coder& coder, uint32_t value,
+                                       uint32_t prefix_value, uint32_t base) {
     constexpr int kChunk = Chunk<kPrefix>();
     constexpr int kShift = kBits - kPrefix - kChunk;
     const uint32_t want =
@@ -264,8 +265,84 @@ struct UintLongRows {
   std::array<Prob, kUintRestBits> rest{};
 };
 
+// Compile-time equivalent of SymbolCdfSetPrior (zero runtime construction).
+template <int kN>
+constexpr SymbolCdf MakeSymbolCdfPrior(std::array<uint32_t, kN> w,
+                                       uint16_t count = 0) {
+  using K = SymbolCdfConst<kN>;
+  SymbolCdf t{};
+  uint64_t total = 0;
+  for (int i = 0; i < kN; ++i) {
+    total += w[i];
+  }
+  if (total == 0) {
+    t.d[0] = count;
+    return t;
+  }
+  uint32_t freq[kN]{};
+  const uint32_t spread = kSymbolScale - kN;
+  uint32_t sum = 0;
+  int largest = 0;
+  for (int i = 0; i < kN; ++i) {
+    freq[i] = 1 + static_cast<uint32_t>(
+                      static_cast<uint64_t>(w[i]) * spread / total);
+    sum += freq[i];
+    if (freq[i] > freq[largest]) {
+      largest = i;
+    }
+  }
+  freq[largest] += kSymbolScale - sum;
+  uint32_t c = 0;
+  for (int i = 1; i < 16; ++i) {
+    if (i <= kN) {
+      c += freq[i - 1];
+    }
+    const uint32_t cdf = i < kN ? c : K::kUniform[i];
+    t.d[i] = static_cast<uint16_t>(cdf - K::kUniform[i]);
+  }
+  t.d[0] = count;
+  return t;
+}
+
+// Pure-math cold-start prior for a 6-bit uint length tree over valid bit
+// widths [min_width, max_width] (0..32 for a general uint32_t).
+constexpr BitTree<6> MakeUintLengthTreePrior(uint32_t min_width,
+                                             uint32_t max_width) {
+  BitTree<6> tree{};
+  std::array<uint32_t, 4> top_w{};
+  for (uint32_t top = 0; top < 4; ++top) {
+    std::array<uint32_t, 16> leaf_w{};
+    uint32_t valid = 0;
+    for (uint32_t lo = 0; lo < 16; ++lo) {
+      const uint32_t width = (top << 4) | lo;
+      if (width >= min_width && width <= max_width) {
+        leaf_w[lo] = 1;
+        ++valid;
+      }
+    }
+    top_w[top] = valid;
+    if (valid > 0 && valid < 16) {
+      tree.tables[1 + top] = MakeSymbolCdfPrior<16>(leaf_w);
+    }
+  }
+  tree.tables[0] = MakeSymbolCdfPrior<4>(top_w);
+  return tree;
+}
+
+inline constexpr SymbolCdf kUint32LengthRootPrior =
+    MakeSymbolCdfPrior<4>({16, 16, 1, 0});
+inline constexpr SymbolCdf kUint32LengthLeaf32Prior =
+    MakeSymbolCdfPrior<16>({1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+
 struct UintModel {
-  BitTree<kUintLengthBits> length;
+  UintModel() {
+    if constexpr (kUintLengthBits == 6) {
+      length.tables[0] = kUint32LengthRootPrior;
+      length.tables[3] = kUint32LengthLeaf32Prior;
+    }
+  }
+
+  BitTree<kUintLengthBits> length{};
   std::array<Prob, kUintShortProbs> short_rows{};
   ArenaPtr<UintLongRows> long_rows;
 
@@ -356,10 +433,26 @@ struct LazyLeafTree8 {
   SymbolCdf root;
   std::array<ArenaPtr<SymbolCdf>, 16> leaf;
 
-  template <typename Coder>
-  uint32_t CodeValue(Coder& coder, Arena& arena, uint32_t value) {
+  // Cold path (once per leaf), kept out of the coding loop.
+  template <typename LeafPrior>
+  ARIXV_NOINLINE static void MakeLeaf(Arena& arena, ArenaPtr<SymbolCdf>& slot,
+                                      uint32_t high,
+                                      const LeafPrior& init_leaf) {
+    slot.Make(arena);
+    init_leaf(high, *slot);
+  }
+
+  struct NoLeafPrior {
+    void operator()(uint32_t, SymbolCdf&) const {}
+  };
+
+  // init_leaf(high, leaf) seeds a leaf table when it is first created.
+  template <typename Coder, typename LeafPrior = NoLeafPrior>
+  uint32_t CodeValue(Coder& coder, Arena& arena, uint32_t value,
+                     const LeafPrior& init_leaf = LeafPrior{}) {
     if constexpr (Coder::kRawResidual) {
       (void)arena;
+      (void)init_leaf;
       return coder.CodeBitsDirect(value, kByteBits);
     } else {
 #ifdef ARIXV_TRACE_DECISIONS
@@ -372,7 +465,7 @@ struct LazyLeafTree8 {
           root, (value >> 4) & 15u);
       ArenaPtr<SymbolCdf>& low_table = leaf[high];
       if (!low_table) {
-        low_table.Make(arena);
+        MakeLeaf(arena, low_table, high, init_leaf);
       }
       const uint32_t low = coder.template CodeSymbol<16, kRateCap>(
           *low_table, value & 15u);

@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -326,6 +328,16 @@ def is_fixed_one_word(kind: OperandKind) -> bool:
     return False
 
 
+def is_self_delimiting_kind(kind: OperandKind, has_constant_number: bool) -> bool:
+    if kind.category in ONE_WORD_CATEGORIES and kind.category != "kLiteralExtInstInteger":
+        return True
+    if kind.category in {"kLiteralString", "kValueEnum", "kBitEnum"}:
+        return True
+    if kind.category == "kLiteralContextDependentNumber":
+        return has_constant_number
+    return False
+
+
 def is_type_class_name(class_name: str) -> bool:
     return class_name in {"Type-Declaration", "Type-Declaring"}
 
@@ -492,6 +504,30 @@ def build_instruction(
     )
     check_result_slots_lead(name, operands, kinds, has_result, has_result_type)
     flags = flags_for(name, class_name)
+    has_constant_number = "kInstConstantNumber" in flags
+    if not fixed_word_count and all(
+        slot.quantifier == "kOne"
+        and is_self_delimiting_kind(kinds[slot.kind], has_constant_number)
+        for slot in operands
+    ):
+        flags.append("kInstGrammarImpliedWordCount")
+    elif (
+        not fixed_word_count
+        and len(operands) >= 1
+        and operands[-1].quantifier == "kOptional"
+    ):
+        first_opt = next(
+            i for i, slot in enumerate(operands) if slot.quantifier == "kOptional"
+        )
+        if all(
+            slot.quantifier == "kOne" and is_fixed_one_word(kinds[slot.kind])
+            for slot in operands[:first_opt]
+        ) and all(
+            slot.quantifier == "kOptional"
+            and is_self_delimiting_kind(kinds[slot.kind], has_constant_number)
+            for slot in operands[first_opt:]
+        ):
+            flags.append("kInstOptionalTail")
     return Instruction(
         name=name,
         opcode=int(raw["opcode"]),
@@ -574,6 +610,55 @@ def enum_constant_name(class_name: str) -> str:
     return "kInstructionClass" + "".join(
         part[:1].upper() + part[1:] for part in cpp_ident(class_name).split("_") if part
     )
+
+
+# --- Cold-start priors (ratio backlog item 7) -------------------------------
+# A prior is a SymbolCdf (symbol_coder.h) proportional to integer weights.
+# prior_cdf mirrors SymbolCdfSetPrior exactly; tests/arixv_test.cpp rebuilds
+# every emitted table with the C++ function and compares.
+SYMBOL_SCALE = 1 << 15
+OPCODE_PRIOR_LEGAL_WEIGHT = 64  # must equal kOpcodePriorLegalWeight
+STRING_ORDER0_FLOOR_WEIGHT = 4  # must equal kStringOrder0FloorWeight
+
+# Instructions the logical-layout rules allow in any section.
+ANYWHERE_OPS = {"OpNop", "OpLine", "OpNoLine", "OpExtInst",
+                "OpExtInstWithForwardRefsKHR"}
+
+
+def prior_cdf(n: int, w: list[int]) -> tuple[int, ...]:
+    def uniform(i: int) -> int:
+        return i * (SYMBOL_SCALE // n) if i <= n else SYMBOL_SCALE + (i - n)
+    total = sum(w)
+    if total == 0:
+        return (0,) * 16
+    spread = SYMBOL_SCALE - n
+    freq = [1 + (x * spread) // total for x in w]
+    largest = 0
+    for i in range(n):
+        if freq[i] > freq[largest]:
+            largest = i
+    freq[largest] += SYMBOL_SCALE - sum(freq)
+    d = [0] * 16
+    c = 0
+    for i in range(1, 16):
+        if i <= n:
+            c += freq[i - 1]
+        cdf = c if i < n else uniform(i)
+        d[i] = (cdf - uniform(i)) & 0xFFFF
+    return tuple(d)
+
+
+def opcode_legal_in_section(inst: "Instruction", section: int) -> bool:
+    """Whether the module's logical layout allows inst while the tracker is in
+    `section` (sections only advance). Soft: illegal opcodes stay codable."""
+    if inst.name in ANYWHERE_OPS:
+        return True
+    advancing = inst.section != 0 or inst.name == "OpCapability"
+    decls = SECTION_VALUES["FunctionDecls"]
+    if section < decls:
+        return advancing and inst.section >= section
+    return (not advancing or inst.section >= decls
+            or inst.name in {"OpVariable", "OpUndef"})
 
 
 def main() -> None:
@@ -937,6 +1022,233 @@ def main() -> None:
     lines.append("    }")
     lines.append("  }")
     lines.append("  return nullptr;")
+    lines.append("}")
+    lines.append("")
+    # String-model knowledge: names the grammar itself spells out.
+    def collect_extensions(node: object, out: set[str]) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "extensions" and isinstance(value, list):
+                    out.update(str(v) for v in value)
+                else:
+                    collect_extensions(value, out)
+        elif isinstance(node, list):
+            for value in node:
+                collect_extensions(value, out)
+
+    extension_names: set[str] = set()
+    collect_extensions(core, extension_names)
+    grammar_strings = sorted(extension_names | {s.name for s in ext_sets})
+    # Every enumerant name of every core operand kind, in grammar order, first
+    # occurrence only: a rule with no selection among kinds.
+    enumerant_names: list[str] = []
+    seen_enumerants: set[str] = set()
+    for kind in core["operand_kinds"]:
+        for e in kind.get("enumerants", []):
+            name = str(e["enumerant"])
+            if name not in seen_enumerants:
+                seen_enumerants.add(name)
+                enumerant_names.append(name)
+    for name in grammar_strings + enumerant_names:
+        if not re.fullmatch(r"[A-Za-z0-9_.]+", name):
+            raise SystemExit(f"unexpected characters in grammar string {name!r}")
+    checked_uint("grammar string count", len(grammar_strings), 65535)
+    lines.append("// Every extension name the core grammar lists plus every generated")
+    lines.append("// extended-instruction-set name, sorted: whole-string dictionary for")
+    lines.append("// OpExtension / OpExtInstImport-style literals.")
+    lines.append("constexpr const char* kGrammarStrings[] = {")
+    for name in grammar_strings:
+        lines.append(f'    "{name}",')
+    lines.append("};")
+    lines.append("")
+    lines.append("// String match-model primer: every core enumerant name (grammar order,")
+    lines.append("// first occurrence), then the dictionary above, each NUL-terminated.")
+    lines.append("constexpr char kStringPrimer[] =")
+    for name in enumerant_names + grammar_strings:
+        lines.append(f'    "{name}\\0"')
+    lines.append("    ;")
+    lines.append("")
+    # The primed order-2 match table, so decoders need no runtime (or
+    # process-wide) initialization. Must match StringMatchHash in model.cpp
+    # (tests/arixv_test.cpp rebuilds it from the primer and compares).
+    match_bits = 10
+    primer = b"".join(n.encode() + b"\0" for n in enumerant_names + grammar_strings)
+    table = [0] * (1 << match_bits)
+    for v in range(2, len(primer)):
+        key = (primer[v - 2] << 8) | primer[v - 1]
+        table[((key * 0x9E3779B1) & 0xFFFFFFFF) >> (32 - match_bits)] = v
+    lines.append(f"constexpr int kStringMatchTableBits = {match_bits};")
+    lines.append("// Per order-2 context hash: primer position of the byte that last")
+    lines.append("// followed that context, 0 = none.")
+    lines.append("constexpr uint32_t kPrimedStringMatch[] = {")
+    for i in range(0, len(table), 12):
+        lines.append("    " + ", ".join(str(x) for x in table[i:i + 12]) + ",")
+    lines.append("};")
+    lines.append("")
+    lines.append("const uint32_t* GetPrimedStringMatchTable(int* bits) {")
+    lines.append("  *bits = kStringMatchTableBits;")
+    lines.append("  return kPrimedStringMatch;")
+    lines.append("}")
+    lines.append("")
+    lines.append("uint16_t NumGrammarStrings() {")
+    lines.append("  return static_cast<uint16_t>(ArraySize(kGrammarStrings));")
+    lines.append("}")
+    lines.append("")
+    lines.append("const char* GetGrammarString(uint16_t index) {")
+    lines.append("  return kGrammarStrings[index];")
+    lines.append("}")
+    lines.append("")
+    lines.append("std::string_view GetStringPrimer() {")
+    lines.append("  // The literal's own terminating NUL is not part of the primer.")
+    lines.append("  return std::string_view(kStringPrimer, sizeof(kStringPrimer) - 1);")
+    lines.append("}")
+    lines.append("")
+    # Cold-start priors: a deduplicated pool of SymbolCdf tables, the
+    # per-section opcode-index tree priors, and uniform-over-[0, n) priors for
+    # 8-bit index trees (enum and extended-instruction indices).
+    pool: list[tuple[int, ...]] = [(0,) * 16]
+    pool_index = {pool[0]: 0}
+
+    def intern(cdf: tuple[int, ...]) -> int:
+        if cdf not in pool_index:
+            pool_index[cdf] = len(pool)
+            pool.append(cdf)
+        return pool_index[cdf]
+
+    num_sections = len(SECTION_VALUES)
+    if len(core_instructions) > 1024:
+        raise SystemExit("opcode prior assumes at most 1024 core instructions")
+    legal_masks: list[list[int]] = []
+    section_priors: list[list[int]] = []
+    for section in range(num_sections):
+        weight = [0] * 1024
+        mask = [0] * 32
+        for i, inst in enumerate(core_instructions):
+            if opcode_legal_in_section(inst, section):
+                weight[i] = OPCODE_PRIOR_LEGAL_WEIGHT
+                mask[i >> 5] |= 1 << (i & 31)
+            else:
+                weight[i] = 1
+        root = intern(prior_cdf(4, [sum(weight[t << 8:(t + 1) << 8]) for t in range(4)]))
+        mids = []
+        leaves = []
+        for top in range(4):
+            mids.append(intern(prior_cdf(16, [
+                sum(weight[(top << 8) | (m << 4):((top << 8) | (m << 4)) + 16])
+                for m in range(16)])))
+        for leaf in range(64):
+            leaves.append(intern(prior_cdf(16, weight[leaf << 4:(leaf + 1) << 4])))
+        section_priors.append([root] + mids + leaves)
+        legal_masks.append(mask)
+    index_root = [intern(prior_cdf(16, [max(0, min(16, n - 16 * h)) for h in range(16)]))
+                  for n in range(257)]
+    index_leaf = [intern(prior_cdf(16, [1 if l < r else 0 for l in range(16)])) if r else 0
+                  for r in range(16)]
+    primer_counts = [0] * 256
+    for b in primer:
+        primer_counts[b] += 1
+    string_weights = [c + STRING_ORDER0_FLOOR_WEIGHT for c in primer_counts]
+    string_order0_root = intern(prior_cdf(16, [
+        sum(string_weights[h * 16:(h + 1) * 16]) for h in range(16)]))
+    string_order0_leaf = [
+        intern(prior_cdf(16, string_weights[h * 16:(h + 1) * 16]))
+        for h in range(16)]
+    # Header priors. Versions: major is the grammar's; minor is uniform over
+    # 0..the grammar's minor. Generator IDs: the registered tool IDs in
+    # spir-v.xml (one level above the grammar directory), which are
+    # contiguous from 0.
+    major = int(core["major_version"])
+    minor = int(core["minor_version"])
+    if major > 15 or minor > 15:
+        raise SystemExit("version prior assumes 4-bit major/minor")
+    version_major_prior = intern(prior_cdf(16, [1 if v == major else 0 for v in range(16)]))
+    version_minor_prior = intern(prior_cdf(16, [1 if v <= minor else 0 for v in range(16)]))
+    registry = ET.parse(GRAMMAR_DIR.parent / "spir-v.xml").getroot()
+    vendor_ids = sorted(
+        parse_int(e.get("value"))
+        for block in registry.iter("ids") if block.get("type") == "vendor"
+        for e in block.iter("id")
+    )
+    if vendor_ids != list(range(len(vendor_ids))) or len(vendor_ids) > 256:
+        raise SystemExit("expected registered generator IDs 0..n-1 with n <= 256")
+    checked_uint("prior pool size", len(pool), 65535)
+    lines.append("// Cold-start prior pool: SymbolCdf contents (offsets from uniform,")
+    lines.append("// warm-up count 0). Entry 0 is the uniform table.")
+    lines.append("constexpr uint16_t kPriorCdfs[][16] = {")
+    for cdf in pool:
+        lines.append("    {" + ", ".join(str(x) for x in cdf) + "},")
+    lines.append("};")
+    lines.append("")
+    lines.append(f"constexpr uint32_t kOpcodePriorLegalWeightGenerated = {OPCODE_PRIOR_LEGAL_WEIGHT};")
+    lines.append("static_assert(kOpcodePriorLegalWeightGenerated == kOpcodePriorLegalWeight,")
+    lines.append('              "rerun scripts/gen_grammar_tables.py");')
+    lines.append(f"constexpr uint32_t kStringOrder0FloorWeightGenerated = {STRING_ORDER0_FLOOR_WEIGHT};")
+    lines.append("static_assert(kStringOrder0FloorWeightGenerated == kStringOrder0FloorWeight,")
+    lines.append('              "rerun scripts/gen_grammar_tables.py");')
+    lines.append("// Per section: which core instruction indices the logical layout allows")
+    lines.append("// (bit i of word i / 32), and the opcode-index tree prior built from it")
+    lines.append("// (pool indices: root, mid[0..3], leaf[0..63]).")
+    lines.append(f"constexpr uint32_t kOpcodeSectionLegal[{num_sections}][32] = {{")
+    for mask in legal_masks:
+        lines.append("    {" + ", ".join(f"0x{x:08x}u" for x in mask) + "},")
+    lines.append("};")
+    lines.append(f"constexpr uint16_t kOpcodeSectionPrior[{num_sections}][69] = {{")
+    for row in section_priors:
+        lines.append("    {" + ", ".join(str(x) for x in row) + "},")
+    lines.append("};")
+    lines.append("// 8-bit index trees over [0, n): root prior by n (n >= 256: uniform),")
+    lines.append("// prior of the partial leaf holding n % 16 valid low nibbles.")
+    lines.append("constexpr uint16_t kIndexRootPrior[257] = {")
+    for i in range(0, 257, 16):
+        lines.append("    " + ", ".join(str(x) for x in index_root[i:i + 16]) + ",")
+    lines.append("};")
+    lines.append("constexpr uint16_t kIndexLeafPrior[16] = {")
+    lines.append("    " + ", ".join(str(x) for x in index_leaf) + ",")
+    lines.append("};")
+    lines.append("// String order-0 byte-tree prior from kStringPrimer byte counts plus")
+    lines.append("// kStringOrder0FloorWeight per byte: root and 16 high-nibble leaves.")
+    lines.append(f"constexpr uint16_t kStringOrder0RootPrior = {string_order0_root};")
+    lines.append("constexpr uint16_t kStringOrder0LeafPrior[16] = {")
+    lines.append("    " + ", ".join(str(x) for x in string_order0_leaf) + ",")
+    lines.append("};")
+    lines.append("")
+    lines.append(f"constexpr uint16_t kVersionMajorPrior = {version_major_prior};")
+    lines.append(f"constexpr uint16_t kVersionMinorPrior = {version_minor_prior};")
+    lines.append("// Tool IDs registered in spir-v.xml (contiguous from 0).")
+    lines.append(f"constexpr uint32_t kNumRegisteredGenerators = {len(vendor_ids)};")
+    lines.append("")
+    lines.append("uint16_t GetVersionMajorPrior() { return kVersionMajorPrior; }")
+    lines.append("")
+    lines.append("uint16_t GetVersionMinorPrior() { return kVersionMinorPrior; }")
+    lines.append("")
+    lines.append("uint32_t NumRegisteredGenerators() { return kNumRegisteredGenerators; }")
+    lines.append("")
+    lines.append("const uint16_t* GetPriorCdf(uint16_t index) { return kPriorCdfs[index]; }")
+    lines.append("")
+    lines.append("uint16_t NumPriorCdfs() {")
+    lines.append("  return static_cast<uint16_t>(ArraySize(kPriorCdfs));")
+    lines.append("}")
+    lines.append("")
+    lines.append("const uint16_t* GetOpcodeSectionPrior(uint8_t section) {")
+    lines.append("  return kOpcodeSectionPrior[section];")
+    lines.append("}")
+    lines.append("")
+    lines.append("const uint32_t* GetOpcodeSectionLegal(uint8_t section) {")
+    lines.append("  return kOpcodeSectionLegal[section];")
+    lines.append("}")
+    lines.append("")
+    lines.append("uint16_t GetIndexRootPrior(uint32_t n) {")
+    lines.append("  return kIndexRootPrior[n < 256 ? n : 256];")
+    lines.append("}")
+    lines.append("")
+    lines.append("uint16_t GetIndexLeafPrior(uint32_t partial) {")
+    lines.append("  return kIndexLeafPrior[partial & 15u];")
+    lines.append("}")
+    lines.append("")
+    lines.append("uint16_t GetStringOrder0RootPrior() { return kStringOrder0RootPrior; }")
+    lines.append("")
+    lines.append("uint16_t GetStringOrder0LeafPrior(uint32_t high) {")
+    lines.append("  return kStringOrder0LeafPrior[high & 15u];")
     lines.append("}")
     lines.append("")
     lines.append("const WellKnownKinds& GetWellKnownKinds() {")

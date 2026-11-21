@@ -17,7 +17,7 @@
 #define ARIXV_KPROB_INIT (ARIXV_KPROB_SCALE >> 1)
 #endif
 #ifndef ARIXV_KPROB_SHIFT
-#define ARIXV_KPROB_SHIFT 5
+#define ARIXV_KPROB_SHIFT 3
 #endif
 #ifndef ARIXV_KPROB_ADAPT_SATURATION
 #define ARIXV_KPROB_ADAPT_SATURATION 30
@@ -123,16 +123,15 @@ constexpr uint8_t kModeCoded = ARIXV_KMODE_CODED;
 // Container mode for the M2 SPIR-V structural model.
 constexpr uint8_t kModeSpirv = ARIXV_KMODE_SPIRV;
 
-// Maximum byte count encoded by the v1 uvarint size field.
+// Maximum byte count encoded by the compact uint32 size field.
 constexpr int kMaxSizeVarintBytes = ARIXV_KMAX_SIZE_VARINT_BYTES;
 
 // Maximum number of bytes emitted by RangeEncoder::Flush().
 constexpr int kRangeFlushBytes = ARIXV_KRANGE_FLUSH_BYTES;
 
-// Bytes the range decoder reads past the encoder's last byte. The flush pins
-// a code value whose low 16 bits are zero, so its last two bytes are left
-// out and whatever the decoder reads there (the start of the rANS words, or
-// virtual zeros past the payload end) cannot change a decision.
+// Minimum number of bytes the range decoder reads past the encoder's last byte
+// (the narrow-range 3-byte flush leaves 2 don't-care tail bytes; wide-range
+// flushes emit 2 bytes with 3 slack bytes, and empty streams emit 0 with 4).
 constexpr int kRangeTailSlack = 5 - kRangeFlushBytes;
 static_assert(kRangeTailSlack == 2, "flush/slack must cover a 4-byte window");
 
@@ -152,8 +151,39 @@ constexpr int kRankListCapTypes = ARIXV_KRANK_LIST_CAP_TYPES;
 // and grows with the per-table count up to the tree's cap (also the steady
 // rate used for shadow training). Byte trees (high-entropy string and
 // fallback bytes) adapt more slowly.
-constexpr int kSymbolRateCap = 5;
-constexpr int kByteSymbolRateCap = 7;
+#ifndef ARIXV_KSYMBOL_RATE_CAP
+#define ARIXV_KSYMBOL_RATE_CAP 5
+#endif
+#ifndef ARIXV_KBYTE_SYMBOL_RATE_CAP
+#define ARIXV_KBYTE_SYMBOL_RATE_CAP 7
+#endif
+constexpr int kSymbolRateCap = ARIXV_KSYMBOL_RATE_CAP;
+constexpr int kByteSymbolRateCap = ARIXV_KBYTE_SYMBOL_RATE_CAP;
+
+// Result-ID prediction: the smallest never-seen ID above the previous
+// result ID, scanning at most this many already-seen IDs (bounds decode work
+// on hostile input; falls back to previous + 1).
+#ifndef ARIXV_KRESULT_SCAN_CAP
+#define ARIXV_KRESULT_SCAN_CAP 64
+#endif
+constexpr int kResultScanCap = ARIXV_KRESULT_SCAN_CAP;
+
+// Grammar cold-start priors (docs/development/ratio.md item 7): initial
+// bit-0 probability (of kProbScale) for a validity flag — known opcode,
+// grammar enumerant, word count consistent with the grammar, canonical header
+// fields — so a fresh flag starts on the spec-valid side: 1/32. Insensitive
+// from 1/32 to 1/2048 on the corpus; the weakest of those is kept.
+#ifndef ARIXV_KVALID_FLAG_PRIOR
+#define ARIXV_KVALID_FLAG_PRIOR (ARIXV_KPROB_SCALE / 32)
+#endif
+constexpr uint16_t kValidFlagPrior = static_cast<uint16_t>(ARIXV_KVALID_FLAG_PRIOR);
+
+// String match model: log2 entries of the order-2 context hash table
+// (positions of the byte that last followed each context; 1024 entries is a
+// 4 KB table, within ~1 KB of an exact 64K-entry one on the corpus). The
+// primed table is generated (scripts/gen_grammar_tables.py, match_bits), so
+// this is not a build-time knob; arixv_test checks the two agree.
+constexpr int kStringMatchBits = 10;
 
 // Depth of the rank-coding bit trees for the ID/type/forward-ref recency
 // lists. Must cover every list position, so it tracks the largest cap.

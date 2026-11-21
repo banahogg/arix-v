@@ -7,9 +7,10 @@
 // rANS stream that sits beside the binary range-coder stream.
 //
 // Payload layout (no length field): the range coder's bytes run forward from
-// the start of the payload; the rANS words (little-endian uint16) run
-// backward from the end. A valid payload is tiled exactly by the two, and the
-// rANS state finishes at its initial value kRansL.
+// the start of the payload; the rANS stream runs backward from the end (3- or
+// 4-byte final state followed by little-endian uint16 renorm words). A valid
+// payload is tiled exactly by the two, and the rANS state finishes at the last
+// symbol's frequency (or 0 if no symbols were coded).
 
 #ifndef ARIXV_SYMBOL_CODER_H_
 #define ARIXV_SYMBOL_CODER_H_
@@ -32,7 +33,7 @@ namespace arixv {
 
 constexpr int kSymbolScaleBits = 15;
 constexpr uint32_t kSymbolScale = 1u << kSymbolScaleBits;
-constexpr uint32_t kRansL = 1u << 16;
+constexpr uint32_t kRansL = 1u << 15;
 
 // One adaptive CDF over N = 2..16 symbols in 32 bytes. Stored as offsets
 // from the uniform CDF so that a zeroed table *is* the uniform model (every
@@ -159,6 +160,40 @@ inline void SymbolCdfTrain(SymbolCdf& t, int s) {
   SymbolCdfAdapt<kN>(t, s, kRateCap, t.d[0]);
 }
 
+// Sets t to a prior proportional to w[0..kN) (cold-start priors derived from
+// the grammar). Every symbol keeps frequency >= 1, so a zero weight means
+// "unlikely", never "impossible". The warm-up count starts at `count`, so
+// early adaptation is as fast as from the uniform start.
+template <int kN>
+inline void SymbolCdfSetPrior(SymbolCdf& t, const uint32_t* w,
+                              uint16_t count = 0) {
+  using K = SymbolCdfConst<kN>;
+  uint64_t total = 0;
+  for (int i = 0; i < kN; ++i) total += w[i];
+  uint32_t freq[kN];
+  if (total == 0) {
+    t = SymbolCdf{};
+    t.d[0] = count;
+    return;
+  }
+  const uint32_t spread = kSymbolScale - kN;  // after the one-each floor
+  uint32_t sum = 0;
+  int largest = 0;
+  for (int i = 0; i < kN; ++i) {
+    freq[i] = 1 + static_cast<uint32_t>(w[i] * spread / total);
+    sum += freq[i];
+    if (freq[i] > freq[largest]) largest = i;
+  }
+  freq[largest] += kSymbolScale - sum;  // rounding slack: sum <= scale
+  uint32_t c = 0;
+  for (int i = 1; i < 16; ++i) {
+    if (i <= kN) c += freq[i - 1];
+    const uint32_t cdf = i < kN ? c : K::kUniform[i];
+    t.d[i] = static_cast<uint16_t>(cdf - K::kUniform[i]);
+  }
+  t.d[0] = count;
+}
+
 // Buffers symbols in coding order; Flush rANS-encodes them in reverse and
 // appends the words, so the decoder (reading backward from the end) sees
 // them in forward order.
@@ -170,8 +205,13 @@ class RansEncoder {
     if (syms_.empty()) {
       return;  // a stream with no symbols costs nothing
     }
-    uint32_t x = kRansL;
-    for (size_t i = syms_.size(); i-- > 0;) {
+    // Seed directly after the last symbol with x = kRansL + lo (equivalent to
+    // starting at x_0 = f instead of kRansL), saving the last symbol's entropy
+    // above kRansL. Deferred renormalization in RansDecoder leaves x_ == f
+    // after decoding that final symbol.
+    size_t i = syms_.size() - 1;
+    uint32_t x = kRansL + (syms_[i] & 0xffffu);
+    while (i-- > 0) {
       const uint32_t lo = syms_[i] & 0xffffu;
       const uint32_t f = syms_[i] >> 16;
       if (x >= ((kRansL >> kSymbolScaleBits) << 16) * f) {
@@ -180,8 +220,16 @@ class RansEncoder {
       }
       x = ((x / f) << kSymbolScaleBits) + (x % f) + lo;
     }
-    PutWord(out, x);
-    PutWord(out, x >> 16);
+    // Final state x is in [kRansL, 2^31); offset y = x - kRansL fits in 31 bits.
+    // Bit 7 of the last byte (first byte read backward by the decoder) selects
+    // 3 bytes (y < 2^23) vs 4 bytes (y >= 2^23).
+    const uint32_t y = x - kRansL;
+    out.push_back(static_cast<uint8_t>(y));
+    out.push_back(static_cast<uint8_t>(y >> 8));
+    out.push_back(static_cast<uint8_t>(y >> 16));
+    if (y >= (1u << 23)) {
+      out.push_back(static_cast<uint8_t>(0x80u | (y >> 24)));
+    }
     syms_.clear();
   }
 
@@ -200,10 +248,12 @@ class RansDecoder {
 
   template <int kN, int kRateCap>
   ARIXV_FORCE_INLINE int DecodeSymbol(SymbolCdf& t) {
-    if (!started_) {
-      started_ = true;
-      x_ = ReadWord() << 16;
-      x_ |= ReadWord();
+    if (x_ < kRansL) {
+      if (x_ == 0) {
+        InitState();
+      } else {
+        x_ = (x_ << 16) | ReadWord();
+      }
     }
     uint16_t c[17];
     const uint32_t slot = x_ & (kSymbolScale - 1u);
@@ -211,19 +261,48 @@ class RansDecoder {
     const uint32_t lo = c[s];
     const uint32_t f = static_cast<uint32_t>(c[s + 1]) - lo;
     x_ = f * (x_ >> kSymbolScaleBits) + slot - lo;
-    if (x_ < kRansL) {
-      x_ = (x_ << 16) | ReadWord();
-    }
+    last_f_ = f;
     SymbolCdfUpdate<kN, kRateCap>(t, s);
     return s;
   }
 
   bool exhausted() const { return exhausted_; }
   size_t consumed_size() const { return static_cast<size_t>(end_ - p_); }
-  // A stream that decoded symbols must end in the encoder's initial state.
-  bool FinishedCleanly() const { return !started_ || x_ == kRansL; }
+  // An unused stream has x_ == last_f_ == 0; a used stream must end at the
+  // final symbol's frequency (matching the encoder's x = kRansL + lo seed).
+  bool FinishedCleanly() const { return !exhausted_ && x_ == last_f_; }
 
  private:
+  ARIXV_NOINLINE void InitState() {
+    if (exhausted_ || p_ - begin_ < 3) {
+      exhausted_ = true;
+      return;
+    }
+    const uint8_t top = *--p_;
+    if ((top & 0x80u) == 0) {
+      p_ -= 2;
+      const uint32_t y = static_cast<uint32_t>(p_[0]) |
+                         (static_cast<uint32_t>(p_[1]) << 8) |
+                         (static_cast<uint32_t>(top) << 16);
+      x_ = y + kRansL;
+      return;
+    }
+    if (p_ - begin_ < 3) {
+      exhausted_ = true;
+      return;
+    }
+    p_ -= 3;
+    const uint32_t y = static_cast<uint32_t>(p_[0]) |
+                       (static_cast<uint32_t>(p_[1]) << 8) |
+                       (static_cast<uint32_t>(p_[2]) << 16) |
+                       (static_cast<uint32_t>(top & 0x7Fu) << 24);
+    if (y < (1u << 23) || y >= ((kRansL << 16) - kRansL)) {
+      exhausted_ = true;
+      return;
+    }
+    x_ = y + kRansL;
+  }
+
   uint32_t ReadWord() {
     if (p_ - begin_ < 2) {
       exhausted_ = true;
@@ -237,7 +316,7 @@ class RansDecoder {
   const uint8_t* end_;
   const uint8_t* p_;
   uint32_t x_ = 0;
-  bool started_ = false;
+  uint32_t last_f_ = 0;
   bool exhausted_ = false;
 };
 

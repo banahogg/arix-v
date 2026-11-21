@@ -1,7 +1,11 @@
 #include "grammar_tables.h"
 
+#include <cstring>
 #include <iostream>
 #include <string_view>
+
+#include "symbol_coder.h"
+#include "tracker.h"
 
 namespace {
 
@@ -20,9 +24,133 @@ const arixv::OperandKindDesc* FindKindByName(std::string_view name) {
   return nullptr;
 }
 
+// Generated cold-start priors must equal SymbolCdfSetPrior applied to the
+// weights they were built from (the generator mirrors it in Python).
+template <int kN>
+bool PriorMatches(uint16_t pool_index, const uint32_t* w) {
+  if (pool_index >= arixv::NumPriorCdfs()) {
+    return false;
+  }
+  arixv::SymbolCdf expected;
+  arixv::SymbolCdfSetPrior<kN>(expected, w);
+  return std::memcmp(expected.d, arixv::GetPriorCdf(pool_index),
+                     sizeof(expected.d)) == 0;
+}
+
+bool OpcodeLegal(uint8_t section, uint32_t index) {
+  return (arixv::GetOpcodeSectionLegal(section)[index >> 5] >> (index & 31)) & 1u;
+}
+
+int CheckPriors() {
+  const uint32_t n = arixv::NumCoreInstructions();
+  for (uint8_t s = 0; s < static_cast<uint8_t>(arixv::Section::kCount); ++s) {
+    uint32_t weight[1024];
+    for (uint32_t i = 0; i < 1024; ++i) {
+      weight[i] = i >= n ? 0
+                  : OpcodeLegal(s, i) ? arixv::kOpcodePriorLegalWeight
+                                      : 1;
+    }
+    const uint16_t* prior = arixv::GetOpcodeSectionPrior(s);
+    uint32_t w[16];
+    for (uint32_t top = 0; top < 4; ++top) {
+      w[top] = 0;
+      for (uint32_t i = 0; i < 256; ++i) w[top] += weight[(top << 8) | i];
+    }
+    if (!PriorMatches<4>(prior[0], w)) return Fail("opcode root prior mismatch");
+    for (uint32_t top = 0; top < 4; ++top) {
+      for (uint32_t m = 0; m < 16; ++m) {
+        w[m] = 0;
+        for (uint32_t l = 0; l < 16; ++l) w[m] += weight[(top << 8) | (m << 4) | l];
+      }
+      if (!PriorMatches<16>(prior[1 + top], w)) {
+        return Fail("opcode mid prior mismatch");
+      }
+    }
+    for (uint32_t leaf = 0; leaf < 64; ++leaf) {
+      if (!PriorMatches<16>(prior[5 + leaf], &weight[leaf << 4])) {
+        return Fail("opcode leaf prior mismatch");
+      }
+    }
+  }
+  // Spot-check the layout rules the masks encode.
+  const auto legal = [](uint32_t opcode, arixv::Section s) {
+    const int index = arixv::FindInstructionIndex(opcode);
+    return index >= 0 &&
+           OpcodeLegal(static_cast<uint8_t>(s), static_cast<uint32_t>(index));
+  };
+  using arixv::Section;
+  if (!legal(17, Section::kCapabilities) || legal(17, Section::kDebug) ||
+      !legal(71, Section::kAnnotations) || legal(71, Section::kFunctionBodies) ||
+      !legal(21, Section::kTypesConstantsVars) ||
+      legal(21, Section::kFunctionBodies) ||
+      !legal(59, Section::kFunctionBodies) ||
+      !legal(54, Section::kFunctionBodies) ||
+      !legal(128, Section::kFunctionBodies) ||
+      legal(128, Section::kTypesConstantsVars) ||
+      !legal(8, Section::kTypesConstantsVars) ||
+      !legal(12, Section::kEntryPoints)) {
+    return Fail("opcode section legality is wrong");
+  }
+  for (uint32_t count = 0; count <= 256; ++count) {
+    uint32_t w[16];
+    for (uint32_t h = 0; h < 16; ++h) {
+      const uint32_t first = h * 16;
+      w[h] = count > first ? (count - first < 16 ? count - first : 16) : 0;
+    }
+    if (!PriorMatches<16>(arixv::GetIndexRootPrior(count), w)) {
+      return Fail("index root prior mismatch");
+    }
+  }
+  if (arixv::GetIndexLeafPrior(0) != 0) return Fail("index leaf prior 0 not uniform");
+  for (uint32_t partial = 1; partial < 16; ++partial) {
+    uint32_t w[16];
+    for (uint32_t l = 0; l < 16; ++l) w[l] = l < partial ? 1 : 0;
+    if (!PriorMatches<16>(arixv::GetIndexLeafPrior(partial), w)) {
+      return Fail("index leaf prior mismatch");
+    }
+  }
+  if (arixv::NumRegisteredGenerators() < 8 || arixv::NumRegisteredGenerators() > 256) {
+    return Fail("generator registry size is implausible");
+  }
+  {
+    uint32_t weights[256];
+    for (uint32_t b = 0; b < 256; ++b) {
+      weights[b] = arixv::kStringOrder0FloorWeight;
+    }
+    for (char ch : arixv::GetStringPrimer()) {
+      ++weights[static_cast<uint8_t>(ch)];
+    }
+    uint32_t root_w[16];
+    for (uint32_t h = 0; h < 16; ++h) {
+      root_w[h] = 0;
+      for (uint32_t l = 0; l < 16; ++l) {
+        root_w[h] += weights[(h << 4) | l];
+      }
+    }
+    if (!PriorMatches<16>(arixv::GetStringOrder0RootPrior(), root_w)) {
+      return Fail("string order-0 root prior mismatch");
+    }
+    for (uint32_t h = 0; h < 16; ++h) {
+      if (!PriorMatches<16>(arixv::GetStringOrder0LeafPrior(h),
+                            &weights[h << 4])) {
+        return Fail("string order-0 leaf prior mismatch");
+      }
+    }
+    for (uint32_t h = 8; h < 16; ++h) {
+      if (arixv::GetStringOrder0LeafPrior(h) != 0) {
+        return Fail("absent high-nibble string order-0 leaf not uniform");
+      }
+    }
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
+  if (const int failed = CheckPriors()) {
+    return failed;
+  }
   const arixv::InstructionDesc* function_call =
       arixv::FindInstruction(57);
   if (function_call == nullptr) {
@@ -108,6 +236,43 @@ int main() {
   if (function == nullptr || function->result_bucket != 2 ||
       !arixv::HasInstructionFlag(function, arixv::kInstFunction)) {
     return Fail("OpFunction generated classification is wrong");
+  }
+
+  // Grammar-implied word-count and optional-tail flags must be mutually
+  // exclusive with each other and with fixed_word_count.
+  for (uint16_t i = 0; i < arixv::NumCoreInstructions(); ++i) {
+    const arixv::InstructionDesc& inst = arixv::GetCoreInstruction(i);
+    const bool gi =
+        arixv::HasInstructionFlag(&inst, arixv::kInstGrammarImpliedWordCount);
+    const bool ot = arixv::HasInstructionFlag(&inst, arixv::kInstOptionalTail);
+    if ((inst.fixed_word_count && (gi || ot)) || (gi && ot)) {
+      return Fail("word-count classification flags are not mutually exclusive");
+    }
+  }
+  const uint32_t expected_gi[] = {
+      2, 4, 5, 6, 7, 10, 11, 16, 43, 50, 71, 72, 88, 246, 330, 5610, 5632,
+  };
+  for (uint32_t op : expected_gi) {
+    const arixv::InstructionDesc* d = arixv::FindInstruction(op);
+    if (!d || !arixv::HasInstructionFlag(d, arixv::kInstGrammarImpliedWordCount)) {
+      return Fail("expected kInstGrammarImpliedWordCount flag missing");
+    }
+  }
+  const uint32_t expected_ot[] = {3, 22, 25, 59, 61, 62, 63, 64, 87, 95};
+  for (uint32_t op : expected_ot) {
+    const arixv::InstructionDesc* d = arixv::FindInstruction(op);
+    if (!d || !arixv::HasInstructionFlag(d, arixv::kInstOptionalTail)) {
+      return Fail("expected kInstOptionalTail flag missing");
+    }
+  }
+  const uint32_t expected_var[] = {12, 15, 52, 65, 245, 250, 251};
+  for (uint32_t op : expected_var) {
+    const arixv::InstructionDesc* d = arixv::FindInstruction(op);
+    if (!d || d->fixed_word_count ||
+        arixv::HasInstructionFlag(d, arixv::kInstGrammarImpliedWordCount) ||
+        arixv::HasInstructionFlag(d, arixv::kInstOptionalTail)) {
+      return Fail("variadic instruction unexpectedly classified as deferred/optional");
+    }
   }
 
   return 0;

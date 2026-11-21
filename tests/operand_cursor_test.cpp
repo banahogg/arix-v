@@ -189,6 +189,67 @@ void TestDegradesAndOpaque() {
   ExpectEnd(cursor);
 }
 
+void TestDeferredBudgetAndSetRemaining() {
+  // Deferred walk over OpDecorate with a large remaining budget stops at kEnd
+  // right after the enumerant parameter without degrading.
+  {
+    OperandCursor cursor;
+    cursor.Begin(FindInstruction(71), 1000, false);
+    assert(NextOperand(cursor).category == OperandCategory::kIdRef);
+    cursor.Consume(1, 5);
+    assert(NextOperand(cursor).category == OperandCategory::kValueEnum);
+    cursor.Consume(1, 30);  // Location -> 1 LiteralInteger param
+    OperandCursor::Field param = NextOperand(cursor);
+    assert(param.is_enum_param);
+    assert(param.category == OperandCategory::kLiteralInteger);
+    cursor.Consume(1, 2);
+    ExpectEnd(cursor);
+    assert(!cursor.degraded());
+  }
+
+  // Deferred OpExtInst resolving to a known non-fixed ext-inst (DebugPrintf)
+  // shrinks remaining mid-walk via SetRemaining.
+  {
+    const ExtInstSetDesc* dp = FindExtInstSet("NonSemantic.DebugPrintf");
+    assert(dp != nullptr);
+    OperandCursor cursor;
+    cursor.Begin(FindInstruction(12), 1000, false);
+    cursor.Consume(1, 1);  // result type
+    cursor.Consume(1, 2);  // result
+    cursor.Consume(1, 3);  // set
+    cursor.SetExtInstSet(dp);
+    assert(NextOperand(cursor).category ==
+           OperandCategory::kLiteralExtInstInteger);
+    // Total 7 words -> 6 operand words; 3 consumed so far -> 3 remaining
+    // (ext_num + 2 args).
+    cursor.SetRemaining(3);
+    cursor.Consume(1, 1);  // DebugPrintf
+    assert(NextOperand(cursor).category == OperandCategory::kIdRef);
+    cursor.Consume(1, 10);
+    assert(NextOperand(cursor).category == OperandCategory::kIdRef);
+    cursor.Consume(1, 11);
+    ExpectEnd(cursor);
+    assert(!cursor.degraded());
+  }
+
+  // Deferred OpExtInst resolving to an unknown set shrinks remaining mid-walk
+  // and emits the exact remaining count as kOpaqueWord.
+  {
+    OperandCursor cursor;
+    cursor.Begin(FindInstruction(12), 1000, false);
+    cursor.Consume(1, 1);
+    cursor.Consume(1, 2);
+    cursor.Consume(1, 3);
+    cursor.SetExtInstSet(nullptr);
+    cursor.SetRemaining(2);  // ext_num + 1 opaque operand
+    cursor.Consume(1, 77);
+    assert(cursor.degraded());
+    assert(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
+    cursor.Consume(1, 99);
+    ExpectEnd(cursor);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -199,5 +260,6 @@ int main() {
   TestExtInst();
   TestSpecConstantOp();
   TestDegradesAndOpaque();
+  TestDeferredBudgetAndSetRemaining();
   return 0;
 }

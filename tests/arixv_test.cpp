@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "arixv.h"
+#include "model.h"
 #include "arixv_decoder_compat.h"
 #include "tuning.h"
 
@@ -66,15 +67,14 @@ void BasicRoundTrips() {
 void GoldenSpirvEncoding() {
   // Minimal little-endian SPIR-V module: header only, version 1.3, bound 1.
   // This is an exact ARX2 format vector. Any byte-format change must use a
-  // new magic and update this vector for that format. The last four bytes
-  // are the rANS stream (version major/minor are symbol-coded).
+  // new magic and update this vector for that format. The tail is the rANS
+  // stream (version major/minor and the tool ID are symbol-coded).
   const std::vector<uint8_t> input = {
       0x03, 0x02, 0x23, 0x07, 0x00, 0x03, 0x01, 0x00, 0x00, 0x00,
       0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
   };
   const std::vector<uint8_t> expected = {
-      0x41, 0x52, 0x58, 0x32, 0x02, 0x14, 0x70, 0x00, 0xb4,
-      0x1e, 0x00, 0x0a, 0x0d, 0x00,
+      0x41, 0x52, 0x58, 0x32, 0x02, 0x00, 0x10, 0x6c, 0xe3, 0x3f, 0xa3,
   };
   arixv::EncodeOptions options;
   options.force_coded = true;
@@ -127,14 +127,11 @@ void GoldenSpirvModuleEncoding() {
     }
   }
   const std::vector<uint8_t> expected = {
-      0x41, 0x52, 0x58, 0x32, 0x02, 0x98, 0x02, 0x7b, 0xde, 0x2e, 0x9a, 0x17,
-      0x9c, 0xfb, 0xee, 0xae, 0x2e, 0xae, 0x90, 0x40, 0x05, 0x15, 0xec, 0x06,
-      0x5b, 0x4a, 0xca, 0xf0, 0xb0, 0x05, 0x07, 0x8b, 0x56, 0x03, 0x32, 0xc8,
-      0xd5, 0x16, 0xf0, 0x12, 0xc8, 0x16, 0x0e, 0x00, 0x69, 0xa8, 0x27, 0xd1,
-      0x93, 0x14, 0x73, 0x86, 0x9b, 0x0d, 0x1c, 0x08, 0x03, 0xaa, 0x5d, 0x86,
-      0x20, 0x08, 0x00, 0x38, 0x40, 0xf2, 0x81, 0x86, 0x01, 0x48, 0x73, 0x68,
-      0x0b, 0x23, 0xc1, 0x80, 0x16, 0x00, 0x08, 0x08, 0x5e, 0x83, 0x57, 0x0f,
-      0x00, 0x58,
+      0x41, 0x52, 0x58, 0x32, 0x02, 0x41, 0x13, 0x4d, 0x8c, 0x88, 0x20, 0x29,
+      0xe9, 0x42, 0x6f, 0x9b, 0x80, 0xd7, 0x84, 0x1e, 0xa1, 0x73, 0x03, 0x90,
+      0x7d, 0xf7, 0x84, 0xe7, 0x82, 0x3c, 0xb9, 0x98, 0xb6, 0x49, 0xf3, 0x7a,
+      0x19, 0x91, 0x03, 0x5e, 0xbd, 0xd8, 0xdc, 0xb9, 0x3b, 0x16, 0x8b, 0x9a,
+      0x43, 0x0a, 0x92, 0x11, 0x88, 0x2a, 0x1e, 0x6f,
   };
   arixv::EncodeOptions options;
   options.force_coded = true;
@@ -214,17 +211,119 @@ void StoredModeForIncompressible() {
   assert(encoded.size() <= input.size() + 10);
 }
 
+void CompactSizeEdgeCases() {
+  // Raw byte-size boundaries across 1-, 2-, and 3-byte compact encodings.
+  const std::vector<size_t> byte_sizes = {
+      0, 1, 127, 128, 191, 192, 255, 256, 15551, 15552, 16384, 81087, 81088,
+  };
+  for (size_t sz : byte_sizes) {
+    // Use high-entropy pattern so default Encode picks stored mode and we can
+    // also verify the exact compact size field length.
+    std::vector<uint8_t> input(sz);
+    std::mt19937 rng(static_cast<uint32_t>(0x13579BDFu + sz));
+    for (uint8_t& b : input) {
+      b = static_cast<uint8_t>(rng());
+    }
+    const std::vector<uint8_t> stored =
+        arixv::Encode(input.data(), input.size());
+    assert(ContainerMode(stored) == arixv::kModeStored);
+    const size_t expected_size_bytes =
+        sz < 192u ? 1 : (sz < 15552u ? 2 : (sz < 81088u ? 3 : 4));
+    assert(stored.size() ==
+           arixv::kContainerMagicBytes + 1 + expected_size_bytes + sz);
+    assert(stored.size() <= sz + 10);
+    std::vector<uint8_t> decoded;
+    assert(arixv::Decode(stored.data(), stored.size(), decoded) ==
+           arixv::Status::kOk);
+    assert(decoded == input);
+
+    // Also round-trip smaller/boundary sizes via force_coded (kModeCoded).
+    if (sz <= 16384) {
+      RoundTripBytes(input, true);
+    }
+  }
+
+  // SPIR-V body-word boundaries (0, 1, 191, 192, 15551, 15552 body words).
+  const std::vector<size_t> body_word_counts = {0, 1, 191, 192, 15551, 15552};
+  for (size_t body_words : body_word_counts) {
+    std::vector<uint8_t> spirv(20 + body_words * 4, 0);
+    // SPIR-V magic (LE), version 1.3, generator 0, bound 1, schema 0.
+    spirv[0] = 0x03;
+    spirv[1] = 0x02;
+    spirv[2] = 0x23;
+    spirv[3] = 0x07;
+    spirv[5] = 0x03;
+    spirv[6] = 0x01;
+    spirv[12] = 0x01;
+    // Fill body with OpNop (word_count=1, opcode=0 -> 0x00010000).
+    for (size_t w = 0; w < body_words; ++w) {
+      spirv[20 + w * 4 + 2] = 0x01;
+    }
+    arixv::EncodeOptions opts;
+    opts.force_coded = true;
+    const std::vector<uint8_t> encoded =
+        arixv::Encode(spirv.data(), spirv.size(), opts);
+    assert(ContainerMode(encoded) == arixv::kModeSpirv);
+    std::vector<uint8_t> decoded;
+    assert(arixv::Decode(encoded.data(), encoded.size(), decoded) ==
+           arixv::Status::kOk);
+    assert(decoded == spirv);
+  }
+}
+
 void HostileInputs() {
+  auto make_blob = [](std::initializer_list<uint8_t> tail) {
+    std::vector<uint8_t> v(arixv::kContainerMagic,
+                           arixv::kContainerMagic + arixv::kContainerMagicBytes);
+    v.insert(v.end(), tail.begin(), tail.end());
+    return v;
+  };
+
+  auto check_all_prefixes_fail = [](const std::vector<uint8_t>& valid) {
+    for (size_t prefix = 0; prefix < valid.size(); ++prefix) {
+      // Fresh copy of exact prefix length so ASan catches any OOB read.
+      std::vector<uint8_t> trunc(valid.begin(), valid.begin() + prefix);
+      std::vector<uint8_t> out;
+      const arixv::Status status =
+          arixv::Decode(trunc.data(), trunc.size(), out);
+      assert(status != arixv::Status::kOk);
+      assert(out.empty());
+    }
+  };
+
   const std::vector<uint8_t> input = {1, 2, 3, 4, 5, 6, 7, 8, 9};
   arixv::EncodeOptions opts;
   opts.force_coded = true;
   const std::vector<uint8_t> valid =
       arixv::Encode(input.data(), input.size(), opts);
-  for (size_t prefix = 0; prefix < valid.size(); ++prefix) {
+  check_all_prefixes_fail(valid);
+
+  // Exact 4-byte magic without mode byte must return kTruncated safely.
+  {
+    std::vector<uint8_t> just_magic = make_blob({});
     std::vector<uint8_t> out;
-    const arixv::Status status = arixv::Decode(valid.data(), prefix, out);
-    assert(status != arixv::Status::kOk);
+    assert(arixv::Decode(just_magic.data(), just_magic.size(), out) ==
+           arixv::Status::kTruncated);
+    assert(out.empty());
   }
+
+  // Every prefix of a SPIR-V blob (both header-only and full module).
+  {
+    const std::vector<uint8_t> hdr_only = {
+        0x03, 0x02, 0x23, 0x07, 0x00, 0x03, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    const std::vector<uint8_t> enc_hdr =
+        arixv::Encode(hdr_only.data(), hdr_only.size(), opts);
+    check_all_prefixes_fail(enc_hdr);
+    std::vector<uint8_t> padded_hdr = enc_hdr;
+    padded_hdr.push_back(0);
+    std::vector<uint8_t> out;
+    assert(arixv::Decode(padded_hdr.data(), padded_hdr.size(), out) ==
+           arixv::Status::kBadContainer);
+    assert(out.empty());
+  }
+
   std::vector<uint8_t> padded = valid;
   padded.push_back(0);
   std::vector<uint8_t> out;
@@ -239,24 +338,67 @@ void HostileInputs() {
 
   std::vector<uint8_t> stored =
       arixv::Encode(input.data(), input.size(), arixv::EncodeOptions{});
-  stored[arixv::kContainerMagicBytes] = arixv::kModeStored;
-  for (size_t prefix = 0; prefix < stored.size(); ++prefix) {
-    std::vector<uint8_t> out;
-    const arixv::Status status = arixv::Decode(stored.data(), prefix, out);
-    assert(status != arixv::Status::kOk);
+  assert(ContainerMode(stored) == arixv::kModeStored);
+  check_all_prefixes_fail(stored);
+
+  // Truncated multi-byte compact size headers.
+  for (const auto& trunc_hdr : {
+           make_blob({arixv::kModeStored}),
+           make_blob({arixv::kModeStored, 0xC0}),
+           make_blob({arixv::kModeStored, 0xFC, 0x00}),
+           make_blob({arixv::kModeStored, 0xFD, 0x00, 0x00}),
+           make_blob({arixv::kModeStored, 0xFE, 0x00, 0x00, 0x00}),
+       }) {
+    assert(arixv::Decode(trunc_hdr.data(), trunc_hdr.size(), out) ==
+           arixv::Status::kTruncated);
+    assert(out.empty());
   }
 
-  std::vector<uint8_t> huge(arixv::kContainerMagic,
-                            arixv::kContainerMagic + arixv::kContainerMagicBytes);
-  huge.insert(huge.end(), {arixv::kModeStored, 0x80, 0x80, 0x80, 0x80,
-                            0x80, 0x20});
-  const arixv::Status status = arixv::Decode(huge.data(), huge.size(), out);
-  assert(status == arixv::Status::kBadContainer ||
-         status == arixv::Status::kTooLarge);
+  // Invalid compact size tag 0xFF and non-canonical 0xFE (< 16,858,304).
+  for (const auto& bad_hdr : {
+           make_blob({arixv::kModeStored, 0xFF}),
+           make_blob({arixv::kModeSpirv, 0xFF}),
+           make_blob({arixv::kModeStored, 0xFE, 0x00, 0x00, 0x00, 0x00}),
+           make_blob({arixv::kModeStored, 0xFE, 0xBF, 0x3C, 0x01, 0x01}),
+       }) {
+    assert(arixv::Decode(bad_hdr.data(), bad_hdr.size(), out) ==
+           arixv::Status::kBadContainer);
+    assert(out.empty());
+  }
 
-  std::vector<uint8_t> unknown(arixv::kContainerMagic,
-                               arixv::kContainerMagic + arixv::kContainerMagicBytes);
-  unknown.insert(unknown.end(), {99, 0});
+  // Huge claimed sizes (OOM protection and SPIR-V uint32 overflow check).
+  {
+    // UINT32_MAX in stored mode -> kTooLarge.
+    const auto huge_stored =
+        make_blob({arixv::kModeStored, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF});
+    assert(arixv::Decode(huge_stored.data(), huge_stored.size(), out) ==
+           arixv::Status::kTooLarge);
+    assert(out.empty());
+
+    // UINT32_MAX in coded mode -> kTooLarge.
+    const auto huge_coded =
+        make_blob({arixv::kModeCoded, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF});
+    assert(arixv::Decode(huge_coded.data(), huge_coded.size(), out) ==
+           arixv::Status::kTooLarge);
+    assert(out.empty());
+
+    // body_words overflowing uint32_t bytes in SPIR-V mode -> kBadContainer.
+    // kMaxSpirvBodyWords = (0xFFFFFFFF - 20) / 4 = 0x3FFFFFFA; 0x3FFFFFFB overflows.
+    const auto overflow_spirv =
+        make_blob({arixv::kModeSpirv, 0xFE, 0xFB, 0xFF, 0xFF, 0x3F});
+    assert(arixv::Decode(overflow_spirv.data(), overflow_spirv.size(), out) ==
+           arixv::Status::kBadContainer);
+    assert(out.empty());
+
+    // Max valid body_words (0x3FFFFFFA -> ~4 GiB) exceeds default 1 GiB limit -> kTooLarge.
+    const auto max_spirv =
+        make_blob({arixv::kModeSpirv, 0xFE, 0xFA, 0xFF, 0xFF, 0x3F});
+    assert(arixv::Decode(max_spirv.data(), max_spirv.size(), out) ==
+           arixv::Status::kTooLarge);
+    assert(out.empty());
+  }
+
+  const auto unknown = make_blob({99, 0});
   assert(arixv::Decode(unknown.data(), unknown.size(), out) ==
          arixv::Status::kBadContainer);
 }
@@ -338,12 +480,14 @@ void DecoderCompatShim() {
 }  // namespace
 
 int main() {
+  assert(arixv::PrimedStringMatchTableIsConsistent());
   BasicRoundTrips();
   GoldenSpirvEncoding();
   GoldenSpirvModuleEncoding();
   RandomRoundTrips();
   CorpusRoundTrips();
   StoredModeForIncompressible();
+  CompactSizeEdgeCases();
   HostileInputs();
   DecoderCompatShim();
   return 0;

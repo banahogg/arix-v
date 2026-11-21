@@ -32,6 +32,14 @@ struct Prob {
   // stage 16 already uses kProbShift.
   uint16_t state = kProbInit;
 
+  // A fresh (warm-up count 0) probability whose bit-0 probability is
+  // value / kProbScale, for cold-start priors.
+  static Prob WithValue(uint16_t value) {
+    Prob p;
+    p.state = value & kValueMask;
+    return p;
+  }
+
   uint16_t raw() const { return state; }
   uint16_t value() const { return state & kValueMask; }
   static uint16_t ValueFromRaw(uint16_t raw) { return raw & kValueMask; }
@@ -69,6 +77,12 @@ struct Prob {
   // settling to the steady kProbShift rate. Deterministic and symmetric: both
   // sides see identical update sequences.
   uint16_t n = 0;
+
+  static Prob WithValue(uint16_t value) {
+    Prob p;
+    p.v = value;
+    return p;
+  }
 
   uint16_t raw() const { return v; }
   uint16_t value() const { return v; }
@@ -127,12 +141,27 @@ class RangeEncoder {
     Normalize();
   }
 
-  // Short flush: after the last Normalize, range >= 2^24, so [low,
-  // low + range) contains low rounded up to a multiple of 2^16 together with
-  // every value sharing its top 16 bits. Emitting only the pending cache and
-  // those two bytes (3 instead of LZMA's 5) is enough; the decoder's last
-  // kRangeTailSlack reads are don't-care.
+  // Adaptive minimal flush:
+  // - Empty stream (range_ == 0xFFFFFFFFu): no bits were coded, emit 0 bytes
+  //   (all 4 decoder lookahead bytes are don't-care).
+  // - Wide final range (range_ >= 0x01FFFFFFu = 2 * 2^24 - 1): rounding low_
+  //   up to a multiple of 2^24 guarantees every 24-bit suffix lies inside
+  //   [low_, low_ + range_), so only 2 flush bytes are needed (3 slack bytes).
+  // - Narrow final range (2^24 <= range_ < 0x01FFFFFFu): round low_ up to a
+  //   multiple of 2^16 and emit 3 flush bytes (2 slack bytes).
+  static constexpr uint32_t kRangeShortFlushMin = 0x01FFFFFFu;
+
   void Flush() {
+    if (range_ == 0xFFFFFFFFu) {
+      return;
+    }
+    if (range_ >= kRangeShortFlushMin) {
+      low_ = (low_ + 0xFFFFFFu) & ~static_cast<uint64_t>(0xFFFFFFu);
+      for (int i = 0; i < 2; ++i) {
+        ShiftLow();
+      }
+      return;
+    }
     low_ = (low_ + 0xFFFFu) & ~static_cast<uint64_t>(0xFFFFu);
     for (int i = 0; i < kRangeFlushBytes; ++i) {
       ShiftLow();
@@ -225,12 +254,23 @@ class RangeDecoder {
     return bit;
   }
 
-  bool exhausted() const { return exhausted_; }
+  static constexpr uint32_t kRangeShortFlushMin = 0x01FFFFFFu;
+  static constexpr size_t kMaxRangeTailSlack = 4;
+
+  // Tail slack depends solely on range_, which stays bit-identical between
+  // encoder and decoder: 4 for an empty stream (0 bits decoded), 3 when
+  // range_ >= 0x01FFFFFFu, and 2 otherwise.
+  size_t TailSlack() const {
+    return static_cast<size_t>(kRangeTailSlack) +
+           static_cast<size_t>(range_ >= kRangeShortFlushMin) +
+           static_cast<size_t>(range_ == 0xFFFFFFFFu);
+  }
+
+  bool exhausted() const { return exhausted_ || pos_ > size_ + TailSlack(); }
   // Bytes the encoder actually wrote (reads minus the don't-care tail).
   size_t consumed_size() const {
-    return pos_ >= static_cast<size_t>(kRangeTailSlack)
-               ? pos_ - static_cast<size_t>(kRangeTailSlack)
-               : 0;
+    const size_t slack = TailSlack();
+    return pos_ >= slack ? pos_ - slack : 0;
   }
   const uint8_t* data() const { return data_; }
   size_t size() const { return size_; }
@@ -269,13 +309,14 @@ class RangeDecoder {
     return bit;
   }
 
-  // Up to kRangeTailSlack reads past the end are virtual zeros (the flush's
-  // don't-care tail); anything further means the stream was cut short.
+  // Up to kMaxRangeTailSlack reads past the end are virtual zeros (the flush's
+  // don't-care tail); anything further means the stream was cut short. The
+  // tighter bound pos_ <= size_ + TailSlack() is enforced by exhausted().
   uint8_t Fetch(size_t& pos) {
     if (pos < size_) {
       return data_[pos++];
     }
-    if (pos < size_ + static_cast<size_t>(kRangeTailSlack)) {
+    if (pos < size_ + kMaxRangeTailSlack) {
       ++pos;
       return 0;
     }

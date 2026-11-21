@@ -73,6 +73,13 @@ enum InstructionFlags : uint16_t {
   kInstTypePointer = 1u << 11,
   kInstTypeFunction = 1u << 12,
   kInstConstantNumber = 1u << 13,
+  // !fixed_word_count, all slots required (kOne) and self-delimiting
+  // (LiteralString, ValueEnum/BitEnum, or kInstConstantNumber's
+  // LiteralContextDependentNumber).
+  kInstGrammarImpliedWordCount = 1u << 14,
+  // !fixed_word_count, fixed-one-word required prefix followed by one or more
+  // self-delimiting optional (?) tail slots (no *).
+  kInstOptionalTail = 1u << 15,
 };
 
 // One enumerant of a ValueEnum/BitEnum kind. Parameters are operand kinds
@@ -191,6 +198,18 @@ int FindExtInstSetIndex(const ExtInstSetDesc* set);  // -1 if not generated
 const InstructionDesc* FindExtInstruction(const ExtInstSetDesc& set,
                                           uint32_t ext_opcode);
 
+// --- Grammar strings ----------------------------------------------------
+
+// Sorted extension and extended-instruction-set names from the grammar.
+uint16_t NumGrammarStrings();
+const char* GetGrammarString(uint16_t index);
+// Every core enumerant name, then the grammar strings, each NUL-terminated:
+// the string model's initial match history.
+std::string_view GetStringPrimer();
+// The string match table after inserting the primer (generated constant
+// data, see StringMatchTable in model.cpp); *bits receives its log2 size.
+const uint32_t* GetPrimedStringMatchTable(int* bits);
+
 // --- Well-known values the tracker needs by name --------------------------
 
 // Kind indices for the handful of kinds the tracker special-cases; generated
@@ -206,5 +225,38 @@ struct WellKnownKinds {
   uint16_t literal_spec_constant_op_integer;
 };
 const WellKnownKinds& GetWellKnownKinds();
+
+// --- Cold-start priors (generated; see docs/development/ratio.md item 7) -----
+// Pool of SymbolCdf contents (16 uint16 offsets from the uniform CDF, warm-up
+// count 0); index 0 is the uniform table.
+const uint16_t* GetPriorCdf(uint16_t index);
+uint16_t NumPriorCdfs();
+// Relative weight of an instruction the logical layout allows in a section
+// against one it does not (1).
+constexpr uint32_t kOpcodePriorLegalWeight = 64;
+// Opcode-index tree prior for a section (Section value): 69 pool indices,
+// root, mid[0..3], then leaf[(top << 4) | mid].
+const uint16_t* GetOpcodeSectionPrior(uint8_t section);
+// The legality mask that prior was built from: 32 words, bit i = core
+// instruction index i (tests rebuild the prior from it).
+const uint32_t* GetOpcodeSectionLegal(uint8_t section);
+// Priors for an 8-bit index tree over [0, n): the root for n (n >= 256 is
+// uniform), and the leaf holding the last partial nibble group (n % 16 valid
+// entries; 0 means uniform).
+uint16_t GetIndexRootPrior(uint32_t n);
+uint16_t GetIndexLeafPrior(uint32_t partial);
+// String order-0 byte-tree priors (pool indices), built from GetStringPrimer()
+// byte counts plus kStringOrder0FloorWeight per byte so every byte stays
+// codable: 16-way high-nibble root and 16-way low-nibble leaf per high nibble.
+constexpr uint32_t kStringOrder0FloorWeight = 4;
+uint16_t GetStringOrder0RootPrior();
+uint16_t GetStringOrder0LeafPrior(uint32_t high);
+// Header priors (pool indices): the grammar's major version, and minor
+// versions 0..the grammar's minor.
+uint16_t GetVersionMajorPrior();
+uint16_t GetVersionMinorPrior();
+// Number of generator (tool) IDs registered in spir-v.xml; they are
+// contiguous from 0.
+uint32_t NumRegisteredGenerators();
 
 }  // namespace arixv

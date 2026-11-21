@@ -5341,33 +5341,33 @@ constexpr OperandSlotDesc kCoreOperandSlots[] = {
 constexpr InstructionDesc kCoreInstructions[] = {
   {"OpNop", 0, 0, 1, static_cast<uint16_t>(0), 0, false, false, 19, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpUndef", 1, 0, 3, static_cast<uint16_t>(0), 2, true, true, 19, 3, InstructionTypeClass::kOther, 8, true, 0},
-  {"OpSourceContinued", 2, 2, 2, static_cast<uint16_t>(0), 1, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
-  {"OpSource", 3, 3, 3, static_cast<uint16_t>(0), 4, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
-  {"OpSourceExtension", 4, 7, 2, static_cast<uint16_t>(0), 1, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
-  {"OpName", 5, 8, 3, static_cast<uint16_t>(0), 2, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
-  {"OpMemberName", 6, 10, 4, static_cast<uint16_t>(0), 3, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
-  {"OpString", 7, 13, 3, static_cast<uint16_t>(kInstString), 2, true, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
+  {"OpSourceContinued", 2, 2, 2, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 1, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
+  {"OpSource", 3, 3, 3, static_cast<uint16_t>(kInstOptionalTail), 4, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
+  {"OpSourceExtension", 4, 7, 2, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 1, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
+  {"OpName", 5, 8, 3, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 2, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
+  {"OpMemberName", 6, 10, 4, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 3, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
+  {"OpString", 7, 13, 3, static_cast<uint16_t>(kInstString | kInstGrammarImpliedWordCount), 2, true, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
   {"OpLine", 8, 15, 4, static_cast<uint16_t>(0), 3, false, false, 10, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpExtension", 10, 18, 2, static_cast<uint16_t>(0), 1, false, false, 13, 3, InstructionTypeClass::kOther, 1, false, 0},
-  {"OpExtInstImport", 11, 19, 3, static_cast<uint16_t>(kInstExtInstImport), 2, true, false, 13, 3, InstructionTypeClass::kOther, 2, false, 2},
+  {"OpExtension", 10, 18, 2, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 1, false, false, 13, 3, InstructionTypeClass::kOther, 1, false, 0},
+  {"OpExtInstImport", 11, 19, 3, static_cast<uint16_t>(kInstExtInstImport | kInstGrammarImpliedWordCount), 2, true, false, 13, 3, InstructionTypeClass::kOther, 2, false, 2},
   {"OpExtInst", 12, 21, 5, static_cast<uint16_t>(kInstExtInst), 5, true, true, 13, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpMemoryModel", 14, 26, 3, static_cast<uint16_t>(0), 2, false, false, 20, 3, InstructionTypeClass::kOther, 3, true, 0},
   {"OpEntryPoint", 15, 28, 4, static_cast<uint16_t>(0), 4, false, false, 20, 3, InstructionTypeClass::kOther, 4, false, 0},
-  {"OpExecutionMode", 16, 32, 3, static_cast<uint16_t>(0), 2, false, false, 20, 3, InstructionTypeClass::kOther, 5, false, 0},
+  {"OpExecutionMode", 16, 32, 3, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 2, false, false, 20, 3, InstructionTypeClass::kOther, 5, false, 0},
   {"OpCapability", 17, 34, 2, static_cast<uint16_t>(0), 1, false, false, 20, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTypeVoid", 19, 35, 2, static_cast<uint16_t>(kInstDeclaresType), 1, true, false, 27, 0, InstructionTypeClass::kVoid, 8, true, 0},
   {"OpTypeBool", 20, 36, 2, static_cast<uint16_t>(kInstDeclaresType), 1, true, false, 27, 0, InstructionTypeClass::kBool, 8, true, 0},
   {"OpTypeInt", 21, 37, 4, static_cast<uint16_t>(kInstDeclaresType | kInstTypeWidth), 3, true, false, 27, 0, InstructionTypeClass::kInt, 8, true, 2},
-  {"OpTypeFloat", 22, 40, 3, static_cast<uint16_t>(kInstDeclaresType | kInstTypeWidth), 3, true, false, 27, 0, InstructionTypeClass::kFloat, 8, false, 2},
+  {"OpTypeFloat", 22, 40, 3, static_cast<uint16_t>(kInstDeclaresType | kInstTypeWidth | kInstOptionalTail), 3, true, false, 27, 0, InstructionTypeClass::kFloat, 8, false, 2},
   {"OpTypeVector", 23, 43, 4, static_cast<uint16_t>(kInstDeclaresType | kInstTypeComponent), 3, true, false, 27, 0, InstructionTypeClass::kVector, 8, true, 2},
   {"OpTypeMatrix", 24, 46, 4, static_cast<uint16_t>(kInstDeclaresType | kInstTypeComponent), 3, true, false, 27, 0, InstructionTypeClass::kMatrix, 8, true, 2},
-  {"OpTypeImage", 25, 49, 9, static_cast<uint16_t>(kInstDeclaresType | kInstTypeComponent), 9, true, false, 27, 0, InstructionTypeClass::kImage, 8, false, 2},
+  {"OpTypeImage", 25, 49, 9, static_cast<uint16_t>(kInstDeclaresType | kInstTypeComponent | kInstOptionalTail), 9, true, false, 27, 0, InstructionTypeClass::kImage, 8, false, 2},
   {"OpTypeSampler", 26, 58, 2, static_cast<uint16_t>(kInstDeclaresType), 1, true, false, 27, 0, InstructionTypeClass::kSampler, 8, true, 0},
   {"OpTypeSampledImage", 27, 59, 3, static_cast<uint16_t>(kInstDeclaresType | kInstTypeComponent), 2, true, false, 27, 0, InstructionTypeClass::kSampledImage, 8, true, 2},
   {"OpTypeArray", 28, 61, 4, static_cast<uint16_t>(kInstDeclaresType | kInstTypeComponent), 3, true, false, 27, 0, InstructionTypeClass::kArray, 8, true, 2},
   {"OpTypeRuntimeArray", 29, 64, 3, static_cast<uint16_t>(kInstDeclaresType | kInstTypeComponent), 2, true, false, 27, 0, InstructionTypeClass::kRuntimeArray, 8, true, 2},
   {"OpTypeStruct", 30, 66, 2, static_cast<uint16_t>(kInstDeclaresType), 2, true, false, 27, 0, InstructionTypeClass::kStruct, 8, false, 0},
-  {"OpTypeOpaque", 31, 68, 3, static_cast<uint16_t>(kInstDeclaresType), 2, true, false, 27, 0, InstructionTypeClass::kOther, 8, false, 0},
+  {"OpTypeOpaque", 31, 68, 3, static_cast<uint16_t>(kInstDeclaresType | kInstGrammarImpliedWordCount), 2, true, false, 27, 0, InstructionTypeClass::kOther, 8, false, 0},
   {"OpTypePointer", 32, 70, 4, static_cast<uint16_t>(kInstDeclaresType | kInstTypePointer), 3, true, false, 27, 0, InstructionTypeClass::kPointer, 8, true, 3},
   {"OpTypeFunction", 33, 73, 3, static_cast<uint16_t>(kInstDeclaresType | kInstTypeFunction), 3, true, false, 27, 0, InstructionTypeClass::kFunction, 8, false, 2},
   {"OpTypeEvent", 34, 76, 2, static_cast<uint16_t>(kInstDeclaresType), 1, true, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
@@ -5378,33 +5378,33 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpTypeForwardPointer", 39, 82, 3, static_cast<uint16_t>(kInstDeclaresType), 2, false, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
   {"OpConstantTrue", 41, 84, 3, static_cast<uint16_t>(0), 2, true, true, 7, 1, InstructionTypeClass::kOther, 8, true, 0},
   {"OpConstantFalse", 42, 86, 3, static_cast<uint16_t>(0), 2, true, true, 7, 1, InstructionTypeClass::kOther, 8, true, 0},
-  {"OpConstant", 43, 88, 4, static_cast<uint16_t>(kInstConstantNumber), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, false, 0},
+  {"OpConstant", 43, 88, 4, static_cast<uint16_t>(kInstConstantNumber | kInstGrammarImpliedWordCount), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, false, 0},
   {"OpConstantComposite", 44, 91, 3, static_cast<uint16_t>(0), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, false, 0},
   {"OpConstantSampler", 45, 94, 6, static_cast<uint16_t>(0), 5, true, true, 7, 1, InstructionTypeClass::kOther, 8, true, 0},
   {"OpConstantNull", 46, 99, 3, static_cast<uint16_t>(0), 2, true, true, 7, 1, InstructionTypeClass::kOther, 8, true, 0},
   {"OpSpecConstantTrue", 48, 101, 3, static_cast<uint16_t>(0), 2, true, true, 7, 1, InstructionTypeClass::kOther, 8, true, 0},
   {"OpSpecConstantFalse", 49, 103, 3, static_cast<uint16_t>(0), 2, true, true, 7, 1, InstructionTypeClass::kOther, 8, true, 0},
-  {"OpSpecConstant", 50, 105, 4, static_cast<uint16_t>(kInstConstantNumber), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, false, 0},
+  {"OpSpecConstant", 50, 105, 4, static_cast<uint16_t>(kInstConstantNumber | kInstGrammarImpliedWordCount), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, false, 0},
   {"OpSpecConstantComposite", 51, 108, 3, static_cast<uint16_t>(0), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, false, 0},
   {"OpSpecConstantOp", 52, 111, 4, static_cast<uint16_t>(0), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, false, 0},
   {"OpFunction", 54, 114, 5, static_cast<uint16_t>(kInstFunction), 4, true, true, 14, 2, InstructionTypeClass::kOther, 9, true, 0},
   {"OpFunctionParameter", 55, 118, 3, static_cast<uint16_t>(0), 2, true, true, 14, 2, InstructionTypeClass::kOther, 0, true, 0},
   {"OpFunctionEnd", 56, 120, 1, static_cast<uint16_t>(kInstFunctionEnd), 0, false, false, 14, 2, InstructionTypeClass::kOther, 0, true, 0},
   {"OpFunctionCall", 57, 120, 4, static_cast<uint16_t>(0), 4, true, true, 14, 2, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpVariable", 59, 124, 4, static_cast<uint16_t>(kInstVariable), 4, true, true, 18, 3, InstructionTypeClass::kOther, 8, false, 0},
+  {"OpVariable", 59, 124, 4, static_cast<uint16_t>(kInstVariable | kInstOptionalTail), 4, true, true, 18, 3, InstructionTypeClass::kOther, 8, false, 0},
   {"OpImageTexelPointer", 60, 128, 6, static_cast<uint16_t>(0), 5, true, true, 18, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpLoad", 61, 133, 4, static_cast<uint16_t>(0), 4, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpStore", 62, 137, 3, static_cast<uint16_t>(0), 3, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpCopyMemory", 63, 140, 3, static_cast<uint16_t>(0), 4, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpCopyMemorySized", 64, 144, 4, static_cast<uint16_t>(0), 5, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpLoad", 61, 133, 4, static_cast<uint16_t>(kInstOptionalTail), 4, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpStore", 62, 137, 3, static_cast<uint16_t>(kInstOptionalTail), 3, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCopyMemory", 63, 140, 3, static_cast<uint16_t>(kInstOptionalTail), 4, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCopyMemorySized", 64, 144, 4, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpAccessChain", 65, 149, 4, static_cast<uint16_t>(0), 4, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpInBoundsAccessChain", 66, 153, 4, static_cast<uint16_t>(0), 4, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpPtrAccessChain", 67, 157, 5, static_cast<uint16_t>(0), 5, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpArrayLength", 68, 162, 5, static_cast<uint16_t>(0), 4, true, true, 18, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGenericPtrMemSemantics", 69, 166, 4, static_cast<uint16_t>(0), 3, true, true, 18, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpInBoundsPtrAccessChain", 70, 169, 5, static_cast<uint16_t>(0), 5, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpDecorate", 71, 174, 3, static_cast<uint16_t>(0), 2, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
-  {"OpMemberDecorate", 72, 176, 4, static_cast<uint16_t>(0), 3, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
+  {"OpDecorate", 71, 174, 3, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 2, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
+  {"OpMemberDecorate", 72, 176, 4, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 3, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
   {"OpDecorationGroup", 73, 179, 2, static_cast<uint16_t>(0), 1, true, false, 1, 3, InstructionTypeClass::kOther, 7, true, 0},
   {"OpGroupDecorate", 74, 180, 2, static_cast<uint16_t>(0), 2, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
   {"OpGroupMemberDecorate", 75, 182, 2, static_cast<uint16_t>(0), 2, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
@@ -5417,19 +5417,19 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpCopyObject", 83, 210, 4, static_cast<uint16_t>(0), 3, true, true, 6, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTranspose", 84, 213, 4, static_cast<uint16_t>(0), 3, true, true, 6, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpSampledImage", 86, 216, 5, static_cast<uint16_t>(0), 4, true, true, 17, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpImageSampleImplicitLod", 87, 220, 5, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSampleExplicitLod", 88, 225, 6, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSampleDrefImplicitLod", 89, 230, 6, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSampleDrefExplicitLod", 90, 236, 7, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSampleProjImplicitLod", 91, 242, 5, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSampleProjExplicitLod", 92, 247, 6, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSampleProjDrefImplicitLod", 93, 252, 6, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSampleProjDrefExplicitLod", 94, 258, 7, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageFetch", 95, 264, 5, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageGather", 96, 269, 6, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageDrefGather", 97, 275, 6, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageRead", 98, 281, 5, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageWrite", 99, 286, 4, static_cast<uint16_t>(0), 4, false, false, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSampleImplicitLod", 87, 220, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSampleExplicitLod", 88, 225, 6, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSampleDrefImplicitLod", 89, 230, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSampleDrefExplicitLod", 90, 236, 7, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSampleProjImplicitLod", 91, 242, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSampleProjExplicitLod", 92, 247, 6, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSampleProjDrefImplicitLod", 93, 252, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSampleProjDrefExplicitLod", 94, 258, 7, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageFetch", 95, 264, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageGather", 96, 269, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageDrefGather", 97, 275, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageRead", 98, 281, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageWrite", 99, 286, 4, static_cast<uint16_t>(kInstOptionalTail), 4, false, false, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpImage", 100, 290, 4, static_cast<uint16_t>(0), 3, true, true, 17, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpImageQueryFormat", 101, 293, 4, static_cast<uint16_t>(0), 3, true, true, 17, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpImageQueryOrder", 102, 296, 4, static_cast<uint16_t>(0), 3, true, true, 17, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -5563,7 +5563,7 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpAtomicOr", 241, 782, 7, static_cast<uint16_t>(0), 6, true, true, 3, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpAtomicXor", 242, 788, 7, static_cast<uint16_t>(0), 6, true, true, 3, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpPhi", 245, 794, 3, static_cast<uint16_t>(0), 3, true, true, 8, 2, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpLoopMerge", 246, 797, 4, static_cast<uint16_t>(0), 3, false, false, 8, 2, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpLoopMerge", 246, 797, 4, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 3, false, false, 8, 2, InstructionTypeClass::kOther, 0, false, 0},
   {"OpSelectionMerge", 247, 800, 3, static_cast<uint16_t>(0), 2, false, false, 8, 2, InstructionTypeClass::kOther, 0, true, 0},
   {"OpLabel", 248, 802, 2, static_cast<uint16_t>(kInstLabel), 1, true, false, 8, 2, InstructionTypeClass::kOther, 10, true, 0},
   {"OpBranch", 249, 803, 2, static_cast<uint16_t>(kInstTerminator), 1, false, false, 8, 2, InstructionTypeClass::kOther, 0, true, 0},
@@ -5617,22 +5617,22 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpCaptureEventProfilingInfo", 302, 1019, 4, static_cast<uint16_t>(0), 3, false, false, 12, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGetDefaultQueue", 303, 1022, 3, static_cast<uint16_t>(0), 2, true, true, 12, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpBuildNDRange", 304, 1024, 6, static_cast<uint16_t>(0), 5, true, true, 12, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpImageSparseSampleImplicitLod", 305, 1029, 5, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSparseSampleExplicitLod", 306, 1034, 6, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSparseSampleDrefImplicitLod", 307, 1039, 6, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSparseSampleDrefExplicitLod", 308, 1045, 7, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSparseSampleProjImplicitLod", 309, 1051, 5, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSparseSampleProjExplicitLod", 310, 1056, 6, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSparseSampleProjDrefImplicitLod", 311, 1061, 6, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSparseSampleProjDrefExplicitLod", 312, 1067, 7, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSparseFetch", 313, 1073, 5, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSparseGather", 314, 1078, 6, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpImageSparseDrefGather", 315, 1084, 6, static_cast<uint16_t>(0), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseSampleImplicitLod", 305, 1029, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseSampleExplicitLod", 306, 1034, 6, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseSampleDrefImplicitLod", 307, 1039, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseSampleDrefExplicitLod", 308, 1045, 7, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseSampleProjImplicitLod", 309, 1051, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseSampleProjExplicitLod", 310, 1056, 6, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseSampleProjDrefImplicitLod", 311, 1061, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseSampleProjDrefExplicitLod", 312, 1067, 7, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseFetch", 313, 1073, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseGather", 314, 1078, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseDrefGather", 315, 1084, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpImageSparseTexelsResident", 316, 1090, 4, static_cast<uint16_t>(0), 3, true, true, 17, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpNoLine", 317, 1093, 1, static_cast<uint16_t>(0), 0, false, false, 10, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpAtomicFlagTestAndSet", 318, 1093, 6, static_cast<uint16_t>(0), 5, true, true, 3, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpAtomicFlagClear", 319, 1098, 4, static_cast<uint16_t>(0), 3, false, false, 3, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpImageSparseRead", 320, 1101, 5, static_cast<uint16_t>(0), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSparseRead", 320, 1101, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpSizeOf", 321, 1106, 4, static_cast<uint16_t>(0), 3, true, true, 19, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTypePipeStorage", 322, 1109, 2, static_cast<uint16_t>(kInstDeclaresType), 1, true, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
   {"OpConstantPipeStorage", 323, 1110, 6, static_cast<uint16_t>(0), 5, true, true, 22, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -5642,9 +5642,9 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpTypeNamedBarrier", 327, 1131, 2, static_cast<uint16_t>(kInstDeclaresType), 1, true, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
   {"OpNamedBarrierInitialize", 328, 1132, 4, static_cast<uint16_t>(0), 3, true, true, 4, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpMemoryNamedBarrier", 329, 1135, 4, static_cast<uint16_t>(0), 3, false, false, 4, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpModuleProcessed", 330, 1138, 2, static_cast<uint16_t>(0), 1, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
-  {"OpExecutionModeId", 331, 1139, 3, static_cast<uint16_t>(0), 2, false, false, 20, 3, InstructionTypeClass::kOther, 5, false, 0},
-  {"OpDecorateId", 332, 1141, 3, static_cast<uint16_t>(0), 2, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
+  {"OpModuleProcessed", 330, 1138, 2, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 1, false, false, 10, 3, InstructionTypeClass::kOther, 6, false, 0},
+  {"OpExecutionModeId", 331, 1139, 3, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 2, false, false, 20, 3, InstructionTypeClass::kOther, 5, false, 0},
+  {"OpDecorateId", 332, 1141, 3, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 2, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
   {"OpGroupNonUniformElect", 333, 1143, 4, static_cast<uint16_t>(0), 3, true, true, 21, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGroupNonUniformAll", 334, 1146, 5, static_cast<uint16_t>(0), 4, true, true, 21, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGroupNonUniformAny", 335, 1150, 5, static_cast<uint16_t>(0), 4, true, true, 21, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -5661,34 +5661,34 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpGroupNonUniformShuffleXor", 346, 1198, 6, static_cast<uint16_t>(0), 5, true, true, 21, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGroupNonUniformShuffleUp", 347, 1203, 6, static_cast<uint16_t>(0), 5, true, true, 21, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGroupNonUniformShuffleDown", 348, 1208, 6, static_cast<uint16_t>(0), 5, true, true, 21, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpGroupNonUniformIAdd", 349, 1213, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformFAdd", 350, 1219, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformIMul", 351, 1225, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformFMul", 352, 1231, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformSMin", 353, 1237, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformUMin", 354, 1243, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformFMin", 355, 1249, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformSMax", 356, 1255, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformUMax", 357, 1261, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformFMax", 358, 1267, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformBitwiseAnd", 359, 1273, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformBitwiseOr", 360, 1279, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformBitwiseXor", 361, 1285, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformLogicalAnd", 362, 1291, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformLogicalOr", 363, 1297, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpGroupNonUniformLogicalXor", 364, 1303, 6, static_cast<uint16_t>(0), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformIAdd", 349, 1213, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformFAdd", 350, 1219, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformIMul", 351, 1225, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformFMul", 352, 1231, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformSMin", 353, 1237, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformUMin", 354, 1243, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformFMin", 355, 1249, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformSMax", 356, 1255, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformUMax", 357, 1261, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformFMax", 358, 1267, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformBitwiseAnd", 359, 1273, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformBitwiseOr", 360, 1279, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformBitwiseXor", 361, 1285, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformLogicalAnd", 362, 1291, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformLogicalOr", 363, 1297, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformLogicalXor", 364, 1303, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 21, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpGroupNonUniformQuadBroadcast", 365, 1309, 6, static_cast<uint16_t>(0), 5, true, true, 21, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGroupNonUniformQuadSwap", 366, 1314, 6, static_cast<uint16_t>(0), 5, true, true, 21, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpCopyLogical", 400, 1319, 4, static_cast<uint16_t>(0), 3, true, true, 6, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpPtrEqual", 401, 1322, 5, static_cast<uint16_t>(0), 4, true, true, 18, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpPtrNotEqual", 402, 1326, 5, static_cast<uint16_t>(0), 4, true, true, 18, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpPtrDiff", 403, 1330, 5, static_cast<uint16_t>(0), 4, true, true, 18, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpColorAttachmentReadEXT", 4160, 1334, 4, static_cast<uint16_t>(0), 4, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpDepthAttachmentReadEXT", 4161, 1338, 3, static_cast<uint16_t>(0), 3, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpStencilAttachmentReadEXT", 4162, 1341, 3, static_cast<uint16_t>(0), 3, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpTypeTensorARM", 4163, 1344, 3, static_cast<uint16_t>(kInstDeclaresType), 4, true, false, 27, 0, InstructionTypeClass::kOther, 8, false, 0},
-  {"OpTensorReadARM", 4164, 1348, 5, static_cast<uint16_t>(0), 5, true, true, 26, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpTensorWriteARM", 4165, 1353, 4, static_cast<uint16_t>(0), 4, false, false, 26, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpColorAttachmentReadEXT", 4160, 1334, 4, static_cast<uint16_t>(kInstOptionalTail), 4, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpDepthAttachmentReadEXT", 4161, 1338, 3, static_cast<uint16_t>(kInstOptionalTail), 3, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpStencilAttachmentReadEXT", 4162, 1341, 3, static_cast<uint16_t>(kInstOptionalTail), 3, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpTypeTensorARM", 4163, 1344, 3, static_cast<uint16_t>(kInstDeclaresType | kInstOptionalTail), 4, true, false, 27, 0, InstructionTypeClass::kOther, 8, false, 0},
+  {"OpTensorReadARM", 4164, 1348, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 26, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpTensorWriteARM", 4165, 1353, 4, static_cast<uint16_t>(kInstOptionalTail), 4, false, false, 26, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpTensorQuerySizeARM", 4166, 1357, 5, static_cast<uint16_t>(0), 4, true, true, 26, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGraphConstantARM", 4181, 1361, 4, static_cast<uint16_t>(0), 3, true, true, 15, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGraphEntryPointARM", 4182, 1364, 3, static_cast<uint16_t>(0), 3, false, false, 15, 3, InstructionTypeClass::kOther, 0, false, 0},
@@ -5700,7 +5700,7 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpBitcastExtractEXT", 4195, 1379, 5, static_cast<uint16_t>(0), 4, true, true, 9, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTerminateInvocation", 4416, 1383, 1, static_cast<uint16_t>(kInstTerminator), 0, false, false, 8, 2, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTypeUntypedPointerKHR", 4417, 1383, 3, static_cast<uint16_t>(kInstDeclaresType), 2, true, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
-  {"OpUntypedVariableKHR", 4418, 1385, 4, static_cast<uint16_t>(0), 5, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpUntypedVariableKHR", 4418, 1385, 4, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpUntypedAccessChainKHR", 4419, 1390, 5, static_cast<uint16_t>(0), 5, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpUntypedInBoundsAccessChainKHR", 4420, 1395, 5, static_cast<uint16_t>(0), 5, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpSubgroupBallotKHR", 4421, 1400, 4, static_cast<uint16_t>(0), 3, true, true, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -5708,30 +5708,30 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpUntypedPtrAccessChainKHR", 4423, 1406, 6, static_cast<uint16_t>(0), 6, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpUntypedInBoundsPtrAccessChainKHR", 4424, 1412, 6, static_cast<uint16_t>(0), 6, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpUntypedArrayLengthKHR", 4425, 1418, 6, static_cast<uint16_t>(0), 5, true, true, 18, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpUntypedPrefetchKHR", 4426, 1423, 3, static_cast<uint16_t>(0), 5, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpUntypedPrefetchKHR", 4426, 1423, 3, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpFmaKHR", 4427, 1428, 6, static_cast<uint16_t>(0), 5, true, true, 2, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpSubgroupAllKHR", 4428, 1433, 4, static_cast<uint16_t>(0), 3, true, true, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpSubgroupAnyKHR", 4429, 1436, 4, static_cast<uint16_t>(0), 3, true, true, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpSubgroupAllEqualKHR", 4430, 1439, 4, static_cast<uint16_t>(0), 3, true, true, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpGroupNonUniformRotateKHR", 4431, 1442, 6, static_cast<uint16_t>(0), 6, true, true, 16, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpGroupNonUniformRotateKHR", 4431, 1442, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 16, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpSubgroupReadInvocationKHR", 4432, 1448, 5, static_cast<uint16_t>(0), 4, true, true, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpExtInstWithForwardRefsKHR", 4433, 1452, 5, static_cast<uint16_t>(0), 5, true, true, 13, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpUntypedGroupAsyncCopyKHR", 4434, 1457, 10, static_cast<uint16_t>(0), 11, true, true, 16, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpUntypedGroupAsyncCopyKHR", 4434, 1457, 10, static_cast<uint16_t>(kInstOptionalTail), 11, true, true, 16, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpTraceRayKHR", 4445, 1468, 12, static_cast<uint16_t>(0), 11, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpExecuteCallableKHR", 4446, 1479, 3, static_cast<uint16_t>(0), 2, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpConvertUToAccelerationStructureKHR", 4447, 1481, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpIgnoreIntersectionKHR", 4448, 1484, 1, static_cast<uint16_t>(kInstTerminator), 0, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTerminateRayKHR", 4449, 1484, 1, static_cast<uint16_t>(kInstTerminator), 0, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpSDot", 4450, 1484, 5, static_cast<uint16_t>(0), 5, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpUDot", 4451, 1489, 5, static_cast<uint16_t>(0), 5, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpSUDot", 4452, 1494, 5, static_cast<uint16_t>(0), 5, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpSDotAccSat", 4453, 1499, 6, static_cast<uint16_t>(0), 6, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpUDotAccSat", 4454, 1505, 6, static_cast<uint16_t>(0), 6, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpSUDotAccSat", 4455, 1511, 6, static_cast<uint16_t>(0), 6, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpSDot", 4450, 1484, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpUDot", 4451, 1489, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpSUDot", 4452, 1494, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpSDotAccSat", 4453, 1499, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpUDotAccSat", 4454, 1505, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpSUDotAccSat", 4455, 1511, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpTypeCooperativeMatrixKHR", 4456, 1517, 7, static_cast<uint16_t>(kInstDeclaresType), 6, true, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
-  {"OpCooperativeMatrixLoadKHR", 4457, 1523, 5, static_cast<uint16_t>(0), 6, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpCooperativeMatrixStoreKHR", 4458, 1529, 4, static_cast<uint16_t>(0), 5, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpCooperativeMatrixMulAddKHR", 4459, 1534, 6, static_cast<uint16_t>(0), 6, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeMatrixLoadKHR", 4457, 1523, 5, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeMatrixStoreKHR", 4458, 1529, 4, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeMatrixMulAddKHR", 4459, 1534, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 2, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpCooperativeMatrixLengthKHR", 4460, 1540, 4, static_cast<uint16_t>(0), 3, true, true, 19, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpConstantCompositeReplicateEXT", 4461, 1543, 4, static_cast<uint16_t>(0), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, true, 0},
   {"OpSpecConstantCompositeReplicateEXT", 4462, 1546, 4, static_cast<uint16_t>(0), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, true, 0},
@@ -5755,7 +5755,7 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpCompositeConstructCoopMatQCOM", 4540, 1627, 4, static_cast<uint16_t>(0), 3, true, true, 6, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpCompositeExtractCoopMatQCOM", 4541, 1630, 4, static_cast<uint16_t>(0), 3, true, true, 6, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpExtractSubArrayQCOM", 4542, 1633, 5, static_cast<uint16_t>(0), 4, true, true, 6, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpImageGatherQCOM", 4545, 1637, 7, static_cast<uint16_t>(0), 7, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageGatherQCOM", 4545, 1637, 7, static_cast<uint16_t>(kInstOptionalTail), 7, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpGroupIAddNonUniformAMD", 5000, 1644, 6, static_cast<uint16_t>(0), 5, true, true, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGroupFAddNonUniformAMD", 5001, 1649, 6, static_cast<uint16_t>(0), 5, true, true, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGroupFMinNonUniformAMD", 5002, 1654, 6, static_cast<uint16_t>(0), 5, true, true, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -5773,15 +5773,15 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpFinishWritingNodePayloadAMDX", 5078, 1704, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpNodePayloadArrayLengthAMDX", 5090, 1707, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpIsNodePayloadValidAMDX", 5101, 1710, 5, static_cast<uint16_t>(0), 4, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpConstantStringAMDX", 5103, 1714, 3, static_cast<uint16_t>(0), 2, true, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpSpecConstantStringAMDX", 5104, 1716, 3, static_cast<uint16_t>(0), 2, true, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpConstantStringAMDX", 5103, 1714, 3, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 2, true, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpSpecConstantStringAMDX", 5104, 1716, 3, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 2, true, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpGroupNonUniformQuadAllKHR", 5110, 1718, 4, static_cast<uint16_t>(0), 3, true, true, 21, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGroupNonUniformQuadAnyKHR", 5111, 1721, 4, static_cast<uint16_t>(0), 3, true, true, 21, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTypeBufferEXT", 5115, 1724, 3, static_cast<uint16_t>(kInstDeclaresType), 2, true, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
   {"OpBufferPointerEXT", 5119, 1726, 4, static_cast<uint16_t>(0), 3, true, true, 18, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpAbortKHR", 5121, 1729, 3, static_cast<uint16_t>(0), 2, false, false, 8, 2, InstructionTypeClass::kOther, 0, true, 0},
   {"OpUntypedImageTexelPointerEXT", 5126, 1731, 7, static_cast<uint16_t>(0), 6, true, true, 18, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpMemberDecorateIdEXT", 5127, 1737, 4, static_cast<uint16_t>(0), 3, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
+  {"OpMemberDecorateIdEXT", 5127, 1737, 4, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 3, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
   {"OpConstantSizeOfEXT", 5129, 1740, 4, static_cast<uint16_t>(0), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, true, 0},
   {"OpConstantDataKHR", 5147, 1743, 3, static_cast<uint16_t>(0), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, false, 0},
   {"OpSpecConstantDataKHR", 5148, 1746, 3, static_cast<uint16_t>(0), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, false, 0},
@@ -5817,36 +5817,36 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpHitObjectIsEmptyNV", 5276, 1897, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpHitObjectIsHitNV", 5277, 1900, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpHitObjectIsMissNV", 5278, 1903, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpReorderThreadWithHitObjectNV", 5279, 1906, 2, static_cast<uint16_t>(0), 3, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpReorderThreadWithHitObjectNV", 5279, 1906, 2, static_cast<uint16_t>(kInstOptionalTail), 3, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpReorderThreadWithHintNV", 5280, 1909, 3, static_cast<uint16_t>(0), 2, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTypeHitObjectNV", 5281, 1911, 2, static_cast<uint16_t>(kInstDeclaresType), 1, true, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
-  {"OpImageSampleFootprintNV", 5283, 1912, 7, static_cast<uint16_t>(0), 7, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpImageSampleFootprintNV", 5283, 1912, 7, static_cast<uint16_t>(kInstOptionalTail), 7, true, true, 17, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpTypeVectorIdEXT", 5288, 1919, 4, static_cast<uint16_t>(kInstDeclaresType), 3, true, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
-  {"OpCooperativeVectorMatrixMulNV", 5289, 1922, 12, static_cast<uint16_t>(0), 13, true, true, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpCooperativeVectorOuterProductAccumulateNV", 5290, 1935, 7, static_cast<uint16_t>(0), 7, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeVectorMatrixMulNV", 5289, 1922, 12, static_cast<uint16_t>(kInstOptionalTail), 13, true, true, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeVectorOuterProductAccumulateNV", 5290, 1935, 7, static_cast<uint16_t>(kInstOptionalTail), 7, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpCooperativeVectorReduceSumAccumulateNV", 5291, 1942, 4, static_cast<uint16_t>(0), 3, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpCooperativeVectorMatrixMulAddNV", 5292, 1945, 15, static_cast<uint16_t>(0), 16, true, true, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeVectorMatrixMulAddNV", 5292, 1945, 15, static_cast<uint16_t>(kInstOptionalTail), 16, true, true, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpCooperativeMatrixConvertNV", 5293, 1961, 4, static_cast<uint16_t>(0), 3, true, true, 9, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpEmitMeshTasksEXT", 5294, 1964, 4, static_cast<uint16_t>(0), 4, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpEmitMeshTasksEXT", 5294, 1964, 4, static_cast<uint16_t>(kInstOptionalTail), 4, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpSetMeshOutputsEXT", 5295, 1968, 3, static_cast<uint16_t>(0), 2, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGroupNonUniformPartitionEXT", 5296, 1970, 4, static_cast<uint16_t>(0), 3, true, true, 21, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpWritePackedPrimitiveIndices4x8NV", 5299, 1973, 3, static_cast<uint16_t>(0), 2, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpFetchMicroTriangleVertexPositionNV", 5300, 1975, 8, static_cast<uint16_t>(0), 7, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpFetchMicroTriangleVertexBarycentricNV", 5301, 1982, 8, static_cast<uint16_t>(0), 7, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpCooperativeVectorLoadNV", 5302, 1989, 5, static_cast<uint16_t>(0), 5, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpCooperativeVectorStoreNV", 5303, 1994, 4, static_cast<uint16_t>(0), 4, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpHitObjectRecordFromQueryEXT", 5304, 1998, 5, static_cast<uint16_t>(0), 5, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeVectorLoadNV", 5302, 1989, 5, static_cast<uint16_t>(kInstOptionalTail), 5, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeVectorStoreNV", 5303, 1994, 4, static_cast<uint16_t>(kInstOptionalTail), 4, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpHitObjectRecordFromQueryEXT", 5304, 1998, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpHitObjectRecordMissEXT", 5305, 2003, 8, static_cast<uint16_t>(0), 7, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpHitObjectRecordMissMotionEXT", 5306, 2010, 9, static_cast<uint16_t>(0), 8, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpHitObjectGetIntersectionTriangleVertexPositionsEXT", 5307, 2018, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpHitObjectGetRayFlagsEXT", 5308, 2021, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpHitObjectSetShaderBindingTableRecordIndexEXT", 5309, 2024, 3, static_cast<uint16_t>(0), 2, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpHitObjectReorderExecuteShaderEXT", 5310, 2026, 3, static_cast<uint16_t>(0), 4, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpHitObjectTraceReorderExecuteEXT", 5311, 2030, 13, static_cast<uint16_t>(0), 14, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpHitObjectTraceMotionReorderExecuteEXT", 5312, 2044, 14, static_cast<uint16_t>(0), 15, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpHitObjectReorderExecuteShaderEXT", 5310, 2026, 3, static_cast<uint16_t>(kInstOptionalTail), 4, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpHitObjectTraceReorderExecuteEXT", 5311, 2030, 13, static_cast<uint16_t>(kInstOptionalTail), 14, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpHitObjectTraceMotionReorderExecuteEXT", 5312, 2044, 14, static_cast<uint16_t>(kInstOptionalTail), 15, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpTypeHitObjectEXT", 5313, 2059, 2, static_cast<uint16_t>(kInstDeclaresType), 1, true, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
   {"OpReorderThreadWithHintEXT", 5314, 2060, 3, static_cast<uint16_t>(0), 2, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpReorderThreadWithHitObjectEXT", 5315, 2062, 2, static_cast<uint16_t>(0), 3, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpReorderThreadWithHitObjectEXT", 5315, 2062, 2, static_cast<uint16_t>(kInstOptionalTail), 3, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpHitObjectTraceRayEXT", 5316, 2065, 13, static_cast<uint16_t>(0), 12, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpHitObjectTraceRayMotionEXT", 5317, 2077, 14, static_cast<uint16_t>(0), 13, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpHitObjectRecordEmptyEXT", 5318, 2090, 2, static_cast<uint16_t>(0), 1, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -5883,15 +5883,15 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpHitObjectIsHitEXT", 5351, 2199, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpHitObjectIsMissEXT", 5352, 2202, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTypeCooperativeMatrixNV", 5358, 2205, 6, static_cast<uint16_t>(kInstDeclaresType), 5, true, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
-  {"OpCooperativeMatrixLoadNV", 5359, 2210, 6, static_cast<uint16_t>(0), 6, true, true, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpCooperativeMatrixStoreNV", 5360, 2216, 5, static_cast<uint16_t>(0), 5, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeMatrixLoadNV", 5359, 2210, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeMatrixStoreNV", 5360, 2216, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpCooperativeMatrixMulAddNV", 5361, 2221, 6, static_cast<uint16_t>(0), 5, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpCooperativeMatrixLengthNV", 5362, 2226, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpBeginInvocationInterlockEXT", 5364, 2229, 1, static_cast<uint16_t>(0), 0, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpEndInvocationInterlockEXT", 5365, 2229, 1, static_cast<uint16_t>(0), 0, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpCooperativeMatrixReduceNV", 5366, 2229, 6, static_cast<uint16_t>(0), 5, true, true, 2, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpCooperativeMatrixLoadTensorNV", 5367, 2234, 8, static_cast<uint16_t>(0), 7, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpCooperativeMatrixStoreTensorNV", 5368, 2241, 6, static_cast<uint16_t>(0), 5, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeMatrixLoadTensorNV", 5367, 2234, 8, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 7, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpCooperativeMatrixStoreTensorNV", 5368, 2241, 6, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 5, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpCooperativeMatrixPerElementOpNV", 5369, 2246, 5, static_cast<uint16_t>(0), 5, true, true, 14, 2, InstructionTypeClass::kOther, 0, false, 0},
   {"OpTypeTensorLayoutNV", 5370, 2251, 4, static_cast<uint16_t>(kInstDeclaresType), 3, true, false, 27, 0, InstructionTypeClass::kOther, 8, true, 0},
   {"OpTypeTensorViewNV", 5371, 2254, 4, static_cast<uint16_t>(kInstDeclaresType), 4, true, false, 27, 0, InstructionTypeClass::kOther, 8, false, 0},
@@ -5915,7 +5915,7 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpConvertUToSampledImageNV", 5395, 2314, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpConvertSampledImageToUNV", 5396, 2317, 4, static_cast<uint16_t>(0), 3, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpSamplerImageAddressingModeNV", 5397, 2320, 2, static_cast<uint16_t>(0), 1, false, false, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpRawAccessChainNV", 5398, 2321, 7, static_cast<uint16_t>(0), 7, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpRawAccessChainNV", 5398, 2321, 7, static_cast<uint16_t>(kInstOptionalTail), 7, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpRayQueryGetIntersectionSpherePositionNV", 5427, 2328, 5, static_cast<uint16_t>(0), 4, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpRayQueryGetIntersectionSphereRadiusNV", 5428, 2332, 5, static_cast<uint16_t>(0), 4, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpRayQueryGetIntersectionLSSPositionsNV", 5429, 2336, 5, static_cast<uint16_t>(0), 4, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -5955,15 +5955,15 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpUMul32x16INTEL", 5598, 2465, 5, static_cast<uint16_t>(0), 4, true, true, 25, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpConstantFunctionPointerINTEL", 5600, 2469, 4, static_cast<uint16_t>(0), 3, true, true, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpFunctionPointerCallINTEL", 5601, 2472, 3, static_cast<uint16_t>(0), 3, true, true, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpAsmTargetINTEL", 5609, 2475, 3, static_cast<uint16_t>(0), 2, true, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpAsmINTEL", 5610, 2477, 7, static_cast<uint16_t>(0), 6, true, true, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpAsmTargetINTEL", 5609, 2475, 3, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 2, true, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpAsmINTEL", 5610, 2477, 7, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 6, true, true, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpAsmCallINTEL", 5611, 2483, 4, static_cast<uint16_t>(0), 4, true, true, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpAtomicFMinEXT", 5614, 2487, 7, static_cast<uint16_t>(0), 6, true, true, 3, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpAtomicFMaxEXT", 5615, 2493, 7, static_cast<uint16_t>(0), 6, true, true, 3, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpAssumeTrueKHR", 5630, 2499, 2, static_cast<uint16_t>(0), 1, false, false, 19, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpExpectKHR", 5631, 2500, 5, static_cast<uint16_t>(0), 4, true, true, 19, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpDecorateString", 5632, 2504, 3, static_cast<uint16_t>(0), 2, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
-  {"OpMemberDecorateString", 5633, 2506, 4, static_cast<uint16_t>(0), 3, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
+  {"OpDecorateString", 5632, 2504, 3, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 2, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
+  {"OpMemberDecorateString", 5633, 2506, 4, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 3, false, false, 1, 3, InstructionTypeClass::kOther, 7, false, 0},
   {"OpVmeImageINTEL", 5699, 2509, 5, static_cast<uint16_t>(0), 4, true, true, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTypeVmeImageINTEL", 5700, 2513, 3, static_cast<uint16_t>(kInstDeclaresType), 2, true, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTypeAvcImePayloadINTEL", 5701, 2515, 2, static_cast<uint16_t>(kInstDeclaresType), 1, true, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -6127,8 +6127,8 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpArbitraryFloatPowRINTEL", 5881, 3286, 11, static_cast<uint16_t>(0), 10, true, true, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpArbitraryFloatPowNINTEL", 5882, 3296, 11, static_cast<uint16_t>(0), 10, true, true, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpLoopControlINTEL", 5887, 3306, 1, static_cast<uint16_t>(0), 1, false, false, 25, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpAliasDomainDeclINTEL", 5911, 3307, 2, static_cast<uint16_t>(0), 2, true, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpAliasScopeDeclINTEL", 5912, 3309, 3, static_cast<uint16_t>(0), 3, true, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpAliasDomainDeclINTEL", 5911, 3307, 2, static_cast<uint16_t>(kInstOptionalTail), 2, true, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpAliasScopeDeclINTEL", 5912, 3309, 3, static_cast<uint16_t>(kInstOptionalTail), 3, true, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpAliasScopeListDeclINTEL", 5913, 3312, 2, static_cast<uint16_t>(0), 2, true, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpFixedSqrtALTERA", 5923, 3314, 9, static_cast<uint16_t>(0), 8, true, true, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpFixedRecipALTERA", 5924, 3322, 9, static_cast<uint16_t>(0), 8, true, true, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -6179,24 +6179,24 @@ constexpr InstructionDesc kCoreInstructions[] = {
   {"OpTaskSequenceGetALTERA", 6165, 3518, 4, static_cast<uint16_t>(0), 3, true, true, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTaskSequenceReleaseALTERA", 6166, 3521, 2, static_cast<uint16_t>(0), 1, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpTypeTaskSequenceALTERA", 6199, 3522, 2, static_cast<uint16_t>(kInstDeclaresType), 1, true, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpSubgroupBlockPrefetchINTEL", 6221, 3523, 3, static_cast<uint16_t>(0), 3, false, false, 16, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpSubgroupBlockPrefetchINTEL", 6221, 3523, 3, static_cast<uint16_t>(kInstOptionalTail), 3, false, false, 16, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpSubgroup2DBlockLoadINTEL", 6231, 3526, 11, static_cast<uint16_t>(0), 10, false, false, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpSubgroup2DBlockLoadTransformINTEL", 6232, 3536, 11, static_cast<uint16_t>(0), 10, false, false, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpSubgroup2DBlockLoadTransposeINTEL", 6233, 3546, 11, static_cast<uint16_t>(0), 10, false, false, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpSubgroup2DBlockPrefetchINTEL", 6234, 3556, 10, static_cast<uint16_t>(0), 9, false, false, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpSubgroup2DBlockStoreINTEL", 6235, 3565, 11, static_cast<uint16_t>(0), 10, false, false, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpSubgroupMatrixMultiplyAccumulateINTEL", 6237, 3575, 7, static_cast<uint16_t>(0), 7, true, true, 16, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpSubgroupMatrixMultiplyAccumulateINTEL", 6237, 3575, 7, static_cast<uint16_t>(kInstOptionalTail), 7, true, true, 16, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpBitwiseFunctionINTEL", 6242, 3582, 7, static_cast<uint16_t>(0), 6, true, true, 5, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpUntypedVariableLengthArrayINTEL", 6244, 3588, 5, static_cast<uint16_t>(0), 4, true, true, 18, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"OpConditionalExtensionINTEL", 6248, 3592, 3, static_cast<uint16_t>(0), 2, false, false, 13, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpConditionalExtensionINTEL", 6248, 3592, 3, static_cast<uint16_t>(kInstGrammarImpliedWordCount), 2, false, false, 13, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpConditionalEntryPointINTEL", 6249, 3594, 5, static_cast<uint16_t>(0), 5, false, false, 20, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpConditionalCapabilityINTEL", 6250, 3599, 3, static_cast<uint16_t>(0), 2, false, false, 20, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpSpecConstantTargetINTEL", 6251, 3601, 4, static_cast<uint16_t>(0), 4, true, true, 7, 1, InstructionTypeClass::kOther, 8, false, 0},
   {"OpSpecConstantArchitectureINTEL", 6252, 3605, 7, static_cast<uint16_t>(0), 6, true, true, 7, 1, InstructionTypeClass::kOther, 8, true, 0},
   {"OpSpecConstantCapabilitiesINTEL", 6253, 3611, 3, static_cast<uint16_t>(0), 3, true, true, 7, 1, InstructionTypeClass::kOther, 8, false, 0},
   {"OpConditionalCopyObjectINTEL", 6254, 3614, 3, static_cast<uint16_t>(0), 3, true, true, 6, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpPredicatedLoadINTEL", 6258, 3617, 6, static_cast<uint16_t>(0), 6, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"OpPredicatedStoreINTEL", 6259, 3623, 4, static_cast<uint16_t>(0), 4, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpPredicatedLoadINTEL", 6258, 3617, 6, static_cast<uint16_t>(kInstOptionalTail), 6, true, true, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"OpPredicatedStoreINTEL", 6259, 3623, 4, static_cast<uint16_t>(kInstOptionalTail), 4, false, false, 18, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"OpGroupIMulKHR", 6401, 3627, 6, static_cast<uint16_t>(0), 5, true, true, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGroupFMulKHR", 6402, 3632, 6, static_cast<uint16_t>(0), 5, true, true, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"OpGroupBitwiseAndKHR", 6403, 3637, 6, static_cast<uint16_t>(0), 5, true, true, 16, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -6374,28 +6374,28 @@ constexpr InstructionDesc kDebugInfoInstructions[] = {
   {"DebugTypeFunction", 8, 21, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeEnum", 9, 23, 9, static_cast<uint16_t>(0), 9, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeComposite", 10, 32, 9, static_cast<uint16_t>(0), 9, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugTypeMember", 11, 41, 10, static_cast<uint16_t>(0), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugTypeMember", 11, 41, 10, static_cast<uint16_t>(kInstOptionalTail), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeInheritance", 12, 51, 6, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypePtrToMember", 13, 56, 3, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypeTemplate", 14, 58, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeTemplateParameter", 15, 60, 7, static_cast<uint16_t>(0), 6, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypeTemplateTemplateParameter", 16, 66, 6, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypeTemplateParameterPack", 17, 71, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugGlobalVariable", 18, 76, 10, static_cast<uint16_t>(0), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugGlobalVariable", 18, 76, 10, static_cast<uint16_t>(kInstOptionalTail), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugFunctionDeclaration", 19, 86, 9, static_cast<uint16_t>(0), 8, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"DebugFunction", 20, 94, 11, static_cast<uint16_t>(0), 11, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugLexicalBlock", 21, 105, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugFunction", 20, 94, 11, static_cast<uint16_t>(kInstOptionalTail), 11, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugLexicalBlock", 21, 105, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugLexicalBlockDiscriminator", 22, 110, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"DebugScope", 23, 113, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugScope", 23, 113, 2, static_cast<uint16_t>(kInstOptionalTail), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugNoScope", 24, 115, 1, static_cast<uint16_t>(0), 0, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"DebugInlinedAt", 25, 115, 3, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugLocalVariable", 26, 118, 7, static_cast<uint16_t>(0), 7, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugInlinedAt", 25, 115, 3, static_cast<uint16_t>(kInstOptionalTail), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugLocalVariable", 26, 118, 7, static_cast<uint16_t>(kInstOptionalTail), 7, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugInlinedVariable", 27, 125, 3, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugDeclare", 28, 127, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugValue", 29, 130, 3, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugOperation", 30, 133, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugExpression", 31, 135, 1, static_cast<uint16_t>(0), 1, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugMacroDef", 32, 136, 4, static_cast<uint16_t>(0), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugMacroDef", 32, 136, 4, static_cast<uint16_t>(kInstOptionalTail), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugMacroUndef", 33, 140, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
 };
 
@@ -6771,17 +6771,17 @@ constexpr OperandSlotDesc kNonSemantic_ClspvReflectionOperandSlots[] = {
 };
 
 constexpr InstructionDesc kNonSemantic_ClspvReflectionInstructions[] = {
-  {"Kernel", 1, 0, 3, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentInfo", 2, 5, 2, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentStorageBuffer", 3, 10, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentUniform", 4, 15, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentPodStorageBuffer", 5, 20, 7, static_cast<uint16_t>(0), 7, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentPodUniform", 6, 27, 7, static_cast<uint16_t>(0), 7, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentPodPushConstant", 7, 34, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentSampledImage", 8, 39, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentStorageImage", 9, 44, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentSampler", 10, 49, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentWorkgroup", 11, 54, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"Kernel", 1, 0, 3, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentInfo", 2, 5, 2, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentStorageBuffer", 3, 10, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentUniform", 4, 15, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentPodStorageBuffer", 5, 20, 7, static_cast<uint16_t>(kInstOptionalTail), 7, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentPodUniform", 6, 27, 7, static_cast<uint16_t>(kInstOptionalTail), 7, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentPodPushConstant", 7, 34, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentSampledImage", 8, 39, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentStorageImage", 9, 44, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentSampler", 10, 49, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentWorkgroup", 11, 54, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"SpecConstantWorkgroupSize", 12, 59, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"SpecConstantGlobalOffset", 13, 62, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"SpecConstantWorkDim", 14, 65, 2, static_cast<uint16_t>(0), 1, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -6796,16 +6796,16 @@ constexpr InstructionDesc kNonSemantic_ClspvReflectionInstructions[] = {
   {"LiteralSampler", 23, 84, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"PropertyRequiredWorkgroupSize", 24, 87, 5, static_cast<uint16_t>(0), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"SpecConstantSubgroupMaxSize", 25, 91, 2, static_cast<uint16_t>(0), 1, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"ArgumentPointerPushConstant", 26, 92, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentPointerUniform", 27, 97, 7, static_cast<uint16_t>(0), 7, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentPointerPushConstant", 26, 92, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentPointerUniform", 27, 97, 7, static_cast<uint16_t>(kInstOptionalTail), 7, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"ProgramScopeVariablesStorageBuffer", 28, 104, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"ProgramScopeVariablePointerRelocation", 29, 107, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"ImageArgumentInfoChannelOrderPushConstant", 30, 110, 5, static_cast<uint16_t>(0), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"ImageArgumentInfoChannelDataTypePushConstant", 31, 114, 5, static_cast<uint16_t>(0), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"ImageArgumentInfoChannelOrderUniform", 32, 118, 7, static_cast<uint16_t>(0), 6, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"ImageArgumentInfoChannelDataTypeUniform", 33, 124, 7, static_cast<uint16_t>(0), 6, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"ArgumentStorageTexelBuffer", 34, 130, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"ArgumentUniformTexelBuffer", 35, 135, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentStorageTexelBuffer", 34, 130, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"ArgumentUniformTexelBuffer", 35, 135, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"ConstantDataPointerPushConstant", 36, 140, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"ProgramScopeVariablePointerPushConstant", 37, 143, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"PrintfInfo", 38, 146, 3, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
@@ -7020,31 +7020,31 @@ constexpr InstructionDesc kNonSemantic_Shader_DebugInfo_100Instructions[] = {
   {"DebugTypeFunction", 8, 23, 3, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeEnum", 9, 26, 9, static_cast<uint16_t>(0), 9, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeComposite", 10, 35, 10, static_cast<uint16_t>(0), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugTypeMember", 11, 45, 9, static_cast<uint16_t>(0), 9, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugTypeMember", 11, 45, 9, static_cast<uint16_t>(kInstOptionalTail), 9, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeInheritance", 12, 54, 5, static_cast<uint16_t>(0), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypePtrToMember", 13, 58, 3, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypeTemplate", 14, 60, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeTemplateParameter", 15, 62, 7, static_cast<uint16_t>(0), 6, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypeTemplateTemplateParameter", 16, 68, 6, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypeTemplateParameterPack", 17, 73, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugGlobalVariable", 18, 78, 10, static_cast<uint16_t>(0), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugGlobalVariable", 18, 78, 10, static_cast<uint16_t>(kInstOptionalTail), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugFunctionDeclaration", 19, 88, 9, static_cast<uint16_t>(0), 8, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"DebugFunction", 20, 96, 10, static_cast<uint16_t>(0), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugLexicalBlock", 21, 106, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugFunction", 20, 96, 10, static_cast<uint16_t>(kInstOptionalTail), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugLexicalBlock", 21, 106, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugLexicalBlockDiscriminator", 22, 111, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"DebugScope", 23, 114, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugScope", 23, 114, 2, static_cast<uint16_t>(kInstOptionalTail), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugNoScope", 24, 116, 1, static_cast<uint16_t>(0), 0, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"DebugInlinedAt", 25, 116, 3, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugLocalVariable", 26, 119, 8, static_cast<uint16_t>(0), 8, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugInlinedAt", 25, 116, 3, static_cast<uint16_t>(kInstOptionalTail), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugLocalVariable", 26, 119, 8, static_cast<uint16_t>(kInstOptionalTail), 8, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugInlinedVariable", 27, 127, 3, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugDeclare", 28, 129, 4, static_cast<uint16_t>(0), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugValue", 29, 133, 4, static_cast<uint16_t>(0), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugOperation", 30, 137, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugExpression", 31, 139, 1, static_cast<uint16_t>(0), 1, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugMacroDef", 32, 140, 4, static_cast<uint16_t>(0), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugMacroDef", 32, 140, 4, static_cast<uint16_t>(kInstOptionalTail), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugMacroUndef", 33, 144, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugImportedEntity", 34, 147, 8, static_cast<uint16_t>(0), 7, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"DebugSource", 35, 154, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugSource", 35, 154, 2, static_cast<uint16_t>(kInstOptionalTail), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugFunctionDefinition", 101, 156, 3, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugSourceContinued", 102, 158, 2, static_cast<uint16_t>(0), 1, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugLine", 103, 159, 6, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
@@ -7235,31 +7235,31 @@ constexpr InstructionDesc kOpenCL_DebugInfo_100Instructions[] = {
   {"DebugTypeFunction", 8, 22, 3, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeEnum", 9, 25, 9, static_cast<uint16_t>(0), 9, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeComposite", 10, 34, 10, static_cast<uint16_t>(0), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugTypeMember", 11, 44, 10, static_cast<uint16_t>(0), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugTypeMember", 11, 44, 10, static_cast<uint16_t>(kInstOptionalTail), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeInheritance", 12, 54, 6, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypePtrToMember", 13, 59, 3, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypeTemplate", 14, 61, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugTypeTemplateParameter", 15, 63, 7, static_cast<uint16_t>(0), 6, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypeTemplateTemplateParameter", 16, 69, 6, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugTypeTemplateParameterPack", 17, 74, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugGlobalVariable", 18, 79, 10, static_cast<uint16_t>(0), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugGlobalVariable", 18, 79, 10, static_cast<uint16_t>(kInstOptionalTail), 10, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugFunctionDeclaration", 19, 89, 9, static_cast<uint16_t>(0), 8, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"DebugFunction", 20, 97, 11, static_cast<uint16_t>(0), 11, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugLexicalBlock", 21, 108, 5, static_cast<uint16_t>(0), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugFunction", 20, 97, 11, static_cast<uint16_t>(kInstOptionalTail), 11, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugLexicalBlock", 21, 108, 5, static_cast<uint16_t>(kInstOptionalTail), 5, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugLexicalBlockDiscriminator", 22, 113, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"DebugScope", 23, 116, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugScope", 23, 116, 2, static_cast<uint16_t>(kInstOptionalTail), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugNoScope", 24, 118, 1, static_cast<uint16_t>(0), 0, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"DebugInlinedAt", 25, 118, 3, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugLocalVariable", 26, 121, 8, static_cast<uint16_t>(0), 8, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugInlinedAt", 25, 118, 3, static_cast<uint16_t>(kInstOptionalTail), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugLocalVariable", 26, 121, 8, static_cast<uint16_t>(kInstOptionalTail), 8, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugInlinedVariable", 27, 129, 3, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugDeclare", 28, 131, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugValue", 29, 134, 4, static_cast<uint16_t>(0), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugOperation", 30, 138, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugExpression", 31, 140, 1, static_cast<uint16_t>(0), 1, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
-  {"DebugMacroDef", 32, 141, 4, static_cast<uint16_t>(0), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugMacroDef", 32, 141, 4, static_cast<uint16_t>(kInstOptionalTail), 4, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugMacroUndef", 33, 145, 4, static_cast<uint16_t>(0), 3, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
   {"DebugImportedEntity", 34, 148, 8, static_cast<uint16_t>(0), 7, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
-  {"DebugSource", 35, 155, 2, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
+  {"DebugSource", 35, 155, 2, static_cast<uint16_t>(kInstOptionalTail), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, false, 0},
   {"DebugModuleINTEL", 36, 157, 9, static_cast<uint16_t>(0), 8, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
 };
 
@@ -7957,6 +7957,2025 @@ const InstructionDesc* FindExtInstruction(const ExtInstSetDesc& set,
     }
   }
   return nullptr;
+}
+
+// Every extension name the core grammar lists plus every generated
+// extended-instruction-set name, sorted: whole-string dictionary for
+// OpExtension / OpExtInstImport-style literals.
+constexpr const char* kGrammarStrings[] = {
+    "DebugInfo",
+    "GLSL.std.450",
+    "NonSemantic.ClspvReflection",
+    "NonSemantic.DebugBreak",
+    "NonSemantic.DebugPrintf",
+    "NonSemantic.Shader.DebugInfo.100",
+    "OpenCL.DebugInfo.100",
+    "OpenCL.std",
+    "SPV_ALTERA_arbitrary_precision_fixed_point",
+    "SPV_ALTERA_arbitrary_precision_floating_point",
+    "SPV_ALTERA_arbitrary_precision_integers",
+    "SPV_ALTERA_blocking_pipes",
+    "SPV_ALTERA_fpga_argument_interfaces",
+    "SPV_ALTERA_fpga_buffer_location",
+    "SPV_ALTERA_fpga_cluster_attributes",
+    "SPV_ALTERA_fpga_dsp_control",
+    "SPV_ALTERA_fpga_invocation_pipelining_attributes",
+    "SPV_ALTERA_fpga_latency_control",
+    "SPV_ALTERA_fpga_loop_controls",
+    "SPV_ALTERA_fpga_memory_accesses",
+    "SPV_ALTERA_fpga_memory_attributes",
+    "SPV_ALTERA_fpga_reg",
+    "SPV_ALTERA_global_variable_fpga_decorations",
+    "SPV_ALTERA_io_pipes",
+    "SPV_ALTERA_loop_fuse",
+    "SPV_ALTERA_runtime_aligned",
+    "SPV_ALTERA_task_sequence",
+    "SPV_ALTERA_usm_storage_classes",
+    "SPV_AMDX_shader_enqueue",
+    "SPV_AMD_gcn_shader",
+    "SPV_AMD_gpu_shader_half_float_fetch",
+    "SPV_AMD_shader_ballot",
+    "SPV_AMD_shader_early_and_late_fragment_tests",
+    "SPV_AMD_shader_explicit_vertex_parameter",
+    "SPV_AMD_shader_fragment_mask",
+    "SPV_AMD_shader_image_load_store_lod",
+    "SPV_AMD_shader_trinary_minmax",
+    "SPV_AMD_texture_gather_bias_lod",
+    "SPV_AMD_weak_linkage",
+    "SPV_ARM_cooperative_matrix_layouts",
+    "SPV_ARM_core_builtins",
+    "SPV_ARM_graph",
+    "SPV_ARM_tensors",
+    "SPV_EXT_arithmetic_fence",
+    "SPV_EXT_demote_to_helper_invocation",
+    "SPV_EXT_descriptor_heap",
+    "SPV_EXT_descriptor_indexing",
+    "SPV_EXT_float8",
+    "SPV_EXT_fragment_fully_covered",
+    "SPV_EXT_fragment_invocation_density",
+    "SPV_EXT_fragment_shader_interlock",
+    "SPV_EXT_long_vector",
+    "SPV_EXT_mesh_shader",
+    "SPV_EXT_ocp_microscaling_types",
+    "SPV_EXT_opacity_micromap",
+    "SPV_EXT_optnone",
+    "SPV_EXT_physical_storage_buffer",
+    "SPV_EXT_replicated_composites",
+    "SPV_EXT_shader_64bit_indexing",
+    "SPV_EXT_shader_atomic_float16_add",
+    "SPV_EXT_shader_atomic_float_add",
+    "SPV_EXT_shader_atomic_float_min_max",
+    "SPV_EXT_shader_image_int64",
+    "SPV_EXT_shader_invocation_reorder",
+    "SPV_EXT_shader_stencil_export",
+    "SPV_EXT_shader_subgroup_partitioned",
+    "SPV_EXT_shader_tile_image",
+    "SPV_EXT_shader_viewport_index_layer",
+    "SPV_EXT_split_barrier",
+    "SPV_GOOGLE_decorate_string",
+    "SPV_GOOGLE_hlsl_functionality1",
+    "SPV_GOOGLE_user_type",
+    "SPV_INTEL_2d_block_io",
+    "SPV_INTEL_arbitrary_precision_fixed_point",
+    "SPV_INTEL_arbitrary_precision_floating_point",
+    "SPV_INTEL_arbitrary_precision_integers",
+    "SPV_INTEL_bfloat16_conversion",
+    "SPV_INTEL_bindless_images",
+    "SPV_INTEL_blocking_pipes",
+    "SPV_INTEL_cache_controls",
+    "SPV_INTEL_debug_module",
+    "SPV_INTEL_device_side_avc_motion_estimation",
+    "SPV_INTEL_float_controls2",
+    "SPV_INTEL_fp_fast_math_mode",
+    "SPV_INTEL_fp_max_error",
+    "SPV_INTEL_fpga_argument_interfaces",
+    "SPV_INTEL_fpga_buffer_location",
+    "SPV_INTEL_fpga_cluster_attributes",
+    "SPV_INTEL_fpga_dsp_control",
+    "SPV_INTEL_fpga_invocation_pipelining_attributes",
+    "SPV_INTEL_fpga_latency_control",
+    "SPV_INTEL_fpga_loop_controls",
+    "SPV_INTEL_fpga_memory_accesses",
+    "SPV_INTEL_fpga_memory_attributes",
+    "SPV_INTEL_fpga_reg",
+    "SPV_INTEL_function_pointers",
+    "SPV_INTEL_function_variants",
+    "SPV_INTEL_global_variable_fpga_decorations",
+    "SPV_INTEL_global_variable_host_access",
+    "SPV_INTEL_inline_assembly",
+    "SPV_INTEL_int4",
+    "SPV_INTEL_io_pipes",
+    "SPV_INTEL_kernel_attributes",
+    "SPV_INTEL_long_composites",
+    "SPV_INTEL_loop_fuse",
+    "SPV_INTEL_masked_gather_scatter",
+    "SPV_INTEL_maximum_registers",
+    "SPV_INTEL_media_block_io",
+    "SPV_INTEL_memory_access_aliasing",
+    "SPV_INTEL_optnone",
+    "SPV_INTEL_predicated_io",
+    "SPV_INTEL_rounded_divide_sqrt",
+    "SPV_INTEL_runtime_aligned",
+    "SPV_INTEL_shader_integer_functions2",
+    "SPV_INTEL_split_barrier",
+    "SPV_INTEL_subgroup_buffer_prefetch",
+    "SPV_INTEL_subgroup_matrix_multiply_accumulate",
+    "SPV_INTEL_subgroups",
+    "SPV_INTEL_task_sequence",
+    "SPV_INTEL_tensor_float32_conversion",
+    "SPV_INTEL_ternary_bitwise_function",
+    "SPV_INTEL_unstructured_loop_controls",
+    "SPV_INTEL_usm_storage_classes",
+    "SPV_INTEL_variable_length_array",
+    "SPV_INTEL_vector_compute",
+    "SPV_KHR_16bit_storage",
+    "SPV_KHR_8bit_storage",
+    "SPV_KHR_abort",
+    "SPV_KHR_bfloat16",
+    "SPV_KHR_bit_instructions",
+    "SPV_KHR_compute_shader_derivatives",
+    "SPV_KHR_constant_data",
+    "SPV_KHR_cooperative_matrix",
+    "SPV_KHR_device_group",
+    "SPV_KHR_expect_assume",
+    "SPV_KHR_float_controls",
+    "SPV_KHR_float_controls2",
+    "SPV_KHR_fma",
+    "SPV_KHR_fragment_shader_barycentric",
+    "SPV_KHR_fragment_shading_rate",
+    "SPV_KHR_integer_dot_product",
+    "SPV_KHR_linkonce_odr",
+    "SPV_KHR_maximal_reconvergence",
+    "SPV_KHR_multiview",
+    "SPV_KHR_no_integer_wrap_decoration",
+    "SPV_KHR_opacity_micromap",
+    "SPV_KHR_physical_storage_buffer",
+    "SPV_KHR_poison_freeze",
+    "SPV_KHR_post_depth_coverage",
+    "SPV_KHR_quad_control",
+    "SPV_KHR_ray_cull_mask",
+    "SPV_KHR_ray_query",
+    "SPV_KHR_ray_tracing",
+    "SPV_KHR_ray_tracing_position_fetch",
+    "SPV_KHR_relaxed_extended_instruction",
+    "SPV_KHR_shader_atomic_counter_ops",
+    "SPV_KHR_shader_ballot",
+    "SPV_KHR_shader_clock",
+    "SPV_KHR_shader_draw_parameters",
+    "SPV_KHR_storage_buffer_storage_class",
+    "SPV_KHR_subgroup_rotate",
+    "SPV_KHR_subgroup_uniform_control_flow",
+    "SPV_KHR_subgroup_vote",
+    "SPV_KHR_terminate_invocation",
+    "SPV_KHR_uniform_group_instructions",
+    "SPV_KHR_untyped_pointers",
+    "SPV_KHR_variable_pointers",
+    "SPV_KHR_vulkan_memory_model",
+    "SPV_KHR_workgroup_memory_explicit_layout",
+    "SPV_NVX_multiview_per_view_attributes",
+    "SPV_NV_bindless_texture",
+    "SPV_NV_cluster_acceleration_structure",
+    "SPV_NV_compute_shader_derivatives",
+    "SPV_NV_cooperative_matrix",
+    "SPV_NV_cooperative_matrix2",
+    "SPV_NV_cooperative_matrix_decode_vector",
+    "SPV_NV_cooperative_vector",
+    "SPV_NV_displacement_micromap",
+    "SPV_NV_fragment_shader_barycentric",
+    "SPV_NV_geometry_shader_passthrough",
+    "SPV_NV_linear_swept_spheres",
+    "SPV_NV_mesh_shader",
+    "SPV_NV_push_constant_bank",
+    "SPV_NV_raw_access_chains",
+    "SPV_NV_ray_tracing",
+    "SPV_NV_ray_tracing_motion_blur",
+    "SPV_NV_sample_mask_override_coverage",
+    "SPV_NV_shader_atomic_fp16_vector",
+    "SPV_NV_shader_image_footprint",
+    "SPV_NV_shader_invocation_reorder",
+    "SPV_NV_shader_sm_builtins",
+    "SPV_NV_shader_subgroup_partitioned",
+    "SPV_NV_shading_rate",
+    "SPV_NV_stereo_view_rendering",
+    "SPV_NV_tensor_addressing",
+    "SPV_NV_viewport_array2",
+    "SPV_QCOM_cooperative_matrix_conversion",
+    "SPV_QCOM_image_processing",
+    "SPV_QCOM_image_processing2",
+    "SPV_QCOM_image_processing3",
+    "SPV_QCOM_multiple_wait_queues",
+    "SPV_QCOM_tile_shading",
+    "SPV_VALVE_mixed_float_dot_product",
+};
+
+// String match-model primer: every core enumerant name (grammar order,
+// first occurrence), then the dictionary above, each NUL-terminated.
+constexpr char kStringPrimer[] =
+    "None\0"
+    "Bias\0"
+    "Lod\0"
+    "Grad\0"
+    "ConstOffset\0"
+    "Offset\0"
+    "ConstOffsets\0"
+    "Sample\0"
+    "MinLod\0"
+    "MakeTexelAvailable\0"
+    "MakeTexelVisible\0"
+    "NonPrivateTexel\0"
+    "VolatileTexel\0"
+    "SignExtend\0"
+    "ZeroExtend\0"
+    "Nontemporal\0"
+    "Offsets\0"
+    "NotNaN\0"
+    "NotInf\0"
+    "NSZ\0"
+    "AllowRecip\0"
+    "Fast\0"
+    "AllowContract\0"
+    "AllowReassoc\0"
+    "AllowTransform\0"
+    "Flatten\0"
+    "DontFlatten\0"
+    "Unroll\0"
+    "DontUnroll\0"
+    "DependencyInfinite\0"
+    "DependencyLength\0"
+    "MinIterations\0"
+    "MaxIterations\0"
+    "IterationMultiple\0"
+    "PeelCount\0"
+    "PartialCount\0"
+    "InitiationIntervalALTERA\0"
+    "MaxConcurrencyALTERA\0"
+    "DependencyArrayALTERA\0"
+    "PipelineEnableALTERA\0"
+    "LoopCoalesceALTERA\0"
+    "MaxInterleavingALTERA\0"
+    "SpeculatedIterationsALTERA\0"
+    "NoFusionALTERA\0"
+    "LoopCountALTERA\0"
+    "MaxReinvocationDelayALTERA\0"
+    "MultipleWaitQueuesQCOM\0"
+    "Inline\0"
+    "DontInline\0"
+    "Pure\0"
+    "Const\0"
+    "OptNoneEXT\0"
+    "Relaxed\0"
+    "Acquire\0"
+    "Release\0"
+    "AcquireRelease\0"
+    "SequentiallyConsistent\0"
+    "UniformMemory\0"
+    "SubgroupMemory\0"
+    "WorkgroupMemory\0"
+    "CrossWorkgroupMemory\0"
+    "AtomicCounterMemory\0"
+    "ImageMemory\0"
+    "OutputMemory\0"
+    "MakeAvailable\0"
+    "MakeVisible\0"
+    "Volatile\0"
+    "Aligned\0"
+    "MakePointerAvailable\0"
+    "MakePointerVisible\0"
+    "NonPrivatePointer\0"
+    "AliasScopeINTELMask\0"
+    "NoAliasINTELMask\0"
+    "CmdExecTime\0"
+    "NoneKHR\0"
+    "OpaqueKHR\0"
+    "NoOpaqueKHR\0"
+    "TerminateOnFirstHitKHR\0"
+    "SkipClosestHitShaderKHR\0"
+    "CullBackFacingTrianglesKHR\0"
+    "CullFrontFacingTrianglesKHR\0"
+    "CullOpaqueKHR\0"
+    "CullNoOpaqueKHR\0"
+    "SkipTrianglesKHR\0"
+    "SkipAABBsKHR\0"
+    "ForceOpacityMicromap2StateKHR\0"
+    "Vertical2Pixels\0"
+    "Vertical4Pixels\0"
+    "Horizontal2Pixels\0"
+    "Horizontal4Pixels\0"
+    "RobustnessPerComponentNV\0"
+    "RobustnessPerElementNV\0"
+    "Unknown\0"
+    "ESSL\0"
+    "GLSL\0"
+    "OpenCL_C\0"
+    "OpenCL_CPP\0"
+    "HLSL\0"
+    "CPP_for_OpenCL\0"
+    "SYCL\0"
+    "HERO_C\0"
+    "NZSL\0"
+    "WGSL\0"
+    "Slang\0"
+    "Zig\0"
+    "Rust\0"
+    "Pred\0"
+    "ApilaJai\0"
+    "Vertex\0"
+    "TessellationControl\0"
+    "TessellationEvaluation\0"
+    "Geometry\0"
+    "Fragment\0"
+    "GLCompute\0"
+    "Kernel\0"
+    "TaskNV\0"
+    "MeshNV\0"
+    "RayGenerationKHR\0"
+    "IntersectionKHR\0"
+    "AnyHitKHR\0"
+    "ClosestHitKHR\0"
+    "MissKHR\0"
+    "CallableKHR\0"
+    "TaskEXT\0"
+    "MeshEXT\0"
+    "Logical\0"
+    "Physical32\0"
+    "Physical64\0"
+    "PhysicalStorageBuffer64\0"
+    "Simple\0"
+    "GLSL450\0"
+    "OpenCL\0"
+    "Vulkan\0"
+    "Invocations\0"
+    "SpacingEqual\0"
+    "SpacingFractionalEven\0"
+    "SpacingFractionalOdd\0"
+    "VertexOrderCw\0"
+    "VertexOrderCcw\0"
+    "PixelCenterInteger\0"
+    "OriginUpperLeft\0"
+    "OriginLowerLeft\0"
+    "EarlyFragmentTests\0"
+    "PointMode\0"
+    "Xfb\0"
+    "DepthReplacing\0"
+    "DepthGreater\0"
+    "DepthLess\0"
+    "DepthUnchanged\0"
+    "LocalSize\0"
+    "LocalSizeHint\0"
+    "InputPoints\0"
+    "InputLines\0"
+    "InputLinesAdjacency\0"
+    "Triangles\0"
+    "InputTrianglesAdjacency\0"
+    "Quads\0"
+    "Isolines\0"
+    "OutputVertices\0"
+    "OutputPoints\0"
+    "OutputLineStrip\0"
+    "OutputTriangleStrip\0"
+    "VecTypeHint\0"
+    "ContractionOff\0"
+    "Initializer\0"
+    "Finalizer\0"
+    "SubgroupSize\0"
+    "SubgroupsPerWorkgroup\0"
+    "SubgroupsPerWorkgroupId\0"
+    "LocalSizeId\0"
+    "LocalSizeHintId\0"
+    "NonCoherentColorAttachmentReadEXT\0"
+    "NonCoherentDepthAttachmentReadEXT\0"
+    "NonCoherentStencilAttachmentReadEXT\0"
+    "SubgroupUniformControlFlowKHR\0"
+    "PostDepthCoverage\0"
+    "DenormPreserve\0"
+    "DenormFlushToZero\0"
+    "SignedZeroInfNanPreserve\0"
+    "RoundingModeRTE\0"
+    "RoundingModeRTZ\0"
+    "NonCoherentTileAttachmentReadQCOM\0"
+    "TileShadingRateQCOM\0"
+    "EarlyAndLateFragmentTestsAMD\0"
+    "StencilRefReplacingEXT\0"
+    "CoalescingAMDX\0"
+    "IsApiEntryAMDX\0"
+    "MaxNodeRecursionAMDX\0"
+    "StaticNumWorkgroupsAMDX\0"
+    "ShaderIndexAMDX\0"
+    "MaxNumWorkgroupsAMDX\0"
+    "StencilRefUnchangedFrontAMD\0"
+    "StencilRefGreaterFrontAMD\0"
+    "StencilRefLessFrontAMD\0"
+    "StencilRefUnchangedBackAMD\0"
+    "StencilRefGreaterBackAMD\0"
+    "StencilRefLessBackAMD\0"
+    "QuadDerivativesKHR\0"
+    "RequireFullQuadsKHR\0"
+    "SharesInputWithAMDX\0"
+    "ArithmeticPoisonKHR\0"
+    "OutputLinesEXT\0"
+    "OutputPrimitivesEXT\0"
+    "DerivativeGroupQuadsKHR\0"
+    "DerivativeGroupLinearKHR\0"
+    "OutputTrianglesEXT\0"
+    "PixelInterlockOrderedEXT\0"
+    "PixelInterlockUnorderedEXT\0"
+    "SampleInterlockOrderedEXT\0"
+    "SampleInterlockUnorderedEXT\0"
+    "ShadingRateInterlockOrderedEXT\0"
+    "ShadingRateInterlockUnorderedEXT\0"
+    "Shader64BitIndexingEXT\0"
+    "SharedLocalMemorySizeINTEL\0"
+    "RoundingModeRTPINTEL\0"
+    "RoundingModeRTNINTEL\0"
+    "FloatingPointModeALTINTEL\0"
+    "FloatingPointModeIEEEINTEL\0"
+    "MaxWorkgroupSizeINTEL\0"
+    "MaxWorkDimINTEL\0"
+    "NoGlobalOffsetINTEL\0"
+    "NumSIMDWorkitemsINTEL\0"
+    "SchedulerTargetFmaxMhzINTEL\0"
+    "MaximallyReconvergesKHR\0"
+    "FPFastMathDefault\0"
+    "OpacityMicromapIdKHR\0"
+    "StreamingInterfaceINTEL\0"
+    "RegisterMapInterfaceINTEL\0"
+    "NamedBarrierCountINTEL\0"
+    "MaximumRegistersINTEL\0"
+    "MaximumRegistersIdINTEL\0"
+    "NamedMaximumRegistersINTEL\0"
+    "UniformConstant\0"
+    "Input\0"
+    "Uniform\0"
+    "Output\0"
+    "Workgroup\0"
+    "CrossWorkgroup\0"
+    "Private\0"
+    "Function\0"
+    "Generic\0"
+    "PushConstant\0"
+    "AtomicCounter\0"
+    "Image\0"
+    "StorageBuffer\0"
+    "TileImageEXT\0"
+    "TileAttachmentQCOM\0"
+    "NodePayloadAMDX\0"
+    "CallableDataKHR\0"
+    "IncomingCallableDataKHR\0"
+    "RayPayloadKHR\0"
+    "HitAttributeKHR\0"
+    "IncomingRayPayloadKHR\0"
+    "ShaderRecordBufferKHR\0"
+    "PhysicalStorageBuffer\0"
+    "HitObjectAttributeNV\0"
+    "TaskPayloadWorkgroupEXT\0"
+    "HitObjectAttributeEXT\0"
+    "CodeSectionINTEL\0"
+    "DeviceOnlyALTERA\0"
+    "HostOnlyALTERA\0"
+    "1D\0"
+    "2D\0"
+    "3D\0"
+    "Cube\0"
+    "Rect\0"
+    "Buffer\0"
+    "SubpassData\0"
+    "TileImageDataEXT\0"
+    "ClampToEdge\0"
+    "Clamp\0"
+    "Repeat\0"
+    "RepeatMirrored\0"
+    "Nearest\0"
+    "Linear\0"
+    "Rgba32f\0"
+    "Rgba16f\0"
+    "R32f\0"
+    "Rgba8\0"
+    "Rgba8Snorm\0"
+    "Rg32f\0"
+    "Rg16f\0"
+    "R11fG11fB10f\0"
+    "R16f\0"
+    "Rgba16\0"
+    "Rgb10A2\0"
+    "Rg16\0"
+    "Rg8\0"
+    "R16\0"
+    "R8\0"
+    "Rgba16Snorm\0"
+    "Rg16Snorm\0"
+    "Rg8Snorm\0"
+    "R16Snorm\0"
+    "R8Snorm\0"
+    "Rgba32i\0"
+    "Rgba16i\0"
+    "Rgba8i\0"
+    "R32i\0"
+    "Rg32i\0"
+    "Rg16i\0"
+    "Rg8i\0"
+    "R16i\0"
+    "R8i\0"
+    "Rgba32ui\0"
+    "Rgba16ui\0"
+    "Rgba8ui\0"
+    "R32ui\0"
+    "Rgb10a2ui\0"
+    "Rg32ui\0"
+    "Rg16ui\0"
+    "Rg8ui\0"
+    "R16ui\0"
+    "R8ui\0"
+    "R64ui\0"
+    "R64i\0"
+    "R\0"
+    "A\0"
+    "RG\0"
+    "RA\0"
+    "RGB\0"
+    "RGBA\0"
+    "BGRA\0"
+    "ARGB\0"
+    "Intensity\0"
+    "Luminance\0"
+    "Rx\0"
+    "RGx\0"
+    "RGBx\0"
+    "Depth\0"
+    "DepthStencil\0"
+    "sRGB\0"
+    "sRGBx\0"
+    "sRGBA\0"
+    "sBGRA\0"
+    "ABGR\0"
+    "SnormInt8\0"
+    "SnormInt16\0"
+    "UnormInt8\0"
+    "UnormInt16\0"
+    "UnormShort565\0"
+    "UnormShort555\0"
+    "UnormInt101010\0"
+    "SignedInt8\0"
+    "SignedInt16\0"
+    "SignedInt32\0"
+    "UnsignedInt8\0"
+    "UnsignedInt16\0"
+    "UnsignedInt32\0"
+    "HalfFloat\0"
+    "Float\0"
+    "UnormInt24\0"
+    "UnormInt101010_2\0"
+    "UnormInt10X6EXT\0"
+    "UnsignedIntRaw10EXT\0"
+    "UnsignedIntRaw12EXT\0"
+    "UnormInt2_101010EXT\0"
+    "UnsignedInt10X6EXT\0"
+    "UnsignedInt12X4EXT\0"
+    "UnsignedInt14X2EXT\0"
+    "UnormInt12X4EXT\0"
+    "UnormInt14X2EXT\0"
+    "RTE\0"
+    "RTZ\0"
+    "RTP\0"
+    "RTN\0"
+    "Preserve\0"
+    "FlushToZero\0"
+    "TRN\0"
+    "TRN_ZERO\0"
+    "RND\0"
+    "RND_ZERO\0"
+    "RND_INF\0"
+    "RND_MIN_INF\0"
+    "RND_CONV\0"
+    "RND_CONV_ODD\0"
+    "IEEE\0"
+    "ALT\0"
+    "WRAP\0"
+    "SAT\0"
+    "SAT_ZERO\0"
+    "SAT_SYM\0"
+    "Export\0"
+    "Import\0"
+    "LinkOnceODR\0"
+    "WeakAMD\0"
+    "ReadOnly\0"
+    "WriteOnly\0"
+    "ReadWrite\0"
+    "NoneINTEL\0"
+    "ReadINTEL\0"
+    "WriteINTEL\0"
+    "ReadWriteINTEL\0"
+    "Zext\0"
+    "Sext\0"
+    "ByVal\0"
+    "Sret\0"
+    "NoAlias\0"
+    "NoCapture\0"
+    "NoWrite\0"
+    "NoReadWrite\0"
+    "RuntimeAlignedALTERA\0"
+    "RelaxedPrecision\0"
+    "SpecId\0"
+    "Block\0"
+    "BufferBlock\0"
+    "RowMajor\0"
+    "ColMajor\0"
+    "ArrayStride\0"
+    "MatrixStride\0"
+    "GLSLShared\0"
+    "GLSLPacked\0"
+    "CPacked\0"
+    "BuiltIn\0"
+    "NoPerspective\0"
+    "Flat\0"
+    "Patch\0"
+    "Centroid\0"
+    "Invariant\0"
+    "Restrict\0"
+    "Aliased\0"
+    "Constant\0"
+    "Coherent\0"
+    "NonWritable\0"
+    "NonReadable\0"
+    "UniformId\0"
+    "SaturatedConversion\0"
+    "Stream\0"
+    "Location\0"
+    "Component\0"
+    "Index\0"
+    "Binding\0"
+    "DescriptorSet\0"
+    "XfbBuffer\0"
+    "XfbStride\0"
+    "FuncParamAttr\0"
+    "FPRoundingMode\0"
+    "FPFastMathMode\0"
+    "LinkageAttributes\0"
+    "NoContraction\0"
+    "InputAttachmentIndex\0"
+    "Alignment\0"
+    "MaxByteOffset\0"
+    "AlignmentId\0"
+    "MaxByteOffsetId\0"
+    "SaturatedToLargestFloat8NormalConversionEXT\0"
+    "NoSignedWrap\0"
+    "NoUnsignedWrap\0"
+    "WeightTextureQCOM\0"
+    "BlockMatchTextureQCOM\0"
+    "BlockMatchSamplerQCOM\0"
+    "ExplicitInterpAMD\0"
+    "NodeSharesPayloadLimitsWithAMDX\0"
+    "NodeMaxPayloadsAMDX\0"
+    "TrackFinishWritingAMDX\0"
+    "PayloadNodeNameAMDX\0"
+    "PayloadNodeBaseIndexAMDX\0"
+    "PayloadNodeSparseArrayAMDX\0"
+    "PayloadNodeArraySizeAMDX\0"
+    "PayloadDispatchIndirectAMDX\0"
+    "ArrayStrideIdEXT\0"
+    "OffsetIdEXT\0"
+    "UTFEncodedKHR\0"
+    "OverrideCoverageNV\0"
+    "PassthroughNV\0"
+    "ViewportRelativeNV\0"
+    "SecondaryViewportRelativeNV\0"
+    "PerPrimitiveEXT\0"
+    "PerViewNV\0"
+    "PerTaskNV\0"
+    "PerVertexKHR\0"
+    "NonUniform\0"
+    "RestrictPointer\0"
+    "AliasedPointer\0"
+    "MemberOffsetNV\0"
+    "HitObjectShaderRecordBufferNV\0"
+    "HitObjectShaderRecordBufferEXT\0"
+    "BankNV\0"
+    "BindlessSamplerNV\0"
+    "BindlessImageNV\0"
+    "BoundSamplerNV\0"
+    "BoundImageNV\0"
+    "SIMTCallINTEL\0"
+    "ReferencedIndirectlyINTEL\0"
+    "ClobberINTEL\0"
+    "SideEffectsINTEL\0"
+    "VectorComputeVariableINTEL\0"
+    "FuncParamIOKindINTEL\0"
+    "VectorComputeFunctionINTEL\0"
+    "StackCallINTEL\0"
+    "GlobalVariableOffsetINTEL\0"
+    "CounterBuffer\0"
+    "UserSemantic\0"
+    "UserTypeGOOGLE\0"
+    "FunctionRoundingModeINTEL\0"
+    "FunctionDenormModeINTEL\0"
+    "RegisterALTERA\0"
+    "MemoryALTERA\0"
+    "NumbanksALTERA\0"
+    "BankwidthALTERA\0"
+    "MaxPrivateCopiesALTERA\0"
+    "SinglepumpALTERA\0"
+    "DoublepumpALTERA\0"
+    "MaxReplicatesALTERA\0"
+    "SimpleDualPortALTERA\0"
+    "MergeALTERA\0"
+    "BankBitsALTERA\0"
+    "ForcePow2DepthALTERA\0"
+    "StridesizeALTERA\0"
+    "WordsizeALTERA\0"
+    "TrueDualPortALTERA\0"
+    "BurstCoalesceALTERA\0"
+    "CacheSizeALTERA\0"
+    "DontStaticallyCoalesceALTERA\0"
+    "PrefetchALTERA\0"
+    "StallEnableALTERA\0"
+    "FuseLoopsInFunctionALTERA\0"
+    "MathOpDSPModeALTERA\0"
+    "AliasScopeINTEL\0"
+    "NoAliasINTEL\0"
+    "BufferLocationALTERA\0"
+    "IOPipeStorageALTERA\0"
+    "FunctionFloatingPointModeINTEL\0"
+    "SingleElementVectorINTEL\0"
+    "VectorComputeCallableFunctionINTEL\0"
+    "MediaBlockIOINTEL\0"
+    "StallFreeALTERA\0"
+    "FPMaxErrorDecorationINTEL\0"
+    "LatencyControlLabelALTERA\0"
+    "LatencyControlConstraintALTERA\0"
+    "ConduitKernelArgumentALTERA\0"
+    "RegisterMapKernelArgumentALTERA\0"
+    "MMHostInterfaceAddressWidthALTERA\0"
+    "MMHostInterfaceDataWidthALTERA\0"
+    "MMHostInterfaceLatencyALTERA\0"
+    "MMHostInterfaceReadWriteModeALTERA\0"
+    "MMHostInterfaceMaxBurstALTERA\0"
+    "MMHostInterfaceWaitRequestALTERA\0"
+    "StableKernelArgumentALTERA\0"
+    "HostAccessINTEL\0"
+    "InitModeALTERA\0"
+    "ImplementInRegisterMapALTERA\0"
+    "ConditionalINTEL\0"
+    "CacheControlLoadINTEL\0"
+    "CacheControlStoreINTEL\0"
+    "Position\0"
+    "PointSize\0"
+    "ClipDistance\0"
+    "CullDistance\0"
+    "VertexId\0"
+    "InstanceId\0"
+    "PrimitiveId\0"
+    "InvocationId\0"
+    "Layer\0"
+    "ViewportIndex\0"
+    "TessLevelOuter\0"
+    "TessLevelInner\0"
+    "TessCoord\0"
+    "PatchVertices\0"
+    "FragCoord\0"
+    "PointCoord\0"
+    "FrontFacing\0"
+    "SampleId\0"
+    "SamplePosition\0"
+    "SampleMask\0"
+    "FragDepth\0"
+    "HelperInvocation\0"
+    "NumWorkgroups\0"
+    "WorkgroupSize\0"
+    "WorkgroupId\0"
+    "LocalInvocationId\0"
+    "GlobalInvocationId\0"
+    "LocalInvocationIndex\0"
+    "WorkDim\0"
+    "GlobalSize\0"
+    "EnqueuedWorkgroupSize\0"
+    "GlobalOffset\0"
+    "GlobalLinearId\0"
+    "SubgroupMaxSize\0"
+    "NumSubgroups\0"
+    "NumEnqueuedSubgroups\0"
+    "SubgroupId\0"
+    "SubgroupLocalInvocationId\0"
+    "VertexIndex\0"
+    "InstanceIndex\0"
+    "CoreIDARM\0"
+    "CoreCountARM\0"
+    "CoreMaxIDARM\0"
+    "WarpIDARM\0"
+    "WarpMaxIDARM\0"
+    "SubgroupEqMask\0"
+    "SubgroupGeMask\0"
+    "SubgroupGtMask\0"
+    "SubgroupLeMask\0"
+    "SubgroupLtMask\0"
+    "BaseVertex\0"
+    "BaseInstance\0"
+    "DrawIndex\0"
+    "PrimitiveShadingRateKHR\0"
+    "DeviceIndex\0"
+    "ViewIndex\0"
+    "ShadingRateKHR\0"
+    "TileOffsetQCOM\0"
+    "TileDimensionQCOM\0"
+    "TileApronSizeQCOM\0"
+    "BaryCoordNoPerspAMD\0"
+    "BaryCoordNoPerspCentroidAMD\0"
+    "BaryCoordNoPerspSampleAMD\0"
+    "BaryCoordSmoothAMD\0"
+    "BaryCoordSmoothCentroidAMD\0"
+    "BaryCoordSmoothSampleAMD\0"
+    "BaryCoordPullModelAMD\0"
+    "FragStencilRefEXT\0"
+    "RemainingRecursionLevelsAMDX\0"
+    "SamplerHeapEXT\0"
+    "ResourceHeapEXT\0"
+    "ViewportMaskNV\0"
+    "SecondaryPositionNV\0"
+    "SecondaryViewportMaskNV\0"
+    "PositionPerViewNV\0"
+    "ViewportMaskPerViewNV\0"
+    "FullyCoveredEXT\0"
+    "TaskCountNV\0"
+    "PrimitiveCountNV\0"
+    "PrimitiveIndicesNV\0"
+    "ClipDistancePerViewNV\0"
+    "CullDistancePerViewNV\0"
+    "LayerPerViewNV\0"
+    "MeshViewCountNV\0"
+    "MeshViewIndicesNV\0"
+    "BaryCoordKHR\0"
+    "BaryCoordNoPerspKHR\0"
+    "FragSizeEXT\0"
+    "FragInvocationCountEXT\0"
+    "PrimitivePointIndicesEXT\0"
+    "PrimitiveLineIndicesEXT\0"
+    "PrimitiveTriangleIndicesEXT\0"
+    "CullPrimitiveEXT\0"
+    "LaunchIdKHR\0"
+    "LaunchSizeKHR\0"
+    "WorldRayOriginKHR\0"
+    "WorldRayDirectionKHR\0"
+    "ObjectRayOriginKHR\0"
+    "ObjectRayDirectionKHR\0"
+    "RayTminKHR\0"
+    "RayTmaxKHR\0"
+    "InstanceCustomIndexKHR\0"
+    "ObjectToWorldKHR\0"
+    "WorldToObjectKHR\0"
+    "HitTNV\0"
+    "HitKindKHR\0"
+    "CurrentRayTimeNV\0"
+    "HitTriangleVertexPositionsKHR\0"
+    "HitMicroTriangleVertexPositionsNV\0"
+    "HitMicroTriangleVertexBarycentricsNV\0"
+    "IncomingRayFlagsKHR\0"
+    "RayGeometryIndexKHR\0"
+    "HitIsSphereNV\0"
+    "HitIsLSSNV\0"
+    "HitSpherePositionNV\0"
+    "WarpsPerSMNV\0"
+    "SMCountNV\0"
+    "WarpIDNV\0"
+    "SMIDNV\0"
+    "HitLSSPositionsNV\0"
+    "HitKindFrontFacingMicroTriangleNV\0"
+    "HitKindBackFacingMicroTriangleNV\0"
+    "HitSphereRadiusNV\0"
+    "HitLSSRadiiNV\0"
+    "ClusterIDNV\0"
+    "CullMaskKHR\0"
+    "CrossDevice\0"
+    "Device\0"
+    "Subgroup\0"
+    "Invocation\0"
+    "QueueFamily\0"
+    "ShaderCallKHR\0"
+    "Reduce\0"
+    "InclusiveScan\0"
+    "ExclusiveScan\0"
+    "ClusteredReduce\0"
+    "PartitionedReduceEXT\0"
+    "PartitionedInclusiveScanEXT\0"
+    "PartitionedExclusiveScanEXT\0"
+    "NoWait\0"
+    "WaitKernel\0"
+    "WaitWorkGroup\0"
+    "Matrix\0"
+    "Shader\0"
+    "Tessellation\0"
+    "Addresses\0"
+    "Linkage\0"
+    "Vector16\0"
+    "Float16Buffer\0"
+    "Float16\0"
+    "Float64\0"
+    "Int64\0"
+    "Int64Atomics\0"
+    "ImageBasic\0"
+    "ImageReadWrite\0"
+    "ImageMipmap\0"
+    "Pipes\0"
+    "Groups\0"
+    "DeviceEnqueue\0"
+    "LiteralSampler\0"
+    "AtomicStorage\0"
+    "Int16\0"
+    "TessellationPointSize\0"
+    "GeometryPointSize\0"
+    "ImageGatherExtended\0"
+    "StorageImageMultisample\0"
+    "UniformBufferArrayDynamicIndexing\0"
+    "SampledImageArrayDynamicIndexing\0"
+    "StorageBufferArrayDynamicIndexing\0"
+    "StorageImageArrayDynamicIndexing\0"
+    "ImageCubeArray\0"
+    "SampleRateShading\0"
+    "ImageRect\0"
+    "SampledRect\0"
+    "GenericPointer\0"
+    "Int8\0"
+    "InputAttachment\0"
+    "SparseResidency\0"
+    "Sampled1D\0"
+    "Image1D\0"
+    "SampledCubeArray\0"
+    "SampledBuffer\0"
+    "ImageBuffer\0"
+    "ImageMSArray\0"
+    "StorageImageExtendedFormats\0"
+    "ImageQuery\0"
+    "DerivativeControl\0"
+    "InterpolationFunction\0"
+    "TransformFeedback\0"
+    "GeometryStreams\0"
+    "StorageImageReadWithoutFormat\0"
+    "StorageImageWriteWithoutFormat\0"
+    "MultiViewport\0"
+    "SubgroupDispatch\0"
+    "NamedBarrier\0"
+    "PipeStorage\0"
+    "GroupNonUniform\0"
+    "GroupNonUniformVote\0"
+    "GroupNonUniformArithmetic\0"
+    "GroupNonUniformBallot\0"
+    "GroupNonUniformShuffle\0"
+    "GroupNonUniformShuffleRelative\0"
+    "GroupNonUniformClustered\0"
+    "GroupNonUniformQuad\0"
+    "ShaderLayer\0"
+    "ShaderViewportIndex\0"
+    "UniformDecoration\0"
+    "CoreBuiltinsARM\0"
+    "TileImageColorReadAccessEXT\0"
+    "TileImageDepthReadAccessEXT\0"
+    "TileImageStencilReadAccessEXT\0"
+    "TensorsARM\0"
+    "StorageTensorArrayDynamicIndexingARM\0"
+    "StorageTensorArrayNonUniformIndexingARM\0"
+    "GraphARM\0"
+    "CooperativeMatrixLayoutsARM\0"
+    "Float8EXT\0"
+    "Float8CooperativeMatrixEXT\0"
+    "Float6EXT\0"
+    "Float4EXT\0"
+    "Float8UnsignedE8M0EXT\0"
+    "MXInt8EXT\0"
+    "BitcastExtractEXT\0"
+    "FragmentShadingRateKHR\0"
+    "SubgroupBallotKHR\0"
+    "DrawParameters\0"
+    "WorkgroupMemoryExplicitLayoutKHR\0"
+    "WorkgroupMemoryExplicitLayout8BitAccessKHR\0"
+    "WorkgroupMemoryExplicitLayout16BitAccessKHR\0"
+    "SubgroupVoteKHR\0"
+    "StorageBuffer16BitAccess\0"
+    "UniformAndStorageBuffer16BitAccess\0"
+    "StoragePushConstant16\0"
+    "StorageInputOutput16\0"
+    "DeviceGroup\0"
+    "MultiView\0"
+    "VariablePointersStorageBuffer\0"
+    "VariablePointers\0"
+    "AtomicStorageOps\0"
+    "SampleMaskPostDepthCoverage\0"
+    "StorageBuffer8BitAccess\0"
+    "UniformAndStorageBuffer8BitAccess\0"
+    "StoragePushConstant8\0"
+    "RayQueryProvisionalKHR\0"
+    "RayQueryKHR\0"
+    "UntypedPointersKHR\0"
+    "RayTraversalPrimitiveCullingKHR\0"
+    "RayTracingKHR\0"
+    "TextureSampleWeightedQCOM\0"
+    "TextureBoxFilterQCOM\0"
+    "TextureBlockMatchQCOM\0"
+    "TileShadingQCOM\0"
+    "CooperativeMatrixConversionQCOM\0"
+    "TextureBlockMatch2QCOM\0"
+    "ImageGatherLinearQCOM\0"
+    "ImageGatherExtendedModesQCOM\0"
+    "Float16ImageAMD\0"
+    "ImageGatherBiasLodAMD\0"
+    "FragmentMaskAMD\0"
+    "StencilExportEXT\0"
+    "ImageReadWriteLodAMD\0"
+    "Int64ImageEXT\0"
+    "ShaderClockKHR\0"
+    "ShaderEnqueueAMDX\0"
+    "QuadControlKHR\0"
+    "Int4TypeINTEL\0"
+    "Int4CooperativeMatrixINTEL\0"
+    "BFloat16TypeKHR\0"
+    "BFloat16DotProductKHR\0"
+    "BFloat16CooperativeMatrixKHR\0"
+    "AbortKHR\0"
+    "DescriptorHeapEXT\0"
+    "ConstantDataKHR\0"
+    "PoisonFreezeKHR\0"
+    "WeakLinkageAMD\0"
+    "SampleMaskOverrideCoverageNV\0"
+    "GeometryShaderPassthroughNV\0"
+    "ShaderViewportIndexLayerEXT\0"
+    "ShaderViewportMaskNV\0"
+    "ShaderStereoViewNV\0"
+    "PerViewAttributesNV\0"
+    "FragmentFullyCoveredEXT\0"
+    "MeshShadingNV\0"
+    "ImageFootprintNV\0"
+    "MeshShadingEXT\0"
+    "FragmentBarycentricKHR\0"
+    "ComputeDerivativeGroupQuadsKHR\0"
+    "FragmentDensityEXT\0"
+    "GroupNonUniformPartitionedEXT\0"
+    "ShaderNonUniform\0"
+    "RuntimeDescriptorArray\0"
+    "InputAttachmentArrayDynamicIndexing\0"
+    "UniformTexelBufferArrayDynamicIndexing\0"
+    "StorageTexelBufferArrayDynamicIndexing\0"
+    "UniformBufferArrayNonUniformIndexing\0"
+    "SampledImageArrayNonUniformIndexing\0"
+    "StorageBufferArrayNonUniformIndexing\0"
+    "StorageImageArrayNonUniformIndexing\0"
+    "InputAttachmentArrayNonUniformIndexing\0"
+    "UniformTexelBufferArrayNonUniformIndexing\0"
+    "StorageTexelBufferArrayNonUniformIndexing\0"
+    "RayTracingPositionFetchKHR\0"
+    "RayTracingNV\0"
+    "RayTracingMotionBlurNV\0"
+    "VulkanMemoryModel\0"
+    "VulkanMemoryModelDeviceScope\0"
+    "PhysicalStorageBufferAddresses\0"
+    "ComputeDerivativeGroupLinearKHR\0"
+    "RayTracingProvisionalKHR\0"
+    "CooperativeMatrixNV\0"
+    "FragmentShaderSampleInterlockEXT\0"
+    "FragmentShaderShadingRateInterlockEXT\0"
+    "ShaderSMBuiltinsNV\0"
+    "FragmentShaderPixelInterlockEXT\0"
+    "DemoteToHelperInvocation\0"
+    "DisplacementMicromapNV\0"
+    "RayTracingOpacityMicromapKHR\0"
+    "ShaderInvocationReorderNV\0"
+    "ShaderInvocationReorderEXT\0"
+    "BindlessTextureNV\0"
+    "RayQueryPositionFetchKHR\0"
+    "CooperativeVectorNV\0"
+    "AtomicFloat16VectorNV\0"
+    "RayTracingDisplacementMicromapNV\0"
+    "RawAccessChainsNV\0"
+    "RayTracingSpheresGeometryNV\0"
+    "RayTracingLinearSweptSpheresGeometryNV\0"
+    "PushConstantBanksNV\0"
+    "LongVectorEXT\0"
+    "CooperativeMatrixReductionsNV\0"
+    "CooperativeMatrixConversionsNV\0"
+    "CooperativeMatrixPerElementOperationsNV\0"
+    "CooperativeMatrixTensorAddressingNV\0"
+    "CooperativeMatrixBlockLoadsNV\0"
+    "CooperativeVectorTrainingNV\0"
+    "RayTracingClusterAccelerationStructureNV\0"
+    "TensorAddressingNV\0"
+    "CooperativeMatrixDecodeVectorNV\0"
+    "SubgroupShuffleINTEL\0"
+    "SubgroupBufferBlockIOINTEL\0"
+    "SubgroupImageBlockIOINTEL\0"
+    "SubgroupImageMediaBlockIOINTEL\0"
+    "RoundToInfinityINTEL\0"
+    "FloatingPointModeINTEL\0"
+    "IntegerFunctions2INTEL\0"
+    "FunctionPointersINTEL\0"
+    "IndirectReferencesINTEL\0"
+    "AsmINTEL\0"
+    "AtomicFloat32MinMaxEXT\0"
+    "AtomicFloat64MinMaxEXT\0"
+    "AtomicFloat16MinMaxEXT\0"
+    "VectorComputeINTEL\0"
+    "VectorAnyINTEL\0"
+    "ExpectAssumeKHR\0"
+    "SubgroupAvcMotionEstimationINTEL\0"
+    "SubgroupAvcMotionEstimationIntraINTEL\0"
+    "SubgroupAvcMotionEstimationChromaINTEL\0"
+    "VariableLengthArrayINTEL\0"
+    "FunctionFloatControlINTEL\0"
+    "FPGAMemoryAttributesALTERA\0"
+    "FPFastMathModeINTEL\0"
+    "ArbitraryPrecisionIntegersALTERA\0"
+    "ArbitraryPrecisionFloatingPointALTERA\0"
+    "UnstructuredLoopControlsINTEL\0"
+    "FPGALoopControlsALTERA\0"
+    "KernelAttributesINTEL\0"
+    "FPGAKernelAttributesINTEL\0"
+    "FPGAMemoryAccessesALTERA\0"
+    "FPGAClusterAttributesALTERA\0"
+    "LoopFuseALTERA\0"
+    "FPGADSPControlALTERA\0"
+    "MemoryAccessAliasingINTEL\0"
+    "FPGAInvocationPipeliningAttributesALTERA\0"
+    "FPGABufferLocationALTERA\0"
+    "ArbitraryPrecisionFixedPointALTERA\0"
+    "USMStorageClassesALTERA\0"
+    "RuntimeAlignedAttributeALTERA\0"
+    "IOPipesALTERA\0"
+    "BlockingPipesALTERA\0"
+    "FPGARegALTERA\0"
+    "DotProductInputAll\0"
+    "DotProductInput4x8Bit\0"
+    "DotProductInput4x8BitPacked\0"
+    "DotProduct\0"
+    "RayCullMaskKHR\0"
+    "CooperativeMatrixKHR\0"
+    "ReplicatedCompositesEXT\0"
+    "BitInstructions\0"
+    "GroupNonUniformRotateKHR\0"
+    "FloatControls2\0"
+    "FMAKHR\0"
+    "RayTracingOpacityMicromapExecutionModeKHR\0"
+    "AtomicFloat32AddEXT\0"
+    "AtomicFloat64AddEXT\0"
+    "LongCompositesINTEL\0"
+    "AtomicFloat16AddEXT\0"
+    "DebugInfoModuleINTEL\0"
+    "BFloat16ConversionINTEL\0"
+    "SplitBarrierEXT\0"
+    "ArithmeticFenceEXT\0"
+    "FPGAClusterAttributesV2ALTERA\0"
+    "FPGAKernelAttributesv2INTEL\0"
+    "TaskSequenceALTERA\0"
+    "FPMaxErrorINTEL\0"
+    "FPGALatencyControlALTERA\0"
+    "FPGAArgumentInterfacesALTERA\0"
+    "GlobalVariableHostAccessINTEL\0"
+    "GlobalVariableFPGADecorationsALTERA\0"
+    "SubgroupBufferPrefetchINTEL\0"
+    "Subgroup2DBlockIOINTEL\0"
+    "Subgroup2DBlockTransformINTEL\0"
+    "Subgroup2DBlockTransposeINTEL\0"
+    "SubgroupMatrixMultiplyAccumulateINTEL\0"
+    "TernaryBitwiseFunctionINTEL\0"
+    "UntypedVariableLengthArrayINTEL\0"
+    "SpecConditionalINTEL\0"
+    "FunctionVariantsINTEL\0"
+    "PredicatedIOINTEL\0"
+    "RoundedDivideSqrtINTEL\0"
+    "GroupUniformArithmeticKHR\0"
+    "TensorFloat32RoundingINTEL\0"
+    "MaskedGatherScatterINTEL\0"
+    "CacheControlsINTEL\0"
+    "RegisterLimitsINTEL\0"
+    "BindlessImagesINTEL\0"
+    "DotProductFloat16AccFloat32VALVE\0"
+    "DotProductFloat16AccFloat16VALVE\0"
+    "DotProductBFloat16AccVALVE\0"
+    "DotProductFloat8AccFloat32VALVE\0"
+    "RayQueryCandidateIntersectionKHR\0"
+    "RayQueryCommittedIntersectionKHR\0"
+    "RayQueryCommittedIntersectionNoneKHR\0"
+    "RayQueryCommittedIntersectionTriangleKHR\0"
+    "RayQueryCommittedIntersectionGeneratedKHR\0"
+    "RayQueryCandidateIntersectionTriangleKHR\0"
+    "RayQueryCandidateIntersectionAABBKHR\0"
+    "PackedVectorFormat4x8Bit\0"
+    "MatrixASignedComponentsKHR\0"
+    "MatrixBSignedComponentsKHR\0"
+    "MatrixCSignedComponentsKHR\0"
+    "MatrixResultSignedComponentsKHR\0"
+    "SaturatingAccumulationKHR\0"
+    "RowMajorKHR\0"
+    "ColumnMajorKHR\0"
+    "RowBlockedInterleavedARM\0"
+    "ColumnBlockedInterleavedARM\0"
+    "MatrixAKHR\0"
+    "MatrixBKHR\0"
+    "MatrixAccumulatorKHR\0"
+    "Row\0"
+    "Column\0"
+    "2x2\0"
+    "Undefined\0"
+    "TensorView\0"
+    "DecodeFunc\0"
+    "DecodeVectorFunc\0"
+    "InitOnDeviceReprogramALTERA\0"
+    "InitOnDeviceResetALTERA\0"
+    "UncachedINTEL\0"
+    "CachedINTEL\0"
+    "StreamingINTEL\0"
+    "InvalidateAfterReadINTEL\0"
+    "ConstCachedINTEL\0"
+    "WriteThroughINTEL\0"
+    "WriteBackINTEL\0"
+    "AutoINTEL\0"
+    "MatrixASignedComponentsINTEL\0"
+    "MatrixBSignedComponentsINTEL\0"
+    "MatrixCBFloat16INTEL\0"
+    "MatrixResultBFloat16INTEL\0"
+    "MatrixAPackedInt8INTEL\0"
+    "MatrixBPackedInt8INTEL\0"
+    "MatrixAPackedInt4INTEL\0"
+    "MatrixBPackedInt4INTEL\0"
+    "MatrixATF32INTEL\0"
+    "MatrixBTF32INTEL\0"
+    "MatrixAPackedFloat16INTEL\0"
+    "MatrixBPackedFloat16INTEL\0"
+    "MatrixAPackedBFloat16INTEL\0"
+    "MatrixBPackedBFloat16INTEL\0"
+    "BFloat16KHR\0"
+    "Float8E4M3EXT\0"
+    "Float8E5M2EXT\0"
+    "Float6E2M3EXT\0"
+    "Float6E3M2EXT\0"
+    "Float4E2M1EXT\0"
+    "RowMajorNV\0"
+    "ColumnMajorNV\0"
+    "InferencingOptimalNV\0"
+    "TrainingOptimalNV\0"
+    "Float16NV\0"
+    "Float32NV\0"
+    "Float64NV\0"
+    "SignedInt8NV\0"
+    "SignedInt16NV\0"
+    "SignedInt32NV\0"
+    "SignedInt64NV\0"
+    "UnsignedInt8NV\0"
+    "UnsignedInt16NV\0"
+    "UnsignedInt32NV\0"
+    "UnsignedInt64NV\0"
+    "SignedInt8PackedNV\0"
+    "UnsignedInt8PackedNV\0"
+    "FloatE4M3NV\0"
+    "FloatE5M2NV\0"
+    "Gather4x1QCOM\0"
+    "GatherDQCOM\0"
+    "GatherH2QCOM\0"
+    "GatherV2QCOM\0"
+    "NoneARM\0"
+    "NontemporalARM\0"
+    "OutOfBoundsValueARM\0"
+    "MakeElementAvailableARM\0"
+    "MakeElementVisibleARM\0"
+    "NonPrivateElementARM\0"
+    "DebugInfo\0"
+    "GLSL.std.450\0"
+    "NonSemantic.ClspvReflection\0"
+    "NonSemantic.DebugBreak\0"
+    "NonSemantic.DebugPrintf\0"
+    "NonSemantic.Shader.DebugInfo.100\0"
+    "OpenCL.DebugInfo.100\0"
+    "OpenCL.std\0"
+    "SPV_ALTERA_arbitrary_precision_fixed_point\0"
+    "SPV_ALTERA_arbitrary_precision_floating_point\0"
+    "SPV_ALTERA_arbitrary_precision_integers\0"
+    "SPV_ALTERA_blocking_pipes\0"
+    "SPV_ALTERA_fpga_argument_interfaces\0"
+    "SPV_ALTERA_fpga_buffer_location\0"
+    "SPV_ALTERA_fpga_cluster_attributes\0"
+    "SPV_ALTERA_fpga_dsp_control\0"
+    "SPV_ALTERA_fpga_invocation_pipelining_attributes\0"
+    "SPV_ALTERA_fpga_latency_control\0"
+    "SPV_ALTERA_fpga_loop_controls\0"
+    "SPV_ALTERA_fpga_memory_accesses\0"
+    "SPV_ALTERA_fpga_memory_attributes\0"
+    "SPV_ALTERA_fpga_reg\0"
+    "SPV_ALTERA_global_variable_fpga_decorations\0"
+    "SPV_ALTERA_io_pipes\0"
+    "SPV_ALTERA_loop_fuse\0"
+    "SPV_ALTERA_runtime_aligned\0"
+    "SPV_ALTERA_task_sequence\0"
+    "SPV_ALTERA_usm_storage_classes\0"
+    "SPV_AMDX_shader_enqueue\0"
+    "SPV_AMD_gcn_shader\0"
+    "SPV_AMD_gpu_shader_half_float_fetch\0"
+    "SPV_AMD_shader_ballot\0"
+    "SPV_AMD_shader_early_and_late_fragment_tests\0"
+    "SPV_AMD_shader_explicit_vertex_parameter\0"
+    "SPV_AMD_shader_fragment_mask\0"
+    "SPV_AMD_shader_image_load_store_lod\0"
+    "SPV_AMD_shader_trinary_minmax\0"
+    "SPV_AMD_texture_gather_bias_lod\0"
+    "SPV_AMD_weak_linkage\0"
+    "SPV_ARM_cooperative_matrix_layouts\0"
+    "SPV_ARM_core_builtins\0"
+    "SPV_ARM_graph\0"
+    "SPV_ARM_tensors\0"
+    "SPV_EXT_arithmetic_fence\0"
+    "SPV_EXT_demote_to_helper_invocation\0"
+    "SPV_EXT_descriptor_heap\0"
+    "SPV_EXT_descriptor_indexing\0"
+    "SPV_EXT_float8\0"
+    "SPV_EXT_fragment_fully_covered\0"
+    "SPV_EXT_fragment_invocation_density\0"
+    "SPV_EXT_fragment_shader_interlock\0"
+    "SPV_EXT_long_vector\0"
+    "SPV_EXT_mesh_shader\0"
+    "SPV_EXT_ocp_microscaling_types\0"
+    "SPV_EXT_opacity_micromap\0"
+    "SPV_EXT_optnone\0"
+    "SPV_EXT_physical_storage_buffer\0"
+    "SPV_EXT_replicated_composites\0"
+    "SPV_EXT_shader_64bit_indexing\0"
+    "SPV_EXT_shader_atomic_float16_add\0"
+    "SPV_EXT_shader_atomic_float_add\0"
+    "SPV_EXT_shader_atomic_float_min_max\0"
+    "SPV_EXT_shader_image_int64\0"
+    "SPV_EXT_shader_invocation_reorder\0"
+    "SPV_EXT_shader_stencil_export\0"
+    "SPV_EXT_shader_subgroup_partitioned\0"
+    "SPV_EXT_shader_tile_image\0"
+    "SPV_EXT_shader_viewport_index_layer\0"
+    "SPV_EXT_split_barrier\0"
+    "SPV_GOOGLE_decorate_string\0"
+    "SPV_GOOGLE_hlsl_functionality1\0"
+    "SPV_GOOGLE_user_type\0"
+    "SPV_INTEL_2d_block_io\0"
+    "SPV_INTEL_arbitrary_precision_fixed_point\0"
+    "SPV_INTEL_arbitrary_precision_floating_point\0"
+    "SPV_INTEL_arbitrary_precision_integers\0"
+    "SPV_INTEL_bfloat16_conversion\0"
+    "SPV_INTEL_bindless_images\0"
+    "SPV_INTEL_blocking_pipes\0"
+    "SPV_INTEL_cache_controls\0"
+    "SPV_INTEL_debug_module\0"
+    "SPV_INTEL_device_side_avc_motion_estimation\0"
+    "SPV_INTEL_float_controls2\0"
+    "SPV_INTEL_fp_fast_math_mode\0"
+    "SPV_INTEL_fp_max_error\0"
+    "SPV_INTEL_fpga_argument_interfaces\0"
+    "SPV_INTEL_fpga_buffer_location\0"
+    "SPV_INTEL_fpga_cluster_attributes\0"
+    "SPV_INTEL_fpga_dsp_control\0"
+    "SPV_INTEL_fpga_invocation_pipelining_attributes\0"
+    "SPV_INTEL_fpga_latency_control\0"
+    "SPV_INTEL_fpga_loop_controls\0"
+    "SPV_INTEL_fpga_memory_accesses\0"
+    "SPV_INTEL_fpga_memory_attributes\0"
+    "SPV_INTEL_fpga_reg\0"
+    "SPV_INTEL_function_pointers\0"
+    "SPV_INTEL_function_variants\0"
+    "SPV_INTEL_global_variable_fpga_decorations\0"
+    "SPV_INTEL_global_variable_host_access\0"
+    "SPV_INTEL_inline_assembly\0"
+    "SPV_INTEL_int4\0"
+    "SPV_INTEL_io_pipes\0"
+    "SPV_INTEL_kernel_attributes\0"
+    "SPV_INTEL_long_composites\0"
+    "SPV_INTEL_loop_fuse\0"
+    "SPV_INTEL_masked_gather_scatter\0"
+    "SPV_INTEL_maximum_registers\0"
+    "SPV_INTEL_media_block_io\0"
+    "SPV_INTEL_memory_access_aliasing\0"
+    "SPV_INTEL_optnone\0"
+    "SPV_INTEL_predicated_io\0"
+    "SPV_INTEL_rounded_divide_sqrt\0"
+    "SPV_INTEL_runtime_aligned\0"
+    "SPV_INTEL_shader_integer_functions2\0"
+    "SPV_INTEL_split_barrier\0"
+    "SPV_INTEL_subgroup_buffer_prefetch\0"
+    "SPV_INTEL_subgroup_matrix_multiply_accumulate\0"
+    "SPV_INTEL_subgroups\0"
+    "SPV_INTEL_task_sequence\0"
+    "SPV_INTEL_tensor_float32_conversion\0"
+    "SPV_INTEL_ternary_bitwise_function\0"
+    "SPV_INTEL_unstructured_loop_controls\0"
+    "SPV_INTEL_usm_storage_classes\0"
+    "SPV_INTEL_variable_length_array\0"
+    "SPV_INTEL_vector_compute\0"
+    "SPV_KHR_16bit_storage\0"
+    "SPV_KHR_8bit_storage\0"
+    "SPV_KHR_abort\0"
+    "SPV_KHR_bfloat16\0"
+    "SPV_KHR_bit_instructions\0"
+    "SPV_KHR_compute_shader_derivatives\0"
+    "SPV_KHR_constant_data\0"
+    "SPV_KHR_cooperative_matrix\0"
+    "SPV_KHR_device_group\0"
+    "SPV_KHR_expect_assume\0"
+    "SPV_KHR_float_controls\0"
+    "SPV_KHR_float_controls2\0"
+    "SPV_KHR_fma\0"
+    "SPV_KHR_fragment_shader_barycentric\0"
+    "SPV_KHR_fragment_shading_rate\0"
+    "SPV_KHR_integer_dot_product\0"
+    "SPV_KHR_linkonce_odr\0"
+    "SPV_KHR_maximal_reconvergence\0"
+    "SPV_KHR_multiview\0"
+    "SPV_KHR_no_integer_wrap_decoration\0"
+    "SPV_KHR_opacity_micromap\0"
+    "SPV_KHR_physical_storage_buffer\0"
+    "SPV_KHR_poison_freeze\0"
+    "SPV_KHR_post_depth_coverage\0"
+    "SPV_KHR_quad_control\0"
+    "SPV_KHR_ray_cull_mask\0"
+    "SPV_KHR_ray_query\0"
+    "SPV_KHR_ray_tracing\0"
+    "SPV_KHR_ray_tracing_position_fetch\0"
+    "SPV_KHR_relaxed_extended_instruction\0"
+    "SPV_KHR_shader_atomic_counter_ops\0"
+    "SPV_KHR_shader_ballot\0"
+    "SPV_KHR_shader_clock\0"
+    "SPV_KHR_shader_draw_parameters\0"
+    "SPV_KHR_storage_buffer_storage_class\0"
+    "SPV_KHR_subgroup_rotate\0"
+    "SPV_KHR_subgroup_uniform_control_flow\0"
+    "SPV_KHR_subgroup_vote\0"
+    "SPV_KHR_terminate_invocation\0"
+    "SPV_KHR_uniform_group_instructions\0"
+    "SPV_KHR_untyped_pointers\0"
+    "SPV_KHR_variable_pointers\0"
+    "SPV_KHR_vulkan_memory_model\0"
+    "SPV_KHR_workgroup_memory_explicit_layout\0"
+    "SPV_NVX_multiview_per_view_attributes\0"
+    "SPV_NV_bindless_texture\0"
+    "SPV_NV_cluster_acceleration_structure\0"
+    "SPV_NV_compute_shader_derivatives\0"
+    "SPV_NV_cooperative_matrix\0"
+    "SPV_NV_cooperative_matrix2\0"
+    "SPV_NV_cooperative_matrix_decode_vector\0"
+    "SPV_NV_cooperative_vector\0"
+    "SPV_NV_displacement_micromap\0"
+    "SPV_NV_fragment_shader_barycentric\0"
+    "SPV_NV_geometry_shader_passthrough\0"
+    "SPV_NV_linear_swept_spheres\0"
+    "SPV_NV_mesh_shader\0"
+    "SPV_NV_push_constant_bank\0"
+    "SPV_NV_raw_access_chains\0"
+    "SPV_NV_ray_tracing\0"
+    "SPV_NV_ray_tracing_motion_blur\0"
+    "SPV_NV_sample_mask_override_coverage\0"
+    "SPV_NV_shader_atomic_fp16_vector\0"
+    "SPV_NV_shader_image_footprint\0"
+    "SPV_NV_shader_invocation_reorder\0"
+    "SPV_NV_shader_sm_builtins\0"
+    "SPV_NV_shader_subgroup_partitioned\0"
+    "SPV_NV_shading_rate\0"
+    "SPV_NV_stereo_view_rendering\0"
+    "SPV_NV_tensor_addressing\0"
+    "SPV_NV_viewport_array2\0"
+    "SPV_QCOM_cooperative_matrix_conversion\0"
+    "SPV_QCOM_image_processing\0"
+    "SPV_QCOM_image_processing2\0"
+    "SPV_QCOM_image_processing3\0"
+    "SPV_QCOM_multiple_wait_queues\0"
+    "SPV_QCOM_tile_shading\0"
+    "SPV_VALVE_mixed_float_dot_product\0"
+    ;
+
+constexpr int kStringMatchTableBits = 10;
+// Per order-2 context hash: primer position of the byte that last
+// followed that context, 0 = none.
+constexpr uint32_t kPrimedStringMatch[] = {
+    17630, 0, 0, 24064, 23242, 24063, 0, 23862, 23067, 16889, 0, 23432,
+    21893, 18228, 23176, 5673, 0, 0, 24008, 3315, 22211, 0, 22354, 23089,
+    18303, 0, 21907, 5640, 0, 11152, 0, 24033, 0, 15215, 23791, 0,
+    0, 17478, 23911, 4897, 1271, 0, 23471, 23816, 16728, 0, 9430, 23195,
+    12692, 12406, 1378, 23600, 23992, 9579, 23856, 21490, 23903, 24051, 15513, 17238,
+    18258, 0, 16086, 0, 15342, 9899, 4626, 0, 19151, 21170, 14738, 22942,
+    15746, 23648, 11539, 18116, 0, 8482, 0, 8511, 17468, 15383, 20563, 0,
+    11320, 0, 5794, 17299, 23499, 0, 0, 0, 18103, 23820, 16892, 16071,
+    23599, 24005, 12224, 0, 0, 15341, 18301, 9700, 24004, 18380, 0, 0,
+    21356, 23452, 11721, 5648, 15814, 18351, 16060, 15346, 20332, 4830, 1174, 22871,
+    0, 14953, 23976, 21462, 0, 23872, 0, 0, 23844, 0, 22620, 0,
+    0, 23129, 0, 24011, 18399, 18384, 19646, 23026, 23682, 21186, 0, 23456,
+    0, 0, 22797, 0, 24077, 9857, 16092, 0, 17226, 19422, 22722, 15924,
+    0, 23733, 0, 0, 18422, 14288, 18200, 23869, 0, 8541, 0, 21252,
+    5079, 0, 23640, 0, 0, 5080, 17420, 16437, 23700, 0, 0, 23860,
+    18379, 8649, 0, 0, 0, 1629, 21911, 16361, 22645, 16497, 23504, 23507,
+    23602, 10120, 17057, 18324, 11608, 9739, 13392, 0, 24038, 24019, 8652, 18322,
+    189, 23153, 15261, 19375, 0, 16027, 23566, 18381, 9528, 23451, 14614, 20328,
+    21114, 8330, 21384, 0, 11290, 16058, 17647, 12189, 0, 23766, 22577, 23964,
+    0, 23069, 0, 7213, 179, 8278, 12172, 15435, 23757, 0, 0, 0,
+    1113, 20938, 1896, 11751, 23984, 23363, 13585, 0, 0, 23407, 0, 18439,
+    1396, 23735, 0, 18323, 23493, 18431, 23351, 16365, 0, 0, 0, 16890,
+    23774, 0, 0, 18394, 18109, 0, 0, 18393, 12190, 18319, 21237, 21937,
+    23364, 20465, 24068, 17031, 23886, 21236, 21993, 0, 1259, 24032, 18265, 24053,
+    16863, 9909, 18432, 20304, 18089, 23731, 18129, 18251, 4463, 14702, 697, 7802,
+    2457, 22446, 16454, 24045, 23443, 0, 15631, 0, 8311, 4604, 22527, 21543,
+    24073, 6021, 16617, 22485, 18279, 2464, 0, 0, 0, 15781, 0, 552,
+    0, 0, 22445, 24044, 23115, 0, 22630, 23642, 0, 5096, 0, 4189,
+    14019, 12040, 0, 12941, 0, 23732, 23442, 18161, 5116, 22972, 0, 20248,
+    0, 0, 23907, 24029, 22702, 0, 17823, 23567, 15842, 24048, 0, 5852,
+    11533, 23348, 0, 23910, 20331, 23677, 19509, 12395, 0, 0, 22351, 16477,
+    23762, 0, 4793, 0, 0, 2133, 15624, 0, 17846, 12646, 0, 8291,
+    0, 18318, 0, 0, 4505, 0, 12234, 17433, 24060, 19072, 23592, 4526,
+    14498, 0, 23051, 24067, 0, 9534, 22796, 12784, 0, 23865, 1419, 2634,
+    24031, 16611, 0, 18434, 23702, 23041, 0, 23392, 0, 18385, 17856, 9545,
+    21542, 5099, 23428, 21795, 5162, 23645, 0, 23839, 15963, 23637, 0, 21998,
+    0, 17839, 24016, 24058, 0, 14092, 23491, 24046, 13520, 0, 18128, 23861,
+    17015, 0, 0, 19131, 17148, 22384, 0, 22975, 5264, 19162, 4923, 4506,
+    24014, 23179, 0, 19418, 9864, 0, 19743, 3294, 23399, 11699, 0, 4154,
+    4682, 0, 0, 17749, 0, 5721, 5104, 23859, 17648, 23450, 20327, 17372,
+    22209, 0, 14119, 17824, 23842, 4615, 18054, 23868, 15621, 22197, 17827, 23975,
+    14850, 0, 23049, 15927, 4697, 24039, 24047, 20354, 23809, 18440, 1840, 11808,
+    17045, 15869, 24043, 9905, 9218, 0, 9904, 0, 23815, 24034, 0, 5005,
+    20321, 19130, 0, 23712, 0, 23864, 0, 20078, 0, 0, 24056, 0,
+    13881, 0, 13138, 1401, 23210, 0, 23837, 0, 0, 22798, 16169, 14381,
+    17716, 23681, 18252, 18272, 17864, 18076, 23025, 3470, 23867, 23434, 18167, 0,
+    24076, 0, 16384, 0, 11475, 22390, 17371, 23734, 0, 21756, 0, 23707,
+    4790, 13770, 0, 23643, 0, 0, 23608, 16059, 23834, 0, 0, 15414,
+    3516, 24041, 17764, 23517, 14424, 0, 9477, 23977, 0, 17865, 1371, 23763,
+    15360, 18192, 0, 18088, 23412, 16604, 23490, 0, 22745, 0, 21209, 18208,
+    5865, 23001, 18240, 0, 15857, 0, 16203, 23898, 5128, 23433, 0, 23899,
+    14952, 17462, 24036, 6520, 0, 0, 17861, 0, 5532, 1698, 21345, 190,
+    17906, 6521, 16087, 23805, 16917, 0, 5076, 14038, 0, 20322, 22079, 24052,
+    21172, 13835, 19565, 17210, 0, 24061, 17119, 0, 16868, 20760, 19074, 5020,
+    0, 23525, 18241, 18120, 0, 20355, 23521, 23819, 15053, 20240, 0, 16341,
+    10711, 14096, 24027, 15947, 0, 4613, 0, 0, 23889, 17395, 17159, 23885,
+    21754, 10723, 17892, 2671, 24037, 2153, 0, 15332, 9910, 24054, 7379, 0,
+    20306, 4290, 23776, 0, 12150, 19798, 19416, 19115, 12517, 23978, 17327, 18130,
+    0, 23892, 1409, 21789, 5011, 12643, 23376, 9532, 21781, 17649, 24059, 0,
+    23887, 0, 10880, 1392, 23140, 16355, 4187, 0, 18273, 13540, 22000, 23000,
+    23715, 1810, 23674, 0, 24030, 18115, 16276, 4618, 24065, 19417, 23580, 0,
+    16620, 21267, 23901, 16861, 22150, 3216, 0, 0, 0, 21725, 0, 24072,
+    0, 15749, 23527, 18141, 22938, 0, 21406, 1413, 0, 12680, 24042, 24049,
+    23650, 0, 0, 23979, 0, 20858, 17743, 24069, 10930, 19645, 9533, 0,
+    11936, 23047, 0, 4519, 1437, 4188, 20645, 15657, 21517, 0, 0, 0,
+    5101, 22551, 19508, 23905, 18295, 23810, 22721, 17774, 0, 16910, 23902, 3399,
+    0, 0, 24020, 0, 23908, 4560, 17795, 12169, 18114, 23090, 0, 0,
+    0, 22913, 22876, 22318, 0, 17763, 18375, 17269, 23855, 17742, 17353, 18142,
+    24017, 19076, 0, 1404, 22870, 23871, 18427, 14527, 0, 24071, 16807, 24050,
+    15680, 23581, 0, 7456, 6190, 23988, 22120, 16983, 19163, 21908, 0, 0,
+    16903, 0, 23079, 24040, 24035, 5004, 0, 23345, 15544, 23112, 0, 13758,
+    1399, 23053, 0, 23965, 23446, 23912, 21980, 20079, 23991, 18127, 17137, 0,
+    23054, 9926, 12120, 21909, 15915, 0, 24070, 24062, 10975, 16568, 17838, 18166,
+    0, 24074, 15658, 22487, 0, 0, 21185, 16864, 17282, 12965, 0, 0,
+    0, 0, 23591, 23835, 0, 23863, 0, 23985, 16891, 18428, 1511, 9531,
+    18058, 23023, 5040, 10857, 18392, 983, 6549, 0, 23796, 0, 15779, 0,
+    16271, 0, 9772, 23759, 0, 18168, 22971, 22338, 18441, 23601, 0, 17195,
+    19532, 18202, 11878, 23268, 0, 8468, 18022, 23359, 23836, 5427, 17837, 24013,
+    17891, 0, 20250, 24057, 14247, 22974, 24022, 23758, 1781, 21910, 15944, 16918,
+    21636, 17517, 21144, 5092, 24003, 0, 17696, 4570, 23562, 17036, 12473, 3475,
+    15347, 23639, 8802, 18444, 19075, 21518, 20329, 14099, 13504, 9947, 23007, 0,
+    0, 0, 17651, 24055, 21755, 0, 0, 18296, 0, 23458, 14013, 24021,
+    24028, 23453, 0, 12892, 0, 23506, 12009, 9875, 17840, 15745, 4993, 0,
+    24007, 0, 12757, 5091, 6968, 0, 0, 24075, 12340, 23613, 15361, 23764,
+    20249, 16788, 4316, 16316, 0, 0, 5135, 23906, 23429, 12803, 23987, 16204,
+    20397, 0, 13694, 20330,
+};
+
+const uint32_t* GetPrimedStringMatchTable(int* bits) {
+  *bits = kStringMatchTableBits;
+  return kPrimedStringMatch;
+}
+
+uint16_t NumGrammarStrings() {
+  return static_cast<uint16_t>(ArraySize(kGrammarStrings));
+}
+
+const char* GetGrammarString(uint16_t index) {
+  return kGrammarStrings[index];
+}
+
+std::string_view GetStringPrimer() {
+  // The literal's own terminating NUL is not part of the primer.
+  return std::string_view(kStringPrimer, sizeof(kStringPrimer) - 1);
+}
+
+// Cold-start prior pool: SymbolCdf contents (offsets from uniform,
+// warm-up count 0). Entry 0 is the uniform table.
+constexpr uint16_t kPriorCdfs[][16] = {
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 10572, 10522, 5474, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 6823, 13639, 20455, 19637, 20454, 18545, 16636, 14727, 12818, 10909, 9000, 7091, 5182, 3273, 1909},
+    {0, 63808, 62080, 65378, 627, 64435, 63963, 64748, 64276, 2038, 310, 64118, 3143, 1415, 65223, 472},
+    {0, 64315, 4075, 9363, 8142, 6921, 5700, 7734, 9768, 8547, 7326, 6105, 4884, 3663, 2442, 1221},
+    {0, 64445, 63354, 62263, 10699, 9608, 19813, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 12724, 10907, 9090, 7273, 19987, 18170, 16353, 14536, 12719, 10902, 9085, 7268, 5451, 3634, 1817},
+    {0, 4299, 8584, 12869, 17154, 21439, 19490, 17541, 15592, 13643, 11694, 9745, 7796, 5847, 3898, 1949},
+    {0, 63903, 62270, 21229, 19596, 17963, 16330, 14697, 13064, 11431, 9798, 8165, 6532, 4899, 3266, 1633},
+    {0, 63611, 61686, 1928, 3, 63614, 61689, 59764, 2, 63613, 61688, 59763, 57838, 63612, 61687, 59762},
+    {0, 12724, 25438, 23621, 21804, 19987, 18170, 16353, 14536, 12719, 10902, 9085, 7268, 5451, 3634, 1817},
+    {0, 63903, 62270, 60637, 59004, 57371, 55738, 54105, 52472, 50839, 49206, 47573, 6532, 4899, 3266, 1633},
+    {0, 63719, 61902, 60085, 58268, 56451, 3639, 1822, 5, 12719, 10902, 9085, 7268, 5451, 3634, 1817},
+    {0, 63903, 62270, 60637, 59004, 57371, 55738, 54105, 52472, 11431, 9798, 8165, 6532, 4899, 3266, 1633},
+    {0, 63611, 61686, 59761, 57836, 55911, 61689, 59764, 57839, 55914, 53989, 59763, 1, 63612, 3850, 1925},
+    {0, 63587, 61638, 59689, 57740, 55791, 53842, 58141, 56192, 54243, 52294, 56579, 60864, 65149, 3898, 1949},
+    {0, 12724, 10907, 23621, 21804, 19987, 18170, 16353, 14536, 12719, 10902, 9085, 7268, 5451, 3634, 1817},
+    {0, 63903, 62270, 60637, 59004, 57371, 55738, 54105, 52472, 50839, 9798, 8165, 6532, 4899, 3266, 1633},
+    {0, 63719, 61902, 60085, 58268, 56451, 3639, 1822, 5, 63724, 61907, 60090, 58273, 56456, 54639, 52822},
+    {0, 63719, 61902, 60085, 58268, 56451, 54634, 52817, 51000, 49183, 47366, 60090, 7268, 5451, 3634, 1817},
+    {0, 63903, 62270, 60637, 59004, 57371, 55738, 54105, 52472, 50839, 49206, 47573, 45940, 44307, 42674, 41041},
+    {0, 24495, 22862, 21229, 19596, 17963, 16330, 14697, 13064, 11431, 9798, 8165, 6532, 4899, 3266, 1633},
+    {0, 63611, 61686, 59761, 57836, 55911, 53986, 52061, 50136, 48211, 53989, 59763, 1, 5775, 3850, 1925},
+    {0, 63648, 61760, 59872, 57984, 636, 8814, 16992, 15104, 13216, 11328, 9440, 7552, 5664, 3776, 1888},
+    {0, 935, 1865, 2795, 3725, 4655, 5585, 6515, 7445, 8375, 9305, 10235, 8188, 6141, 4094, 2047},
+    {0, 10438, 10466, 5448, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 6411, 13388, 20354, 19556, 20422, 18515, 16608, 14701, 12794, 10887, 8980, 7073, 5166, 3259, 1907},
+    {0, 137, 271, 405, 539, 673, 807, 941, 1075, 1209, 1343, 1477, 1611, 1745, 1879, 2013},
+    {0, 10301, 10409, 5422, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 5993, 13119, 20240, 19464, 20380, 18476, 16572, 14668, 12764, 10860, 8956, 7052, 5148, 3244, 1904},
+    {0, 291, 578, 865, 1152, 1439, 1726, 2013, 2300, 2587, 576, 863, 1150, 1437, 1724, 2011},
+    {0, 10159, 10349, 5394, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 5560, 12852, 20134, 19380, 20348, 18446, 16544, 14642, 12740, 10838, 8936, 7034, 5132, 3230, 1902},
+    {0, 468, 931, 1394, 1857, 2320, 2783, 3246, 3709, 4172, 2164, 156, 619, 1082, 1545, 2008},
+    {0, 10017, 10290, 5367, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 5111, 12566, 20014, 19283, 20305, 18406, 16507, 14608, 12709, 10810, 8911, 7012, 5113, 3214, 1899},
+    {0, 672, 1340, 2008, 2676, 3344, 4012, 4680, 5348, 6016, 4011, 2006, 2674, 669, 1337, 2005},
+    {0, 9872, 10229, 5338, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 4646, 12271, 19891, 19184, 20262, 18366, 16470, 14574, 12678, 10782, 8886, 6990, 5094, 3198, 1896},
+    {0, 915, 1824, 2733, 3642, 4551, 5460, 6369, 7278, 8187, 6186, 4185, 5094, 3093, 1092, 2001},
+    {0, 9906, 10103, 5280, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 4164, 11976, 19775, 19093, 20228, 18334, 16440, 14546, 12652, 10758, 8864, 6970, 5076, 3182, 1894},
+    {0, 63820, 62104, 79, 65206, 63490, 63081, 63979, 63570, 1545, 65365, 63649, 2943, 1227, 65047, 409},
+    {0, 1209, 2406, 3603, 4800, 5997, 7194, 8391, 9588, 10785, 8788, 6791, 7988, 5991, 3994, 1997},
+    {0, 63903, 22862, 21229, 19596, 17963, 16330, 14697, 13064, 11431, 9798, 8165, 6532, 4899, 3266, 1633},
+    {0, 9137, 9620, 5056, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 851, 9884, 18912, 18400, 19933, 18059, 16185, 14311, 12437, 10563, 8689, 6815, 4941, 3067, 1874},
+    {0, 63834, 62132, 64513, 64172, 62470, 62129, 63149, 62808, 1014, 64848, 63146, 2725, 1023, 64857, 341},
+    {0, 5778, 11552, 9627, 7702, 5777, 3852, 1927, 2, 5776, 3851, 1926, 7700, 5775, 3850, 1925},
+    {0, 63648, 61760, 4412, 2524, 636, 64284, 62396, 5038, 3150, 1262, 64910, 63022, 5664, 3776, 1888},
+    {0, 9040, 9676, 4711, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 1188, 11507, 21821, 21488, 19634, 17780, 15926, 14072, 12218, 10364, 8510, 6656, 4802, 2948, 1854},
+    {0, 63866, 62196, 64979, 63309, 61639, 61453, 62751, 62565, 1301, 65167, 63497, 2228, 558, 64424, 186},
+    {0, 64520, 6100, 13208, 12192, 11176, 10160, 9144, 8128, 7112, 6096, 5080, 4064, 3048, 2032, 1016},
+    {0, 63611, 61686, 59761, 57836, 55911, 53986, 59764, 57839, 55914, 53989, 52064, 57838, 63612, 3850, 1925},
+    {0, 379, 1935, 4062, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 64149, 62141, 60133, 60612, 60311, 60786, 61261, 61736, 62211, 62686, 63161, 63636, 64111, 64586, 65061},
+    {0, 178, 348, 109, 6, 176, 210, 107, 277, 65437, 71, 241, 65265, 65435, 69, 65502},
+    {0, 54, 65380, 65170, 65218, 65266, 65314, 65233, 65152, 65200, 65248, 65296, 65344, 65392, 65440, 65488},
+    {0, 3191, 6378, 9565, 11464, 14651, 16872, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 63535, 61534, 59533, 57532, 55531, 56446, 57355, 58264, 59173, 60082, 60991, 61900, 62809, 63718, 64627},
+    {0, 468, 931, 1394, 1857, 2320, 2783, 3246, 1238, 1701, 2164, 2627, 3090, 1082, 1545, 2008},
+    {0, 63525, 61514, 61805, 62092, 62379, 62666, 62953, 63240, 63527, 63814, 64101, 64388, 64675, 64962, 65249},
+    {0, 137, 271, 405, 539, 673, 807, 941, 1075, 1209, 1343, 1477, 65000, 65134, 65268, 65402},
+    {0, 291, 578, 865, 1152, 1439, 64964, 65251, 2, 63527, 63814, 64101, 64388, 64675, 64962, 65249},
+    {0, 672, 1340, 2008, 2676, 3344, 1339, 2007, 2675, 3343, 4011, 2006, 1, 669, 64200, 64868},
+    {0, 915, 1824, 2733, 3642, 4551, 5460, 3459, 4368, 5277, 6186, 4185, 2184, 183, 63718, 64627},
+    {0, 63525, 63816, 61805, 62092, 62379, 62666, 62953, 63240, 63527, 63814, 64101, 64388, 64675, 64962, 65249},
+    {0, 137, 271, 405, 539, 673, 807, 941, 1075, 1209, 64732, 64866, 65000, 65134, 65268, 65402},
+    {0, 291, 578, 865, 1152, 1439, 64964, 65251, 2, 289, 576, 863, 1150, 1437, 1724, 2011},
+    {0, 291, 578, 865, 1152, 1439, 1726, 2013, 2300, 2587, 2874, 863, 64388, 64675, 64962, 65249},
+    {0, 63523, 63660, 63794, 63928, 64062, 64196, 64330, 64464, 64598, 64732, 64866, 65000, 65134, 65268, 65402},
+    {0, 672, 1340, 2008, 2676, 3344, 4012, 4680, 5348, 6016, 4011, 2006, 1, 63532, 64200, 64868},
+    {0, 468, 931, 1394, 1857, 65385, 63377, 61369, 61832, 62295, 62758, 63221, 63684, 64147, 64610, 65073},
+    {0, 30705, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 28779, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 27066, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 25534, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 24155, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 22907, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 21773, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 20737, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 19788, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 18915, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 18109, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 17362, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 16669, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 16024, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 15421, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 14858, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 14329, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 13834, 27666, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 13367, 26732, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 12926, 25851, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 12510, 25019, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 12117, 24233, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 11744, 23487, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 11391, 22780, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 11055, 22108, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 10735, 21469, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 10431, 20860, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 10141, 20280, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 9864, 19726, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 9599, 19197, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 9345, 18690, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 9104, 18206, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 8871, 17741, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 8649, 17296, 25943, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 8435, 16868, 25301, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 8229, 16457, 24685, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 8032, 16062, 24092, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 7842, 15682, 23522, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 7658, 15315, 22972, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 7483, 14963, 22443, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 7313, 14623, 21933, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 7148, 14294, 21440, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 6989, 13977, 20965, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 6837, 13671, 20505, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 6689, 13375, 20061, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 6546, 13089, 19632, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 6406, 12811, 19216, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 6273, 12543, 18813, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 6141, 12282, 18423, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 6016, 12031, 18046, 24061, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 5896, 11788, 17680, 23572, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 5776, 11550, 17324, 23098, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 5661, 11320, 16979, 22638, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 5550, 11097, 16644, 22191, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 5440, 10879, 16318, 21757, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 5336, 10669, 16002, 21335, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 5232, 10463, 15694, 20925, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 5134, 10265, 15396, 20527, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 5037, 10071, 15105, 20139, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4941, 9881, 14821, 19761, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4849, 9697, 14545, 19393, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4761, 9519, 14277, 19035, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4673, 9344, 14015, 18686, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4588, 9174, 13760, 18346, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4505, 9008, 13511, 18014, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4425, 8847, 13269, 17691, 22113, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4347, 8690, 13033, 17376, 21719, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4270, 8536, 12802, 17068, 21334, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4194, 8385, 12576, 16767, 20958, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4119, 8237, 12355, 16473, 20591, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 4048, 8094, 12140, 16186, 20232, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3978, 7954, 11930, 15906, 19882, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3912, 7819, 11726, 15633, 19540, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3841, 7682, 11523, 15364, 19205, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3778, 7553, 11328, 15103, 18878, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3714, 7425, 11136, 14847, 18558, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3649, 7298, 10947, 14596, 18245, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3591, 7178, 10765, 14352, 17939, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3532, 7059, 10586, 14113, 17640, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3470, 6939, 10408, 13877, 17346, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3415, 6826, 10237, 13648, 17059, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3358, 6713, 10068, 13423, 16778, 20133, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3302, 6602, 9902, 13202, 16502, 19802, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3248, 6494, 9740, 12986, 16232, 19478, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3195, 6388, 9581, 12774, 15967, 19160, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3144, 6285, 9426, 12567, 15708, 18849, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3094, 6184, 9274, 12364, 15454, 18544, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 3045, 6085, 9125, 12165, 15205, 18245, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2996, 5987, 8978, 11969, 14960, 17951, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2948, 5891, 8834, 11777, 14720, 17663, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2901, 5797, 8693, 11589, 14485, 17381, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2853, 5703, 8553, 11403, 14253, 17103, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2806, 5611, 8416, 11221, 14026, 16831, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2764, 5524, 8284, 11044, 13804, 16564, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2722, 5438, 8154, 10870, 13586, 16302, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2675, 5349, 8023, 10697, 13371, 16045, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2637, 5268, 7899, 10530, 13161, 15792, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2594, 5184, 7774, 10364, 12954, 15544, 18134, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2555, 5104, 7653, 10202, 12751, 15300, 17849, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2515, 5024, 7533, 10042, 12551, 15060, 17569, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2474, 4944, 7414, 9884, 12354, 14824, 17294, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2438, 4869, 7300, 9731, 12162, 14593, 17024, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2400, 4793, 7186, 9579, 11972, 14365, 16758, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2361, 4717, 7073, 9429, 11785, 14141, 16497, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2326, 4645, 6964, 9283, 11602, 13921, 16240, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2289, 4572, 6855, 9138, 11421, 13704, 15987, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2251, 4499, 6747, 8995, 11243, 13491, 15739, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2216, 4429, 6642, 8855, 11068, 13281, 15494, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2180, 4359, 6538, 8717, 10896, 13075, 15254, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2147, 4292, 6437, 8582, 10727, 12872, 15017, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2118, 4229, 6340, 8451, 10562, 12673, 14784, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2081, 4160, 6239, 8318, 10397, 12476, 14555, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2047, 4094, 6141, 8188, 10235, 12282, 14329, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 2018, 4033, 6048, 8063, 10078, 12093, 14108, 16123, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1985, 3969, 5953, 7937, 9921, 11905, 13889, 15873, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1955, 3908, 5861, 7814, 9767, 11720, 13673, 15626, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1930, 3852, 5774, 7696, 9618, 11540, 13462, 15384, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1894, 3787, 5680, 7573, 9466, 11359, 13252, 15145, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1869, 3732, 5595, 7458, 9321, 11184, 13047, 14910, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1840, 3674, 5508, 7342, 9176, 11010, 12844, 14678, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1808, 3614, 5420, 7226, 9032, 10838, 12644, 14450, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1779, 3557, 5335, 7113, 8891, 10669, 12447, 14225, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1753, 3503, 5253, 7003, 8753, 10503, 12253, 14003, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1724, 3447, 5170, 6893, 8616, 10339, 12062, 13785, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1697, 3393, 5089, 6785, 8481, 10177, 11873, 13569, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1674, 3343, 5012, 6681, 8350, 10019, 11688, 13357, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1646, 3289, 4932, 6575, 8218, 9861, 11504, 13147, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1622, 3239, 4856, 6473, 8090, 9707, 11324, 12941, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1593, 3185, 4777, 6369, 7961, 9553, 11145, 12737, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1568, 3135, 4702, 6269, 7836, 9403, 10970, 12537, 14104, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1545, 3087, 4629, 6171, 7713, 9255, 10797, 12339, 13881, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1525, 3042, 4559, 6076, 7593, 9110, 10627, 12144, 13661, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1500, 2993, 4486, 5979, 7472, 8965, 10458, 11951, 13444, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1478, 2947, 4416, 5885, 7354, 8823, 10292, 11761, 13230, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1451, 2897, 4343, 5789, 7235, 8681, 10127, 11573, 13019, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1427, 2850, 4273, 5696, 7119, 8542, 9965, 11388, 12811, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1406, 2806, 4206, 5606, 7006, 8406, 9806, 11206, 12606, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1379, 2757, 4135, 5513, 6891, 8269, 9647, 11025, 12403, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1363, 2718, 4073, 5428, 6783, 8138, 9493, 10848, 12203, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1341, 2674, 4007, 5340, 6673, 8006, 9339, 10672, 12005, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1314, 2626, 3938, 5250, 6562, 7874, 9186, 10498, 11810, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1298, 2588, 3878, 5168, 6458, 7748, 9038, 10328, 11618, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1275, 2544, 3813, 5082, 6351, 7620, 8889, 10158, 11427, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1256, 2504, 3752, 5000, 6248, 7496, 8744, 9992, 11240, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1230, 2458, 3686, 4914, 6142, 7370, 8598, 9826, 11054, 12282, 10235, 8188, 6141, 4094, 2047},
+    {0, 1216, 2423, 3630, 4837, 6044, 7251, 8458, 9665, 10872, 12079, 10235, 8188, 6141, 4094, 2047},
+    {0, 1195, 2382, 3569, 4756, 5943, 7130, 8317, 9504, 10691, 11878, 10235, 8188, 6141, 4094, 2047},
+    {0, 1177, 2344, 3511, 4678, 5845, 7012, 8179, 9346, 10513, 11680, 10235, 8188, 6141, 4094, 2047},
+    {0, 1152, 2300, 3448, 4596, 5744, 6892, 8040, 9188, 10336, 11484, 10235, 8188, 6141, 4094, 2047},
+    {0, 1138, 2266, 3394, 4522, 5650, 6778, 7906, 9034, 10162, 11290, 10235, 8188, 6141, 4094, 2047},
+    {0, 1118, 2227, 3336, 4445, 5554, 6663, 7772, 8881, 9990, 11099, 10235, 8188, 6141, 4094, 2047},
+    {0, 1100, 2190, 3280, 4370, 5460, 6550, 7640, 8730, 9820, 10910, 10235, 8188, 6141, 4094, 2047},
+    {0, 1075, 2147, 3219, 4291, 5363, 6435, 7507, 8579, 9651, 10723, 10235, 8188, 6141, 4094, 2047},
+    {0, 1061, 2114, 3167, 4220, 5273, 6326, 7379, 8432, 9485, 10538, 10235, 8188, 6141, 4094, 2047},
+    {0, 1041, 2076, 3111, 4146, 5181, 6216, 7251, 8286, 9321, 10356, 10235, 8188, 6141, 4094, 2047},
+    {0, 1023, 2040, 3057, 4074, 5091, 6108, 7125, 8142, 9159, 10176, 10235, 8188, 6141, 4094, 2047},
+    {0, 1006, 2005, 3004, 4003, 5002, 6001, 7000, 7999, 8998, 9997, 10235, 8188, 6141, 4094, 2047},
+    {0, 983, 1965, 2947, 3929, 4911, 5893, 6875, 7857, 8839, 9821, 10235, 8188, 6141, 4094, 2047},
+    {0, 971, 1935, 2899, 3863, 4827, 5791, 6755, 7719, 8683, 9647, 10235, 8188, 6141, 4094, 2047},
+    {0, 952, 1899, 2846, 3793, 4740, 5687, 6634, 7581, 8528, 9475, 10235, 8188, 6141, 4094, 2047},
+    {0, 920, 1833, 2746, 3659, 4572, 5485, 6398, 7311, 8224, 9137, 10050, 8188, 6141, 4094, 2047},
+    {0, 897, 1794, 2691, 3588, 4485, 5382, 6279, 7176, 8073, 8970, 9867, 8188, 6141, 4094, 2047},
+    {0, 887, 1767, 2647, 3527, 4407, 5287, 6167, 7047, 7927, 8807, 9687, 8188, 6141, 4094, 2047},
+    {0, 868, 1732, 2596, 3460, 4324, 5188, 6052, 6916, 7780, 8644, 9508, 8188, 6141, 4094, 2047},
+    {0, 851, 1699, 2547, 3395, 4243, 5091, 5939, 6787, 7635, 8483, 9331, 8188, 6141, 4094, 2047},
+    {0, 836, 1668, 2500, 3332, 4164, 4996, 5828, 6660, 7492, 8324, 9156, 8188, 6141, 4094, 2047},
+    {0, 823, 1639, 2455, 3271, 4087, 4903, 5719, 6535, 7351, 8167, 8983, 8188, 6141, 4094, 2047},
+    {0, 801, 1602, 2403, 3204, 4005, 4806, 5607, 6408, 7209, 8010, 8811, 8188, 6141, 4094, 2047},
+    {0, 792, 1577, 2362, 3147, 3932, 4717, 5502, 6287, 7072, 7857, 8642, 8188, 6141, 4094, 2047},
+    {0, 775, 1545, 2315, 3085, 3855, 4625, 5395, 6165, 6935, 7705, 8475, 8188, 6141, 4094, 2047},
+    {0, 759, 1514, 2269, 3024, 3779, 4534, 5289, 6044, 6799, 7554, 8309, 8188, 6141, 4094, 2047},
+    {0, 745, 1485, 2225, 2965, 3705, 4445, 5185, 5925, 6665, 7405, 8145, 8188, 6141, 4094, 2047},
+    {0, 733, 1458, 2183, 2908, 3633, 4358, 5083, 5808, 6533, 7258, 7983, 8188, 6141, 4094, 2047},
+    {0, 712, 1423, 2134, 2845, 3556, 4267, 4978, 5689, 6400, 7111, 7822, 8188, 6141, 4094, 2047},
+    {0, 703, 1399, 2095, 2791, 3487, 4183, 4879, 5575, 6271, 6967, 7663, 8188, 6141, 4094, 2047},
+    {0, 686, 1368, 2050, 2732, 3414, 4096, 4778, 5460, 6142, 6824, 7506, 8188, 6141, 4094, 2047},
+    {0, 671, 1339, 2007, 2675, 3343, 4011, 4679, 5347, 6015, 6683, 7351, 8019, 6141, 4094, 2047},
+    {0, 657, 1311, 1965, 2619, 3273, 3927, 4581, 5235, 5889, 6543, 7197, 7851, 6141, 4094, 2047},
+    {0, 645, 1285, 1925, 2565, 3205, 3845, 4485, 5125, 5765, 6405, 7045, 7685, 6141, 4094, 2047},
+    {0, 634, 1260, 1886, 2512, 3138, 3764, 4390, 5016, 5642, 6268, 6894, 7520, 6141, 4094, 2047},
+    {0, 614, 1227, 1840, 2453, 3066, 3679, 4292, 4905, 5518, 6131, 6744, 7357, 6141, 4094, 2047},
+    {0, 607, 1206, 1805, 2404, 3003, 3602, 4201, 4800, 5399, 5998, 6597, 7196, 6141, 4094, 2047},
+    {0, 590, 1176, 1762, 2348, 2934, 3520, 4106, 4692, 5278, 5864, 6450, 7036, 6141, 4094, 2047},
+    {0, 575, 1148, 1721, 2294, 2867, 3440, 4013, 4586, 5159, 5732, 6305, 6878, 6141, 4094, 2047},
+    {0, 562, 1122, 1682, 2242, 2802, 3362, 3922, 4482, 5042, 5602, 6162, 6722, 6141, 4094, 2047},
+    {0, 550, 1097, 1644, 2191, 2738, 3285, 3832, 4379, 4926, 5473, 6020, 6567, 6141, 4094, 2047},
+    {0, 540, 1074, 1608, 2142, 2676, 3210, 3744, 4278, 4812, 5346, 5880, 6414, 6141, 4094, 2047},
+    {0, 531, 1052, 1573, 2094, 2615, 3136, 3657, 4178, 4699, 5220, 5741, 6262, 6141, 4094, 2047},
+    {0, 513, 1022, 1531, 2040, 2549, 3058, 3567, 4076, 4585, 5094, 5603, 6112, 6141, 4094, 2047},
+    {0, 507, 1003, 1499, 1995, 2491, 2987, 3483, 3979, 4475, 4971, 5467, 5963, 6141, 4094, 2047},
+    {0, 491, 975, 1459, 1943, 2427, 2911, 3395, 3879, 4363, 4847, 5331, 5815, 6141, 4094, 2047},
+    {0, 477, 949, 1421, 1893, 2365, 2837, 3309, 3781, 4253, 4725, 5197, 5669, 6141, 4094, 2047},
+    {0, 465, 925, 1385, 1845, 2305, 2765, 3225, 3685, 4145, 4605, 5065, 5525, 5985, 4094, 2047},
+    {0, 454, 902, 1350, 1798, 2246, 2694, 3142, 3590, 4038, 4486, 4934, 5382, 5830, 4094, 2047},
+    {0, 444, 880, 1316, 1752, 2188, 2624, 3060, 3496, 3932, 4368, 4804, 5240, 5676, 4094, 2047},
+    {0, 436, 860, 1284, 1708, 2132, 2556, 2980, 3404, 3828, 4252, 4676, 5100, 5524, 4094, 2047},
+    {0, 417, 830, 1243, 1656, 2069, 2482, 2895, 3308, 3721, 4134, 4547, 4960, 5373, 4094, 2047},
+    {0, 411, 812, 1213, 1614, 2015, 2416, 2817, 3218, 3619, 4020, 4421, 4822, 5223, 4094, 2047},
+    {0, 395, 785, 1175, 1565, 1955, 2345, 2735, 3125, 3515, 3905, 4295, 4685, 5075, 4094, 2047},
+    {0, 380, 759, 1138, 1517, 1896, 2275, 2654, 3033, 3412, 3791, 4170, 4549, 4928, 4094, 2047},
+    {0, 379, 746, 1113, 1480, 1847, 2214, 2581, 2948, 3315, 3682, 4049, 4416, 4783, 4094, 2047},
+    {0, 367, 723, 1079, 1435, 1791, 2147, 2503, 2859, 3215, 3571, 3927, 4283, 4639, 4094, 2047},
+    {0, 356, 701, 1046, 1391, 1736, 2081, 2426, 2771, 3116, 3461, 3806, 4151, 4496, 4094, 2047},
+    {0, 347, 681, 1015, 1349, 1683, 2017, 2351, 2685, 3019, 3353, 3687, 4021, 4355, 4094, 2047},
+    {0, 327, 651, 975, 1299, 1623, 1947, 2271, 2595, 2919, 3243, 3567, 3891, 4215, 4094, 2047},
+    {0, 320, 633, 946, 1259, 1572, 1885, 2198, 2511, 2824, 3137, 3450, 3763, 4076, 4094, 2047},
+    {0, 314, 616, 918, 1220, 1522, 1824, 2126, 2428, 2730, 3032, 3334, 3636, 3938, 4094, 2047},
+    {0, 298, 590, 882, 1174, 1466, 1758, 2050, 2342, 2634, 2926, 3218, 3510, 3802, 4094, 2047},
+    {0, 283, 565, 847, 1129, 1411, 1693, 1975, 2257, 2539, 2821, 3103, 3385, 3667, 3949, 2047},
+    {0, 282, 553, 824, 1095, 1366, 1637, 1908, 2179, 2450, 2721, 2992, 3263, 3534, 3805, 2047},
+    {0, 269, 530, 791, 1052, 1313, 1574, 1835, 2096, 2357, 2618, 2879, 3140, 3401, 3662, 2047},
+    {0, 257, 508, 759, 1010, 1261, 1512, 1763, 2014, 2265, 2516, 2767, 3018, 3269, 3520, 2047},
+    {0, 246, 487, 728, 969, 1210, 1451, 1692, 1933, 2174, 2415, 2656, 2897, 3138, 3379, 2047},
+    {0, 237, 468, 699, 930, 1161, 1392, 1623, 1854, 2085, 2316, 2547, 2778, 3009, 3240, 2047},
+    {0, 229, 450, 671, 892, 1113, 1334, 1555, 1776, 1997, 2218, 2439, 2660, 2881, 3102, 2047},
+    {0, 222, 433, 644, 855, 1066, 1277, 1488, 1699, 1910, 2121, 2332, 2543, 2754, 2965, 2047},
+    {0, 203, 405, 607, 809, 1011, 1213, 1415, 1617, 1819, 2021, 2223, 2425, 2627, 2829, 2047},
+    {0, 199, 391, 583, 775, 967, 1159, 1351, 1543, 1735, 1927, 2119, 2311, 2503, 2695, 2047},
+    {0, 195, 377, 559, 741, 923, 1105, 1287, 1469, 1651, 1833, 2015, 2197, 2379, 2561, 2047},
+    {0, 180, 353, 526, 699, 872, 1045, 1218, 1391, 1564, 1737, 1910, 2083, 2256, 2429, 2047},
+    {0, 166, 330, 494, 658, 822, 986, 1150, 1314, 1478, 1642, 1806, 1970, 2134, 2298, 2047},
+    {0, 166, 320, 474, 628, 782, 936, 1090, 1244, 1398, 1552, 1706, 1860, 2014, 2168, 2047},
+    {0, 154, 299, 444, 589, 734, 879, 1024, 1169, 1314, 1459, 1604, 1749, 1894, 2039, 2047},
+    {0, 143, 279, 415, 551, 687, 823, 959, 1095, 1231, 1367, 1503, 1639, 1775, 1911, 2047},
+    {0, 134, 261, 388, 515, 642, 769, 896, 1023, 1150, 1277, 1404, 1531, 1658, 1785, 1912},
+    {0, 125, 243, 361, 479, 597, 715, 833, 951, 1069, 1187, 1305, 1423, 1541, 1659, 1777},
+    {0, 117, 226, 335, 444, 553, 662, 771, 880, 989, 1098, 1207, 1316, 1425, 1534, 1643},
+    {0, 111, 211, 311, 411, 511, 611, 711, 811, 911, 1011, 1111, 1211, 1311, 1411, 1511},
+    {0, 105, 196, 287, 378, 469, 560, 651, 742, 833, 924, 1015, 1106, 1197, 1288, 1379},
+    {0, 87, 170, 253, 336, 419, 502, 585, 668, 751, 834, 917, 1000, 1083, 1166, 1249},
+    {0, 83, 157, 231, 305, 379, 453, 527, 601, 675, 749, 823, 897, 971, 1045, 1119},
+    {0, 67, 133, 199, 265, 331, 397, 463, 529, 595, 661, 727, 793, 859, 925, 991},
+    {0, 66, 123, 180, 237, 294, 351, 408, 465, 522, 579, 636, 693, 750, 807, 864},
+    {0, 51, 100, 149, 198, 247, 296, 345, 394, 443, 492, 541, 590, 639, 688, 737},
+    {0, 52, 92, 132, 172, 212, 252, 292, 332, 372, 412, 452, 492, 532, 572, 612},
+    {0, 40, 72, 104, 136, 168, 200, 232, 264, 296, 328, 360, 392, 424, 456, 488},
+    {0, 29, 53, 77, 101, 125, 149, 173, 197, 221, 245, 269, 293, 317, 341, 365},
+    {0, 18, 34, 50, 66, 82, 98, 114, 130, 146, 162, 178, 194, 210, 226, 242},
+    {0, 9, 17, 25, 33, 41, 49, 57, 65, 73, 81, 89, 97, 105, 113, 121},
+    {0, 65220, 63256, 61306, 59818, 62708, 65119, 11028, 15712, 13748, 11784, 9820, 7856, 5892, 3928, 1964},
+    {0, 29235, 27286, 25337, 23388, 21439, 19490, 17541, 15592, 13643, 11694, 9745, 7796, 5847, 3898, 1949},
+    {0, 65235, 64934, 64633, 64332, 64031, 63730, 63429, 63128, 62827, 62526, 62225, 61924, 61623, 61322, 301},
+    {0, 65473, 4845, 7836, 8308, 9467, 8412, 12548, 10806, 12194, 10452, 8710, 6968, 5226, 3484, 1742},
+    {0, 63523, 65438, 64689, 64693, 64203, 506, 65449, 64258, 63933, 184, 63716, 63105, 64321, 65061, 914},
+    {0, 1719, 170, 2896, 5555, 8290, 7028, 8920, 7515, 6857, 4867, 2982, 973, 64500, 62491, 60482},
+    {0, 63501, 28, 64125, 64026, 63702, 1982, 793, 206, 64420, 617, 64169, 62581, 62578, 61934, 63521},
+    {0, 828, 64494, 5354, 7801, 14530, 15904, 14929, 13294, 12472, 11954, 10110, 8088, 6066, 4044, 2022},
+    {0, 63489, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
+};
+
+constexpr uint32_t kOpcodePriorLegalWeightGenerated = 64;
+static_assert(kOpcodePriorLegalWeightGenerated == kOpcodePriorLegalWeight,
+              "rerun scripts/gen_grammar_tables.py");
+constexpr uint32_t kStringOrder0FloorWeightGenerated = 4;
+static_assert(kStringOrder0FloorWeightGenerated == kStringOrder0FloorWeight,
+              "rerun scripts/gen_grammar_tables.py");
+// Per section: which core instruction indices the logical layout allows
+// (bit i of word i / 32), and the opcode-index tree prior built from it
+// (pool indices: root, mid[0..3], leaf[0..63]).
+constexpr uint32_t kOpcodeSectionLegal[11][32] = {
+    {0xffffffffu, 0x0011ffffu, 0x0000001fu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000004u, 0x00000000u, 0x00039084u, 0x08000000u, 0x01000120u, 0x00002c20u, 0x3c400000u, 0x00000000u, 0x02000005u, 0x80200000u, 0x00000c00u, 0x00000000u, 0x00018000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x1e000000u, 0x00700000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    {0xffff7fffu, 0x0011ffffu, 0x0000001fu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000004u, 0x00000000u, 0x00039084u, 0x08000000u, 0x01000120u, 0x00002c20u, 0x3c400000u, 0x00000000u, 0x02000005u, 0x80200000u, 0x00000c00u, 0x00000000u, 0x00018000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x1e000000u, 0x00700000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    {0xffff7dffu, 0x0011ffffu, 0x0000001fu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000004u, 0x00000000u, 0x00039084u, 0x08000000u, 0x01000120u, 0x00002c20u, 0x3c400000u, 0x00000000u, 0x02000005u, 0x80200000u, 0x00000c00u, 0x00000000u, 0x00018000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x1e000000u, 0x00700000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    {0xffff79ffu, 0x0011ffffu, 0x0000001fu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000004u, 0x00000000u, 0x00039084u, 0x08000000u, 0x01000120u, 0x00002c20u, 0x3c400000u, 0x00000000u, 0x02000005u, 0x80200000u, 0x00000c00u, 0x00000000u, 0x00018000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x1e000000u, 0x00700000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    {0xffff69ffu, 0x0011ffffu, 0x0000001fu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000004u, 0x00000000u, 0x00039084u, 0x08000000u, 0x01000120u, 0x00002c20u, 0x3c400000u, 0x00000000u, 0x02000005u, 0x80200000u, 0x00000c00u, 0x00000000u, 0x00018000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x1e000000u, 0x00700000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    {0xffff49ffu, 0x0011ffffu, 0x0000001fu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000004u, 0x00000000u, 0x00039084u, 0x08000000u, 0x01000120u, 0x00002c20u, 0x3c400000u, 0x00000000u, 0x02000005u, 0x80200000u, 0x00000c00u, 0x00000000u, 0x00018000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x1e000000u, 0x00700000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    {0xffff09ffu, 0x0011ffffu, 0x0000001fu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000004u, 0x00000000u, 0x00029084u, 0x08000000u, 0x01000120u, 0x00002c20u, 0x3c400000u, 0x00000000u, 0x02000005u, 0x80200000u, 0x00000c00u, 0x00000000u, 0x00018000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x1e000000u, 0x00700000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    {0xffff0903u, 0x0011ffffu, 0x0000001fu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000004u, 0x00000000u, 0x00021084u, 0x08000000u, 0x01000120u, 0x00002c20u, 0x3c400000u, 0x00000000u, 0x02000005u, 0x80200000u, 0x00000c00u, 0x00000000u, 0x00018000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x1e000000u, 0x00700000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    {0xffff0903u, 0x0011ffffu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000004u, 0x00000000u, 0x00001084u, 0x08000000u, 0x01000120u, 0x00002c20u, 0x38400000u, 0x00000000u, 0x02000005u, 0x80200000u, 0x00000c00u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x1e000000u, 0x00700000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    {0x00000903u, 0xffff0000u, 0xffffffe0u, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xfffc6f7fu, 0xf7ffffffu, 0xfffffedfu, 0xffffd3dfu, 0xc3bfffffu, 0xffffffffu, 0xfdfffffau, 0x7fdfffffu, 0xfffff3ffu, 0xffffffffu, 0xfffe7fffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xe1ffffffu, 0xff8fffffu, 0x000007ffu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+    {0x00000903u, 0xffff0000u, 0xffffffe0u, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xfffc6f7fu, 0xf7ffffffu, 0xfffffedfu, 0xffffd3dfu, 0xc3bfffffu, 0xffffffffu, 0xfdfffffau, 0x7fdfffffu, 0xfffff3ffu, 0xffffffffu, 0xfffe7fffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xe1ffffffu, 0xff8fffffu, 0x000007ffu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u},
+};
+constexpr uint16_t kOpcodeSectionPrior[11][69] = {
+    {1, 2, 3, 4, 5, 0, 0, 0, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 9, 10, 0, 11, 12, 13, 14, 0, 0, 15, 0, 0, 16, 17, 0, 18, 19, 0, 0, 0, 20, 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 0, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {25, 26, 3, 4, 5, 27, 0, 0, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 9, 10, 0, 11, 12, 13, 14, 0, 0, 15, 0, 0, 16, 17, 0, 18, 19, 0, 0, 0, 20, 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 0, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {28, 29, 3, 4, 5, 30, 0, 0, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 9, 10, 0, 11, 12, 13, 14, 0, 0, 15, 0, 0, 16, 17, 0, 18, 19, 0, 0, 0, 20, 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 0, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {31, 32, 3, 4, 5, 33, 0, 0, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 9, 10, 0, 11, 12, 13, 14, 0, 0, 15, 0, 0, 16, 17, 0, 18, 19, 0, 0, 0, 20, 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 0, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {34, 35, 3, 4, 5, 36, 0, 0, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 9, 10, 0, 11, 12, 13, 14, 0, 0, 15, 0, 0, 16, 17, 0, 18, 19, 0, 0, 0, 20, 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 0, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {37, 38, 3, 4, 5, 39, 0, 0, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 9, 10, 0, 11, 12, 13, 14, 0, 0, 15, 0, 0, 16, 17, 0, 18, 19, 0, 0, 0, 20, 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 0, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {40, 41, 42, 4, 5, 43, 0, 0, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 9, 44, 0, 11, 12, 13, 14, 0, 0, 15, 0, 0, 16, 17, 0, 18, 19, 0, 0, 0, 20, 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 0, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {45, 46, 47, 4, 5, 48, 0, 0, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 49, 44, 0, 11, 12, 13, 14, 0, 0, 15, 0, 0, 16, 17, 0, 18, 19, 0, 0, 0, 20, 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 0, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {50, 51, 52, 53, 5, 48, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 49, 0, 0, 11, 12, 13, 14, 0, 0, 54, 0, 0, 16, 17, 0, 18, 19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 0, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {55, 56, 57, 58, 59, 48, 0, 0, 0, 60, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 61, 62, 0, 63, 64, 0, 65, 0, 0, 66, 0, 0, 67, 68, 0, 69, 70, 0, 0, 0, 27, 71, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 72, 0, 73, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {55, 56, 57, 58, 59, 48, 0, 0, 0, 60, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 61, 62, 0, 63, 64, 0, 65, 0, 0, 66, 0, 0, 67, 68, 0, 69, 70, 0, 0, 0, 27, 71, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 72, 0, 73, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+};
+// 8-bit index trees over [0, n): root prior by n (n >= 256: uniform),
+// prior of the partial leaf holding n % 16 valid low nibbles.
+constexpr uint16_t kIndexRootPrior[257] = {
+    0, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74,
+    74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89,
+    90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105,
+    106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121,
+    122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137,
+    138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153,
+    154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169,
+    170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185,
+    186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201,
+    202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217,
+    218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233,
+    24, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248,
+    249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264,
+    265, 266, 267, 268, 269, 270, 271, 272, 273, 274, 275, 276, 277, 278, 279, 280,
+    281, 282, 283, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 295, 296,
+    297, 298, 299, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312,
+    0,
+};
+constexpr uint16_t kIndexLeafPrior[16] = {
+    0, 74, 90, 106, 122, 138, 154, 170, 186, 202, 218, 24, 249, 265, 281, 297,
+};
+// String order-0 byte-tree prior from kStringPrimer byte counts plus
+// kStringOrder0FloorWeight per byte: root and 16 high-nibble leaves.
+constexpr uint16_t kStringOrder0RootPrior = 313;
+constexpr uint16_t kStringOrder0LeafPrior[16] = {
+    314, 0, 315, 316, 317, 318, 319, 320, 0, 0, 0, 0, 0, 0, 0, 0,
+};
+
+constexpr uint16_t kVersionMajorPrior = 321;
+constexpr uint16_t kVersionMinorPrior = 170;
+// Tool IDs registered in spir-v.xml (contiguous from 0).
+constexpr uint32_t kNumRegisteredGenerators = 52;
+
+uint16_t GetVersionMajorPrior() { return kVersionMajorPrior; }
+
+uint16_t GetVersionMinorPrior() { return kVersionMinorPrior; }
+
+uint32_t NumRegisteredGenerators() { return kNumRegisteredGenerators; }
+
+const uint16_t* GetPriorCdf(uint16_t index) { return kPriorCdfs[index]; }
+
+uint16_t NumPriorCdfs() {
+  return static_cast<uint16_t>(ArraySize(kPriorCdfs));
+}
+
+const uint16_t* GetOpcodeSectionPrior(uint8_t section) {
+  return kOpcodeSectionPrior[section];
+}
+
+const uint32_t* GetOpcodeSectionLegal(uint8_t section) {
+  return kOpcodeSectionLegal[section];
+}
+
+uint16_t GetIndexRootPrior(uint32_t n) {
+  return kIndexRootPrior[n < 256 ? n : 256];
+}
+
+uint16_t GetIndexLeafPrior(uint32_t partial) {
+  return kIndexLeafPrior[partial & 15u];
+}
+
+uint16_t GetStringOrder0RootPrior() { return kStringOrder0RootPrior; }
+
+uint16_t GetStringOrder0LeafPrior(uint32_t high) {
+  return kStringOrder0LeafPrior[high & 15u];
 }
 
 const WellKnownKinds& GetWellKnownKinds() {

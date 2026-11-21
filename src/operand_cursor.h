@@ -108,6 +108,11 @@ class OperandCursor {
   // instruction-number field has been consumed.
   void SetExtInstSet(const ExtInstSetDesc* set);
 
+  // Updates the remaining operand-word budget mid-walk (used when a deferred
+  // OpExtInst resolves to a non-fixed extended instruction and codes its
+  // remaining operand count after the instruction number).
+  void SetRemaining(uint32_t remaining) { remaining_ = remaining; }
+
   // True once grammar interpretation was abandoned mid-walk (missing
   // required operand, string overrun, unknown inner opcode, unknown ext
   // set/number, unknown composite/category, quantifier state that cannot
