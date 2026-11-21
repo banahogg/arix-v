@@ -73,6 +73,13 @@ enum InstructionFlags : uint16_t {
   kInstTypePointer = 1u << 11,
   kInstTypeFunction = 1u << 12,
   kInstConstantNumber = 1u << 13,
+  // !fixed_word_count, all slots required (kOne) and self-delimiting
+  // (LiteralString, ValueEnum/BitEnum, or kInstConstantNumber's
+  // LiteralContextDependentNumber).
+  kInstGrammarImpliedWordCount = 1u << 14,
+  // !fixed_word_count, fixed-one-word required prefix followed by one or more
+  // self-delimiting optional (?) tail slots (no *).
+  kInstOptionalTail = 1u << 15,
 };
 
 // One enumerant of a ValueEnum/BitEnum kind. Parameters are operand kinds

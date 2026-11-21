@@ -785,5 +785,64 @@ in `model_test`), `make asan`, 3000-iteration fuzz, valgrind memcheck with
 full leak checking (`arixv_test`, `model_test`), scalar/SIMD cross-check on
 135 files, all 1080 corpus files round-trip.
 
+### 20. Grammar-implied and optional-tail instruction `word_count` deferral (2026-11-21)
+
+**Train-only analysis** (`word_count` ~43.5 KB full corpus). Many variable-length
+SPIR-V instructions have lengths determined by the grammar plus their already-
+coded operands:
+- Trailing-string ops (`OpString`, `OpName`, `OpMemberName`, `OpExtension`,
+  `OpSourceExtension`, etc.), enum-determined ops (`OpDecorate`,
+  `OpMemberDecorate`, `OpExecutionMode`, `OpLoopMerge`, etc.), and
+  `OpConstant`/`OpSpecConstant` (width from `ResultType`) all terminate
+  unambiguously when `OperandCursor` reaches `kEnd` (`kInstGrammarImpliedWordCount`).
+- Fixed `OpExtInst` calls (e.g. `Sin`, `Fma`, `DebugBreak`) have a fixed
+  operand count once the extended instruction number is decoded, falling back
+  to `CodeVarWordCount` only for variable or unknown ext-insts.
+- Single-optional-tail `?` ops (`OpVariable`, `OpLoad`, `OpStore`,
+  `OpTypeFloat`, `OpImageFetch`, etc., marked `kInstOptionalTail`) only need
+  a 1-bit `has_optional` flag (seeded with `ValidFlagZero()` since optional
+  tails are absent by default) and retain the `fixed_layout` fast path when
+  absent or single-word.
+
+**Implementation:**
+- `scripts/gen_grammar_tables.py`, `src/grammar_tables.*`: emit
+  `kInstGrammarImpliedWordCount` and `kInstOptionalTail` flags mechanically
+  from the pinned Khronos grammar (`--check` verified zero diff).
+- `src/operand_cursor.h`: added `OperandCursor::SetRemaining` for `OpExtInst`
+  variable/unknown fallback mid-instruction.
+- `src/model.cpp`: `ValidateGrammarImplied` and `ValidateExtInstConsistent`
+  verify exact encoder/decoder `OperandCursor` equivalence before deferring,
+  falling back losslessly to explicit `word_count` on any non-canonical or
+  truncated instruction. Moved `word_count_consistent` from per-class
+  `CountModel` to `ModelState` so fixed, grammar-implied, `OpExtInst`, and
+  optional-tail classes skip allocating `CountModel` altogether (`11.7 → 4.8`
+  per decode). `CodeModule` patches `word0` before `CodeDeferredResultType`
+  and `Tracker::OnInstructionEnd`.
+
+| | corpus bytes | Δ vs item 19 | train total | holdout total | decode Ir | wall |
+|---|---|---|---|---|---|---|
+| item 19 (`e5e81ec`) | 788,893 | — | 0.12546 | 0.13483 | 333.0M | 72.42 MiB/s |
+| **landed: A1** | **763,727** | **−3.19%** | 0.12137 (−3.26%) | 0.13061 (−3.13%) | **330.7M (−0.67%)** | 71.82 MiB/s (−0.94%) |
+
+Mean ratio: train 0.16692 → 0.15875 (−4.90%), holdout 0.16625 → 0.15834
+(−4.76%). Median ratio: train 0.16332 → 0.15703 (−3.85%), holdout 0.16137 →
+0.15432 (−4.37%). Golden vector `GoldenSpirvModuleEncoding` shrinks 64 → 59 B.
+
+**Speed, memory, size.** Decode Ir drops 332.97M → **330.74M (−0.67%)**. Wall
+time (quiet host, `taskset -c 4`, `arixv_decode_bench --iters=10` on all 1080
+files, 12 interleaved rounds): median 72.42 → 71.82 MiB/s, median paired
+−0.94% (−1.63% to −0.02%; outlining `CodeVarWordCount` was tested and
+regressed Ir to 337.8M / wall to 69.79 MiB/s, so it was reverted). Memory
+(`memory_breakdown`): heap/decode drops 181.5 → **178.6 KB (−2.9 KB; −5.0 KB
+vs item 3)** and arena blocks/decode drops 90.4 → 88.0 KB (−2.4 KB) from lazy
+`CountModel` avoidance; batched minor page faults 0.612 → 0.629. Library
+(−O2, text+data): 330.2 → 338.0 KB (+7.8 KB, `model.o`).
+
+Checks: `make all`, `make test` (generator `--check`, new tests in
+`grammar_tables_test`, `operand_cursor_test`, and `DeferredWordCountModules`
+in `model_test`), `make asan`, 3000-iteration fuzz, valgrind memcheck with
+full leak checking (`arixv_test`, `model_test`), scalar/SIMD cross-check on
+135 files, all 1080 corpus files round-trip.
+
 
 

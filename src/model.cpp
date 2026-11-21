@@ -146,7 +146,6 @@ inline Prob ValidFlagZero() {
 }
 
 struct CountModel {
-  Prob consistent = ValidFlag();  // count fits the grammar's word counts
   Prob same_as_last;
   UintModel extra;
 };
@@ -424,6 +423,9 @@ struct InstGroup {
   uint8_t last_id_state[16];
   uint8_t last_literal_valid[16];
   uint32_t last_word_count;
+  // Presence flag for kInstOptionalTail instructions (sits in the alignment
+  // padding before BitTree<3>, adding zero bytes to InstGroup).
+  Prob has_optional = ValidFlagZero();
   // Which operand-derived candidate the deferred Result Type matched (see
   // CodeDeferredResultType): 0-6, or 7 for none.
   BitTree<3> result_type_choice;
@@ -653,6 +655,7 @@ struct ModelState {
   // instruction was too sparse to learn — sharing compresses the corpus
   // 0.83% smaller and touches ~7 KB less per decode. The last word count
   // itself stays per instruction (InstGroup::last_word_count).
+  Prob word_count_consistent = ValidFlag();
   std::vector<ArenaPtr<CountModel>> class_count_models;
   // Models on rare paths (corpus-measured: raw counts 1/1080 files, exact
   // bound mispredictions 27/1080, opaque words 4/1080) are allocated on
@@ -730,6 +733,9 @@ class EncodeIO {
   bool SwappedHint() const { return swapped_; }
   uint32_t HeaderWord(size_t index) const { return words_[index]; }
   uint32_t BodyWord(size_t index) const { return words_[5 + index]; }
+  const uint32_t* BodyWordPtr(size_t index) const {
+    return words_.data() + 5 + index;
+  }
   uint32_t BoundHint() const { return words_[3]; }
   void EmitHeaderWord(uint32_t word) {
     if (emitted_ != 3) {
@@ -764,6 +770,7 @@ class DecodeIO {
   bool SwappedHint() const { return false; }
   uint32_t HeaderWord(size_t) const { return 0; }
   uint32_t BodyWord(size_t) const { return 0; }
+  const uint32_t* BodyWordPtr(size_t) const { return nullptr; }
   uint32_t BoundHint() const { return 0; }
 
   void SetSwapped(bool swapped) { swapped_ = swapped; }
@@ -1010,14 +1017,6 @@ uint32_t CodeGenericOperandWord(Bits& bits, ModelState& model,
     prev_bytes[byte] = b;
   }
   return Bits::kEncoding ? hint : out;
-}
-
-bool IsGrammarConsistent(const InstructionDesc* desc, uint32_t count) {
-  if (!desc) {
-    return false;
-  }
-  return desc->fixed_word_count ? count == desc->min_word_count
-                                : count >= desc->min_word_count;
 }
 
 uint32_t ZigZag32(uint32_t delta) {
@@ -2243,6 +2242,11 @@ ARIXV_NOINLINE void CodeString(Bits& bits, ModelState& model,
         (void)sm.Table();
       }
       while (coded.size() < static_cast<size_t>(remaining) * 4u) {
+        if constexpr (!Bits::kEncoding) {
+          if (bits.exhausted()) {
+            break;
+          }
+        }
         const uint8_t hint =
             Bits::kEncoding ? static_cast<uint8_t>(source[coded.size()]) : 0;
         // Byte 0 follows the previous string's NUL; its order-2 context
@@ -2282,6 +2286,11 @@ ARIXV_NOINLINE void CodeString(Bits& bits, ModelState& model,
       std::array<uint8_t, 4> prev_bytes = {0, 0, 0, 0};
       bool found_nul = false;
       while (raw.size() / 4 < remaining && !found_nul) {
+        if constexpr (!Bits::kEncoding) {
+          if (bits.exhausted()) {
+            break;
+          }
+        }
         const uint32_t hint = Bits::kEncoding
                                   ? hint_words[raw.size() / 4]
                                   : 0;
@@ -2402,71 +2411,277 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
   return opcode;
 }
 
-template <class Bits>
-uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
-                       const InstructionDesc* desc,
-                       uint32_t hint, bool* opaque) {
-  *opaque = true;
-  uint32_t count = hint;
-  if (!desc) {
-    if constexpr (Bits::kRawResidual) {
-      return bits.CodeUint32(hint) & 0xffffu;
-    }
-    count = CodeUint(bits, model.arena, EnsureUint(model.arena, model.raw_unknown_count), hint) & 0xffffu;
-    return count;
-  }
+bool WordHasNulByte(uint32_t word) {
+  return (word & 0x000000ffu) == 0 || (word & 0x0000ff00u) == 0 ||
+         (word & 0x00ff0000u) == 0 || (word & 0xff000000u) == 0;
+}
 
+bool IsFixedOneWordKind(uint16_t kind_index) {
+  const OperandKindDesc& kind = GetOperandKind(kind_index);
+  switch (kind.category) {
+    case OperandCategory::kIdResult:
+    case OperandCategory::kIdResultType:
+    case OperandCategory::kIdRef:
+    case OperandCategory::kIdScope:
+    case OperandCategory::kIdMemorySemantics:
+    case OperandCategory::kLiteralInteger:
+    case OperandCategory::kLiteralExtInstInteger:
+      return true;
+    case OperandCategory::kValueEnum:
+    case OperandCategory::kBitEnum: {
+      for (uint16_t i = 0; i < kind.num_enumerants; ++i) {
+        if (GetEnumerant(kind, i).num_params != 0) {
+          return false;
+        }
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+// Encoder-only exact check: verifies that walking `desc` over
+// `inst_words[1..count_hint-1]` with OperandCursor using the same deferred
+// budget as CodeModule reaches kEnd without degrading and consumes exactly
+// `count_hint - 1` words (so a decoder running in deferred-word-count mode
+// will stop at the exact same word).
+ARIXV_NOINLINE bool ValidateGrammarImplied(const InstructionDesc* desc,
+                                           const uint32_t* inst_words,
+                                           uint32_t count_hint,
+                                           size_t remaining_body,
+                                           const Tracker& tracker) {
+  if (!desc || !inst_words || count_hint < desc->min_word_count ||
+      count_hint > remaining_body) {
+    return false;
+  }
+  const uint32_t limit = count_hint - 1;
+  const uint32_t budget =
+      static_cast<uint32_t>(std::min<size_t>(remaining_body, 0xffffu));
+  OperandCursor cursor;
+  cursor.Begin(desc, budget, /*force_opaque=*/false);
+  uint32_t pos = 0;
+  uint32_t result_type = 0;
+  while (pos < limit) {
+    const OperandCursor::Field f = cursor.Next();
+    if (f.type != OperandCursor::FieldType::kOperand) {
+      return false;
+    }
+    const uint32_t w0 = inst_words[1 + pos];
+    uint32_t span = 1;
+    switch (f.category) {
+      case OperandCategory::kIdResultType:
+        result_type = w0;
+        break;
+      case OperandCategory::kLiteralString: {
+        uint32_t s = 0;
+        bool found_nul = false;
+        while (pos + s < limit) {
+          if (WordHasNulByte(inst_words[1 + pos + s])) {
+            ++s;
+            found_nul = true;
+            break;
+          }
+          ++s;
+        }
+        if (!found_nul) {
+          return false;
+        }
+        span = s;
+        break;
+      }
+      case OperandCategory::kLiteralContextDependentNumber: {
+        if (!HasInstructionFlag(desc, kInstConstantNumber)) {
+          return false;
+        }
+        const uint32_t width = tracker.TypeWidth(result_type);
+        if (width == 0) {
+          return false;
+        }
+        span = width > 32 ? 2u : 1u;
+        if (pos + span > limit) {
+          return false;
+        }
+        break;
+      }
+      case OperandCategory::kLiteralSpecConstantOpInteger:
+      case OperandCategory::kLiteralExtInstInteger:
+      case OperandCategory::kComposite:
+      case OperandCategory::kUnknown:
+        return false;
+      default:
+        break;
+    }
+    cursor.Consume(f, span, w0);
+    pos += span;
+    if (cursor.degraded()) {
+      return false;
+    }
+  }
+  const OperandCursor::Field end_field = cursor.Next();
+  return end_field.type == OperandCursor::FieldType::kEnd && !cursor.degraded();
+}
+
+// Encoder-only check for deferred OpExtInst: requires the full instruction to
+// fit in `remaining_body` and, when the resolved extended instruction has a
+// fixed word count, requires `count_hint` to match it exactly.
+ARIXV_NOINLINE bool ValidateExtInstConsistent(const InstructionDesc* desc,
+                                              const uint32_t* inst_words,
+                                              uint32_t count_hint,
+                                              size_t remaining_body,
+                                              const Tracker& tracker) {
+  if (!desc || !inst_words || count_hint < desc->min_word_count ||
+      count_hint > remaining_body) {
+    return false;
+  }
+  const Tracker::IdInfo* info = tracker.Find(inst_words[3]);
+  const ExtInstSetDesc* ext_set = info ? info->ext_set : nullptr;
+  if (!ext_set) {
+    return true;
+  }
+  const InstructionDesc* ext_inst = FindExtInstruction(*ext_set, inst_words[4]);
+  if (!ext_inst || !ext_inst->fixed_word_count) {
+    return true;
+  }
+  return count_hint == desc->min_word_count + ext_inst->num_operands;
+}
+
+template <class Bits>
+uint32_t CodeVarWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
+                          const InstructionDesc* desc, uint32_t hint,
+                          uint32_t base_count) {
+  uint32_t count = hint;
+  // A fresh InstGroup starts with last_word_count = 0.
+  const uint32_t last_count = model.inst_group(inst_index).last_word_count;
   if constexpr (Bits::kRawResidual) {
-    const bool consistent =
-        bits.CodeBit(model.schema_zero, IsGrammarConsistent(desc, hint));
-    if (!consistent) {
-      return bits.CodeUint32(hint) & 0xffffu;
-    }
-    *opaque = false;
-    if (desc->fixed_word_count) {
-      return desc->min_word_count;
-    }
-    const uint32_t last_count = model.inst_group(inst_index).last_word_count;
     if (bits.CodeBit(model.schema_zero,
                      Bits::kEncoding && hint == last_count)) {
       count = last_count;
     } else {
-      const uint32_t extra = Bits::kEncoding ? hint - desc->min_word_count : 0;
-      count = (desc->min_word_count + bits.CodeUint32(extra)) & 0xffffu;
-    }
-    model.inst_group(inst_index).last_word_count = count;
-    return count;
-  }
-
-  CountModel& count_model =
-      EnsureContext(model.arena, model.class_count_models[ClassBucket(desc)]);
-  const bool hint_consistent = IsGrammarConsistent(desc, hint);
-  const bool consistent =
-      bits.CodeBit(count_model.consistent, hint_consistent);
-  if (consistent) {
-    *opaque = false;
-    if (desc->fixed_word_count) {
-      count = desc->min_word_count;
-    } else {
-      // A fresh InstGroup starts with last_word_count = 0.
-      const uint32_t last_count = model.inst_group(inst_index).last_word_count;
-      if (bits.CodeBit(count_model.same_as_last,
-                       Bits::kEncoding && hint == last_count)) {
-        count = last_count;
-      } else {
-        const uint32_t extra_hint = Bits::kEncoding
-                                        ? hint - desc->min_word_count
-                                        : 0;
-        count = (desc->min_word_count +
-                 CodeUint(bits, model.arena, count_model.extra, extra_hint)) &
-                0xffffu;
-      }
-      model.inst_group(inst_index).last_word_count = count;
+      const uint32_t extra = Bits::kEncoding ? hint - base_count : 0;
+      count = (base_count + bits.CodeUint32(extra)) & 0xffffu;
     }
   } else {
-    count = CodeUint(bits, model.arena, EnsureUint(model.arena, model.raw_known_count), hint) & 0xffffu;
+    CountModel& count_model =
+        EnsureContext(model.arena, model.class_count_models[ClassBucket(desc)]);
+    if (bits.CodeBit(count_model.same_as_last,
+                     Bits::kEncoding && hint == last_count)) {
+      count = last_count;
+    } else {
+      const uint32_t extra_hint = Bits::kEncoding ? hint - base_count : 0;
+      count = (base_count +
+               CodeUint(bits, model.arena, count_model.extra, extra_hint)) &
+              0xffffu;
+    }
   }
+  model.inst_group(inst_index).last_word_count = count;
   return count;
+}
+
+template <class Bits>
+uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
+                       const InstructionDesc* desc, uint32_t hint,
+                       const uint32_t* inst_words, size_t remaining_body,
+                       bool* opaque, bool* deferred, bool* fixed_layout_out) {
+  *opaque = true;
+  *deferred = false;
+  *fixed_layout_out = false;
+  if (!desc) {
+    if constexpr (Bits::kRawResidual) {
+      return bits.CodeUint32(hint) & 0xffffu;
+    }
+    return CodeUint(bits, model.arena,
+                    EnsureUint(model.arena, model.raw_unknown_count), hint) &
+           0xffffu;
+  }
+
+  const bool use_grammar_implied =
+      HasInstructionFlag(desc, kInstGrammarImpliedWordCount);
+  const bool use_ext_inst = HasInstructionFlag(desc, kInstExtInst);
+  const bool use_optional_tail = HasInstructionFlag(desc, kInstOptionalTail);
+  const bool single_optional =
+      use_optional_tail && desc->min_word_count == desc->num_operands;
+
+  bool hint_consistent = false;
+  if constexpr (Bits::kEncoding) {
+    if (desc->fixed_word_count) {
+      hint_consistent = (hint == desc->min_word_count);
+    } else if (use_grammar_implied) {
+      hint_consistent = ValidateGrammarImplied(desc, inst_words, hint,
+                                               remaining_body, model.tracker);
+    } else if (use_ext_inst) {
+      hint_consistent = ValidateExtInstConsistent(
+          desc, inst_words, hint, remaining_body, model.tracker);
+    } else if (use_optional_tail) {
+      if (hint < desc->min_word_count) {
+        hint_consistent = false;
+      } else if (hint == desc->min_word_count) {
+        hint_consistent = true;
+      } else if (single_optional) {
+        const OperandSlotDesc& tail =
+            GetOperandSlots(*desc)[desc->num_operands - 1];
+        if (IsFixedOneWordKind(tail.kind)) {
+          hint_consistent = (hint == desc->min_word_count + 1u);
+        } else {
+          hint_consistent = ValidateGrammarImplied(
+              desc, inst_words, hint, remaining_body, model.tracker);
+        }
+      } else {
+        hint_consistent = true;
+      }
+    } else {
+      hint_consistent = (hint >= desc->min_word_count);
+    }
+  }
+
+  bool consistent = false;
+  if constexpr (Bits::kRawResidual) {
+    consistent = bits.CodeBit(model.schema_zero, hint_consistent);
+    if (!consistent) {
+      return bits.CodeUint32(hint) & 0xffffu;
+    }
+  } else {
+    consistent = bits.CodeBit(model.word_count_consistent, hint_consistent);
+    if (!consistent) {
+      return CodeUint(bits, model.arena,
+                      EnsureUint(model.arena, model.raw_known_count), hint) &
+             0xffffu;
+    }
+  }
+
+  *opaque = false;
+  if (desc->fixed_word_count) {
+    *fixed_layout_out = true;
+    return desc->min_word_count;
+  }
+  if (use_grammar_implied || use_ext_inst) {
+    *deferred = true;
+    return 0;
+  }
+  if (use_optional_tail) {
+    Prob& opt_prob = Bits::kRawResidual ? model.schema_zero
+                                        : model.inst_group(inst_index).has_optional;
+    const bool has_optional =
+        bits.CodeBit(opt_prob, Bits::kEncoding && hint > desc->min_word_count);
+    if (!has_optional) {
+      *fixed_layout_out = true;
+      return desc->min_word_count;
+    }
+    if (single_optional) {
+      const OperandSlotDesc& tail =
+          GetOperandSlots(*desc)[desc->num_operands - 1];
+      if (IsFixedOneWordKind(tail.kind)) {
+        *fixed_layout_out = true;
+        return desc->min_word_count + 1u;
+      }
+      *deferred = true;
+      return 0;
+    }
+    return CodeVarWordCount(model, bits, inst_index, desc, hint,
+                            desc->min_word_count + 1u);
+  }
+  return CodeVarWordCount(model, bits, inst_index, desc, hint,
+                          desc->min_word_count);
 }
 
 template <class Bits, class IO>
@@ -2518,7 +2733,6 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
   uint32_t prev_inst_result_id = 0;
   WordBuffer<kInlineInstructionWords> inst_words;
   WordBuffer<kInlineOperandWords> coded_words;
-  std::vector<uint32_t> string_hints;
   while (body_pos < body_words) {
     // word_count comes from the untrusted header. Once the coded stream is
     // exhausted, every further word is decoded from past-the-end zero bytes;
@@ -2542,39 +2756,49 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
       model.EnsureInstContext(inst_index);
     }
 
-    bool opaque = true;
-    stat(kStatWordCount);
-    const uint32_t declared_count =
-        CodeWordCount(model, bits, inst_index, desc, count_hint, &opaque);
-    const uint32_t word0 = (declared_count << 16) | opcode;
-    inst_words.clear();
     const size_t remaining_body = body_words - body_pos;
-    const uint32_t operand_words =
-        declared_count == 0
-            ? 0
-            : static_cast<uint32_t>(
-                  std::min<size_t>(declared_count - 1,
-                                   remaining_body > 0 ? remaining_body - 1
-                                                      : 0));
-    inst_words.push_back(word0);
+    bool opaque = true;
+    bool deferred_word_count = false;
+    bool fixed_layout = false;
+    stat(kStatWordCount);
+    const uint32_t declared_count = CodeWordCount(
+        model, bits, inst_index, desc, count_hint, io.BodyWordPtr(body_pos),
+        remaining_body, &opaque, &deferred_word_count, &fixed_layout);
+    const bool patch_word0 = deferred_word_count;
+    const uint32_t initial_word0 =
+        patch_word0
+            ? (Bits::kEncoding ? word0_hint : static_cast<uint32_t>(opcode))
+            : ((declared_count << 16) | opcode);
+    inst_words.clear();
+    uint32_t operand_words =
+        deferred_word_count
+            ? static_cast<uint32_t>(std::min<size_t>(
+                  remaining_body > 0 ? remaining_body - 1 : 0, 0xfffeu))
+            : (declared_count == 0
+                   ? 0
+                   : static_cast<uint32_t>(std::min<size_t>(
+                         declared_count - 1,
+                         remaining_body > 0 ? remaining_body - 1 : 0)));
+    inst_words.push_back(initial_word0);
 
     model.tracker.OnInstructionStart(opcode, desc, declared_count);
     model.cur_prev_res_id = model.tracker.in_block() ? prev_inst_result_id : 0u;
     model.cur_prev_res_list = ModelState::kUnresolvedList;
     prev_inst_result_id = 0;
-    io.EmitBodyWord(word0);
+    io.EmitBodyWord(initial_word0);
 
     std::array<uint8_t, 4> prev_bytes = {0, 0, 0, 0};
     OperandCursor cursor;
     // Fixed layouts have only required, one-word operands and no enumerant
-    // parameters. Their slot list therefore describes every decoded field
-    // directly, so avoid the general cursor state machine on this common path.
-    const bool fixed_layout =
-        desc != nullptr && desc->fixed_word_count && !opaque;
+    // parameters (including optional-tail instructions whose present prefix is
+    // fixed-one-word). Their slot list therefore describes every decoded field
+    // directly, avoiding the general cursor state machine on this common path.
     const OperandSlotDesc* fixed_slots =
         fixed_layout ? GetOperandSlots(*desc) : nullptr;
     if (!fixed_layout) {
-      cursor.Begin(desc, declared_count, opaque);
+      cursor.Begin(desc,
+                   deferred_word_count ? operand_words + 1u : declared_count,
+                   opaque);
     }
     uint32_t consumed = 0;
     uint32_t current_result_type = 0;
@@ -2612,7 +2836,12 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
       } else {
         cursor_field = cursor.Next();
         field = cursor_field;
-        if (field.type == OperandCursor::FieldType::kEnd) {
+        if (field.type == OperandCursor::FieldType::kEnd ||
+            (deferred_word_count &&
+             field.type == OperandCursor::FieldType::kOpaqueWord)) {
+          if (deferred_word_count) {
+            break;
+          }
           field.type = OperandCursor::FieldType::kOpaqueWord;
         }
       }
@@ -2716,11 +2945,18 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
             break;
           case OperandCategory::kLiteralContextDependentNumber: {
             stat(kStatLitCdn);
-            consume_span =
-                SpanForField(field, desc, current_result_type, model.tracker,
-                             inst_words.data(),
-                             static_cast<uint32_t>(inst_words.size()),
-                             remaining);
+            if (deferred_word_count &&
+                HasInstructionFlag(desc, kInstConstantNumber) &&
+                model.tracker.TypeWidth(current_result_type) == 0) {
+              // Corrupt-stream guard: encoder only defers when TypeWidth > 0.
+              consume_span = 1;
+            } else {
+              consume_span =
+                  SpanForField(field, desc, current_result_type, model.tracker,
+                               inst_words.data(),
+                               static_cast<uint32_t>(inst_words.size()),
+                               remaining);
+            }
             const uint32_t actual_span = std::min(consume_span, remaining);
             if (actual_span == 1) {
               stage_single_word(CodeContextNumber(
@@ -2751,25 +2987,43 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
             }
             break;
           }
-          case OperandCategory::kLiteralExtInstInteger:
+          case OperandCategory::kLiteralExtInstInteger: {
             stat(kStatExtNum);
-            stage_single_word(
-                CodeExtInstNumber(bits, model, current_ext_set, hint0));
+            const uint32_t ext_num =
+                CodeExtInstNumber(bits, model, current_ext_set, hint0);
+            stage_single_word(ext_num);
+            if (deferred_word_count && HasInstructionFlag(desc, kInstExtInst)) {
+              const InstructionDesc* ext_inst =
+                  current_ext_set
+                      ? FindExtInstruction(*current_ext_set, ext_num)
+                      : nullptr;
+              if (!ext_inst || !ext_inst->fixed_word_count) {
+                stat(kStatWordCount);
+                const uint32_t ext_total = CodeVarWordCount(
+                    model, bits, inst_index, desc, count_hint,
+                    desc->min_word_count);
+                uint32_t target =
+                    ext_total > 0
+                        ? static_cast<uint32_t>(std::min<size_t>(
+                              ext_total - 1, remaining_body - 1))
+                        : 0u;
+                if (target < consumed + 1) {
+                  target = consumed + 1;
+                }
+                operand_words = target;
+                cursor.SetRemaining(operand_words - consumed);
+                deferred_word_count = false;
+              }
+            }
             break;
+          }
           case OperandCategory::kLiteralString: {
             stat(kStatString);
-            const uint32_t* string_hint_ptr = nullptr;
-            if constexpr (Bits::kEncoding) {
-              string_hints.clear();
-              string_hints.reserve(remaining);
-              for (uint32_t i = 0; i < remaining; ++i) {
-                string_hints.push_back(io.BodyWord(body_pos + 1 + consumed + i));
-              }
-              string_hint_ptr = string_hints.data();
-            }
+            const uint32_t* string_hint_ptr =
+                Bits::kEncoding ? io.BodyWordPtr(body_pos + 1 + consumed)
+                                : nullptr;
             CodeString(bits, model, desc, string_hint_ptr, remaining,
-                       &consume_span,
-                       coded_words);
+                       &consume_span, coded_words);
             if (consume_span > remaining) {
               consume_span = remaining;
             }
@@ -2821,6 +3075,13 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
       consumed += static_cast<uint32_t>(coded_words.size());
     }
 
+    if (patch_word0) {
+      const uint32_t final_count =
+          static_cast<uint32_t>(inst_words.size()) & 0xffffu;
+      const uint32_t final_word0 = (final_count << 16) | opcode;
+      inst_words.data()[0] = final_word0;
+      io.PatchBodyWord(body_pos, final_word0);
+    }
     if (result_type_deferred && inst_words.size() > 1) {
       stat(kStatResultType);
       const uint32_t type = CodeDeferredResultType(
@@ -2835,7 +3096,7 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
                                    static_cast<uint32_t>(inst_words.size()),
                                    inst_index,
                                    num_id_operands > 0 ? id_operands[0] : 0);
-    body_pos += 1 + operand_words;
+    body_pos += 1 + consumed;
   }
 
   stat(kStatBound);

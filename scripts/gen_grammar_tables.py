@@ -328,6 +328,16 @@ def is_fixed_one_word(kind: OperandKind) -> bool:
     return False
 
 
+def is_self_delimiting_kind(kind: OperandKind, has_constant_number: bool) -> bool:
+    if kind.category in ONE_WORD_CATEGORIES and kind.category != "kLiteralExtInstInteger":
+        return True
+    if kind.category in {"kLiteralString", "kValueEnum", "kBitEnum"}:
+        return True
+    if kind.category == "kLiteralContextDependentNumber":
+        return has_constant_number
+    return False
+
+
 def is_type_class_name(class_name: str) -> bool:
     return class_name in {"Type-Declaration", "Type-Declaring"}
 
@@ -494,6 +504,30 @@ def build_instruction(
     )
     check_result_slots_lead(name, operands, kinds, has_result, has_result_type)
     flags = flags_for(name, class_name)
+    has_constant_number = "kInstConstantNumber" in flags
+    if not fixed_word_count and all(
+        slot.quantifier == "kOne"
+        and is_self_delimiting_kind(kinds[slot.kind], has_constant_number)
+        for slot in operands
+    ):
+        flags.append("kInstGrammarImpliedWordCount")
+    elif (
+        not fixed_word_count
+        and len(operands) >= 1
+        and operands[-1].quantifier == "kOptional"
+    ):
+        first_opt = next(
+            i for i, slot in enumerate(operands) if slot.quantifier == "kOptional"
+        )
+        if all(
+            slot.quantifier == "kOne" and is_fixed_one_word(kinds[slot.kind])
+            for slot in operands[:first_opt]
+        ) and all(
+            slot.quantifier == "kOptional"
+            and is_self_delimiting_kind(kinds[slot.kind], has_constant_number)
+            for slot in operands[first_opt:]
+        ):
+            flags.append("kInstOptionalTail")
     return Instruction(
         name=name,
         opcode=int(raw["opcode"]),

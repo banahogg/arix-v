@@ -1322,6 +1322,291 @@ void TypeAlgebraAndVariableStorageClassTests() {
   }
 }
 
+void DeferredWordCountModules() {
+  // 1. Trailing-string kInstGrammarImpliedWordCount: canonical, multi-word
+  //    with non-zero padding, two consecutive strings (OpAsmINTEL), extra
+  //    trailing words after NUL, string without NUL, short/zero word_count,
+  //    and word_count > remaining_body.
+  {
+    std::vector<uint32_t> body;
+    // Canonical OpString, OpName, OpMemberName, OpExtension, OpSourceExtension.
+    body.push_back(Op(7, 4));
+    body.push_back(1);
+    AppendStringWords("hello", body);  // 2 words
+    body.push_back(Op(5, 4));
+    body.push_back(1);
+    AppendStringWords("abcd", body);  // 2 words (NUL in 2nd word)
+    body.push_back(Op(6, 5));
+    body.push_back(1);
+    body.push_back(0);
+    AppendStringWords("xy", body);
+    body.push_back(Op(10, 4));
+    AppendStringWords("SPV_KHR_a", body);  // 3 words
+    // Multi-word string with non-zero padding bytes after NUL in final word.
+    body.push_back(Op(7, 4));
+    body.push_back(2);
+    AppendStringWords("abcde", body, 0x59580000u);  // 'e', '\0', 'X', 'Y'
+    // OpAsmINTEL (5610): two consecutive LiteralString operands.
+    body.push_back(Op(5610, 9));
+    body.push_back(3);
+    body.push_back(4);
+    body.push_back(5);
+    body.push_back(6);
+    AppendStringWords("mov r0", body);  // 2 words
+    AppendStringWords("=r", body);      // 1 word
+    // Non-canonical: extra trailing words after NUL word in OpSourceExtension.
+    body.push_back(Op(4, 5));
+    body.push_back(0x00006162u);  // "ba\0\0"
+    body.push_back(0xdeadbeefu);
+    body.push_back(0x12345678u);
+    body.push_back(0x00000000u);
+    // Non-canonical: string with NO NUL byte at all in OpName.
+    body.push_back(Op(5, 4));
+    body.push_back(1);
+    body.push_back(0x41424344u);  // "DCBA"
+    body.push_back(0x45464748u);  // "HGFE"
+    // Non-canonical: short/zero word_count on OpName / OpString.
+    body.push_back(Op(5, 0));
+    body.push_back(Op(5, 1));
+    body.push_back(Op(5, 2));
+    body.push_back(1);
+    body.push_back(Op(7, 1));
+    // Non-canonical: OpName whose declared word_count exceeds remaining_body.
+    body.push_back(Op(5, 20));
+    body.push_back(1);
+    body.push_back(0x00616263u);
+    RoundTrip(Module(body, 0x00010300u, 0, 10), true, arixv::kModeSpirv);
+  }
+
+  // Max 16-bit word_count (65535) both on an actual 65535-word OpString and
+  // on a truncated OpString claiming 65535 with only 3 words remaining.
+  {
+    std::vector<uint32_t> body;
+    body.reserve(65538);
+    body.push_back(Op(7, 65535));
+    body.push_back(1);
+    for (uint32_t i = 0; i < 65532; ++i) {
+      body.push_back(0x61616161u);  // "aaaa"
+    }
+    body.push_back(0x00616161u);  // NUL in the 65533rd string word
+    // Follow with a normal instruction to prove exact boundary restoration.
+    body.push_back(Op(0, 1));  // OpNop
+    RoundTrip(Module(body, 0x00010300u, 0, 2), true, arixv::kModeSpirv);
+  }
+  {
+    std::vector<uint32_t> body = {Op(7, 65535), 1, 0x00616263u};
+    RoundTrip(Module(body, 0x00010300u, 0, 2), true, arixv::kModeSpirv);
+  }
+
+  // 2. Enum-determined kInstGrammarImpliedWordCount: OpDecorate,
+  //    OpMemberDecorate, OpExecutionMode, OpLoopMerge, OpImageSampleExplicitLod.
+  {
+    std::vector<uint32_t> body;
+    // Canonical 0-param, 1-param, and string+enum param (LinkageAttributes=41).
+    body.insert(body.end(), {Op(71, 3), 1, 2});             // Block (0 params)
+    body.insert(body.end(), {Op(71, 4), 1, 30, 7});         // Location 7
+    body.insert(body.end(), {Op(72, 5), 1, 0, 35, 16});     // Member Offset 16
+    body.push_back(Op(71, 6));                              // LinkageAttributes
+    body.push_back(1);
+    body.push_back(41);
+    AppendStringWords("sym_foo", body);                     // 2 words
+    body.push_back(0);                                      // Export
+    body.insert(body.end(), {Op(16, 3), 1, 7});             // OriginUpperLeft
+    body.insert(body.end(), {Op(16, 6), 1, 17, 8, 8, 1});   // LocalSize 8 8 1
+    body.insert(body.end(), {Op(246, 4), 10, 11, 0});       // LoopMerge None
+    body.insert(body.end(), {Op(246, 6), 10, 11, 0x18, 4, 2});  // Min+MaxIter
+    body.insert(body.end(), {Op(88, 7), 1, 2, 3, 4, 2, 5});     // ExplicitLod Lod
+    // Non-canonical: unknown Decoration with 0 params and with extra word.
+    body.insert(body.end(), {Op(71, 3), 1, 0x7fffu});
+    body.insert(body.end(), {Op(71, 4), 1, 0x7fffu, 99});
+    // Non-canonical: Location missing its required parameter (truncated).
+    body.insert(body.end(), {Op(71, 3), 1, 30});
+    // Non-canonical: Block with an unexpected trailing word.
+    body.insert(body.end(), {Op(71, 4), 1, 2, 12345});
+    // Non-canonical: LoopMerge with unknown high bit + missing PartialCount arg.
+    body.insert(body.end(), {Op(246, 4), 10, 11, 0x80000008u});
+    // Non-canonical: OpDecorate with word_count = 0 and 2.
+    body.insert(body.end(), {Op(71, 0), Op(71, 2), 1});
+    RoundTrip(Module(body, 0x00010300u, 0, 20), true, arixv::kModeSpirv);
+  }
+
+  // 3. OpConstant / OpSpecConstant (kInstConstantNumber): canonical 16/32/64,
+  //    unusual 128-bit width, unknown/non-scalar result type, truncated 64-bit,
+  //    overlong 32-bit, and EOF truncation.
+  {
+    std::vector<uint32_t> body = {
+        Op(20, 2), 1,                      // %1 = OpTypeBool
+        Op(21, 4), 2, 16, 0,               // %2 = OpTypeInt 16 0
+        Op(21, 4), 3, 32, 1,               // %3 = OpTypeInt 32 1
+        Op(21, 4), 4, 64, 0,               // %4 = OpTypeInt 64 0
+        Op(21, 4), 5, 128, 0,              // %5 = OpTypeInt 128 0 (4-word const)
+        Op(22, 3), 6, 64,                  // %6 = OpTypeFloat 64
+        Op(43, 4), 2, 10, 0x00001234u,     // canonical 16-bit
+        Op(43, 4), 3, 11, 0xdeadbeefu,     // canonical 32-bit
+        Op(50, 5), 4, 12, 0x11111111u, 0x22222222u,  // canonical 64-bit spec
+        Op(43, 5), 6, 13, 0x00000000u, 0x3ff00000u,  // canonical float64
+        // Unusual 128-bit constant (4 value words -> falls back cleanly).
+        Op(43, 7), 5, 14, 1, 2, 3, 4,
+        // Unknown result type %99 (width == 0 -> falls back cleanly).
+        Op(43, 4), 99, 15, 42,
+        Op(43, 6), 99, 16, 1, 2, 3,
+        // Non-scalar result type %1 (OpTypeBool, width == 0 -> falls back).
+        Op(43, 4), 1, 17, 1,
+        // Truncated 64-bit constant (only 1 value word -> falls back).
+        Op(43, 4), 4, 18, 0xabcdef01u,
+        // Overlong 32-bit constant (extra trailing word -> falls back).
+        Op(43, 5), 3, 19, 7, 8,
+        // Short OpConstant (word_count = 3, 1, 0).
+        Op(43, 3), 3, 20,
+        Op(43, 1),
+        Op(43, 0),
+        // Truncated at EOF (claims 5 words, only 4 remain).
+        Op(43, 5), 4, 21, 9,
+    };
+    RoundTrip(Module(body, 0x00010300u, 0, 100), true, arixv::kModeSpirv);
+  }
+
+  // 4. OpExtInst: fixed (0-arg, 1-arg, 3-arg), fixed with wrong length,
+  //    known non-fixed (DebugPrintf, ClspvReflection), unknown ext opcode,
+  //    unknown ext set (imported and undefined), short & EOF-truncated.
+  {
+    std::vector<uint32_t> body;
+    body.push_back(Op(19, 2));
+    body.push_back(1);  // %1 = void
+    body.push_back(Op(22, 3));
+    body.push_back(2);
+    body.push_back(32);  // %2 = f32
+    // Imports: %10 = GLSL.std.450, %11 = NonSemantic.DebugBreak,
+    //          %12 = NonSemantic.DebugPrintf, %13 = Custom.Unknown.1
+    body.push_back(Op(11, 6));
+    body.push_back(10);
+    AppendStringWords("GLSL.std.450", body);
+    body.push_back(Op(11, 8));
+    body.push_back(11);
+    AppendStringWords("NonSemantic.DebugBreak", body);
+    body.push_back(Op(11, 8));
+    body.push_back(12);
+    AppendStringWords("NonSemantic.DebugPrintf", body);
+    body.push_back(Op(11, 7));
+    body.push_back(13);
+    AppendStringWords("Custom.Unknown.1", body);
+    // Fixed 0-arg ext-inst: DebugBreak (opcode 1, 0 operands -> 5 words).
+    body.insert(body.end(), {Op(12, 5), 1, 20, 11, 1});
+    // Fixed 1-arg (GLSL Sin=14 -> 6 words) and 3-arg (GLSL Fma=50 -> 8 words).
+    body.insert(body.end(), {Op(12, 6), 2, 21, 10, 14, 20});
+    body.insert(body.end(), {Op(12, 8), 2, 22, 10, 50, 20, 21, 21});
+    // Non-canonical fixed ext-inst with wrong length (extra word, missing word).
+    body.insert(body.end(), {Op(12, 7), 2, 23, 10, 14, 20, 99});
+    body.insert(body.end(), {Op(12, 5), 2, 24, 10, 14});
+    // Known non-fixed ext-inst: DebugPrintf (opcode 1) with 0, 1, 3 args.
+    body.insert(body.end(), {Op(12, 5), 1, 25, 12, 1});
+    body.insert(body.end(), {Op(12, 6), 1, 26, 12, 1, 20});
+    body.insert(body.end(), {Op(12, 8), 1, 27, 12, 1, 20, 21, 22});
+    // Unknown ext-inst opcode in known GLSL set (0 and 2 operands).
+    body.insert(body.end(), {Op(12, 5), 2, 28, 10, 9999});
+    body.insert(body.end(), {Op(12, 7), 2, 29, 10, 9999, 20, 21});
+    // Unknown imported ext-inst set (%13) and undefined set (%99).
+    body.insert(body.end(), {Op(12, 6), 2, 30, 13, 7, 20});
+    body.insert(body.end(), {Op(12, 5), 2, 31, 99, 7});
+    body.insert(body.end(), {Op(12, 7), 2, 32, 99, 7, 20, 21});
+    // Short / zero OpExtInst and EOF-truncated OpExtInst.
+    body.insert(body.end(), {Op(12, 0), Op(12, 1), Op(12, 4), 2, 33, 10});
+    body.insert(body.end(), {Op(12, 9), 2, 34, 10, 50, 20});
+    RoundTrip(Module(body, 0x00010300u, 0, 100), true, arixv::kModeSpirv);
+  }
+
+  // 5. Optional-tail '?' (kInstOptionalTail): single fixed-1-word (OpVariable,
+  //    OpTypeFloat), single enum-with-params (OpLoad, OpStore, OpImageFetch),
+  //    and multi-optional (OpSource, OpCopyMemory), plus non-canonical cases.
+  {
+    std::vector<uint32_t> body;
+    // OpSource (3): 0, 1, and 2 optional operands.
+    body.insert(body.end(), {Op(3, 3), 2, 450});
+    body.insert(body.end(), {Op(3, 4), 2, 450, 1});
+    body.push_back(Op(3, 6));
+    body.push_back(2);
+    body.push_back(450);
+    body.push_back(1);
+    AppendStringWords("void;", body);  // 2 words
+    // OpTypeFloat (22): absent, present (1 word), extra word, short.
+    body.insert(body.end(), {Op(22, 3), 2, 32});
+    body.insert(body.end(), {Op(22, 4), 3, 16, 0});
+    body.insert(body.end(), {Op(22, 5), 4, 32, 0, 99});
+    body.insert(body.end(), {Op(22, 2), 5});
+    // OpVariable (59): absent, present (1 word), extra trailing word, short.
+    body.insert(body.end(), {Op(59, 4), 2, 10, 7});
+    body.insert(body.end(), {Op(59, 5), 2, 11, 7, 10});
+    body.insert(body.end(), {Op(59, 6), 2, 12, 7, 10, 99});
+    body.insert(body.end(), {Op(59, 3), 2, 13});
+    // OpLoad (61): absent, Volatile (0 params), Aligned 16 (1 param),
+    // Aligned missing param (truncated), Volatile + extra word, unknown bits.
+    body.insert(body.end(), {Op(61, 4), 2, 20, 10});
+    body.insert(body.end(), {Op(61, 5), 2, 21, 10, 1});
+    body.insert(body.end(), {Op(61, 6), 2, 22, 10, 2, 16});
+    body.insert(body.end(), {Op(61, 5), 2, 23, 10, 2});         // missing align
+    body.insert(body.end(), {Op(61, 6), 2, 24, 10, 1, 99});     // extra word
+    body.insert(body.end(), {Op(61, 5), 2, 25, 10, 0x80000000u});
+    // OpStore (62): absent, Aligned 4, extra word.
+    body.insert(body.end(), {Op(62, 3), 10, 20});
+    body.insert(body.end(), {Op(62, 5), 10, 20, 2, 4});
+    body.insert(body.end(), {Op(62, 5), 10, 20, 1, 77});
+    // OpCopyMemory (63): 0, 1, and 2 MemoryAccess optionals.
+    body.insert(body.end(), {Op(63, 3), 10, 11});
+    body.insert(body.end(), {Op(63, 5), 10, 11, 2, 4});
+    body.insert(body.end(), {Op(63, 6), 10, 11, 2, 4, 1});
+    body.insert(body.end(), {Op(63, 2), 10});
+    // OpImageFetch (95): absent, Lod (bit 1 -> 1 param), extra word.
+    body.insert(body.end(), {Op(95, 5), 2, 30, 10, 11});
+    body.insert(body.end(), {Op(95, 7), 2, 31, 10, 11, 2, 12});
+    body.insert(body.end(), {Op(95, 8), 2, 32, 10, 11, 2, 12, 99});
+    // OpSwitch (251): 32-bit and 64-bit selector cases + odd non-canonical len.
+    body.insert(body.end(), {Op(21, 4), 40, 64, 0});
+    body.insert(body.end(), {Op(43, 5), 40, 41, 1, 0});
+    body.insert(body.end(), {Op(251, 3), 41, 50});
+    body.insert(body.end(), {Op(251, 9), 41, 50, 0, 0, 51, 1, 0, 52});
+    body.insert(body.end(), {Op(251, 4), 41, 50, 99});
+    RoundTrip(Module(body, 0x00010300u, 0, 60), true, arixv::kModeSpirv);
+  }
+
+  // 6. Truncated and bit-flipped compressed streams covering deferred
+  //    instructions must always fail cleanly without crashes or runaway loops.
+  {
+    std::vector<uint32_t> body;
+    body.push_back(Op(11, 6));
+    body.push_back(1);
+    AppendStringWords("GLSL.std.450", body);
+    body.push_back(Op(5, 4));
+    body.push_back(2);
+    AppendStringWords("main", body);
+    body.insert(body.end(), {
+        Op(71, 4), 2, 30, 0,
+        Op(21, 4), 3, 64, 0,
+        Op(43, 5), 3, 4, 1, 2,
+        Op(59, 4), 3, 5, 7,
+        Op(61, 6), 3, 6, 5, 2, 8,
+        Op(12, 6), 3, 7, 1, 14, 6,
+    });
+    const std::vector<uint8_t> mod = Module(body, 0x00010300u, 0, 10);
+    arixv::EncodeOptions opts;
+    opts.force_coded = true;
+    const std::vector<uint8_t> encoded =
+        arixv::Encode(mod.data(), mod.size(), opts);
+    assert(ContainerMode(encoded) == arixv::kModeSpirv);
+    for (size_t prefix = 0; prefix < encoded.size(); ++prefix) {
+      std::vector<uint8_t> out;
+      const arixv::Status st = arixv::Decode(encoded.data(), prefix, out);
+      assert(st != arixv::Status::kOk);
+    }
+    for (size_t i = arixv::kContainerMagicBytes + 1; i < encoded.size(); ++i) {
+      std::vector<uint8_t> mutated = encoded;
+      mutated[i] ^= 0x55u;
+      std::vector<uint8_t> out;
+      (void)arixv::Decode(mutated.data(), mutated.size(), out);
+    }
+  }
+}
+
+
 }  // namespace
 
 int main() {
@@ -1336,6 +1621,7 @@ int main() {
   ColdStartPriorAndBoundaryTests();
   AdaptiveIdListSourceTests();
   TypeAlgebraAndVariableStorageClassTests();
+  DeferredWordCountModules();
   MutatedCorpusRoundTrips();
   return 0;
 }

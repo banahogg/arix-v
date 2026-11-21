@@ -238,5 +238,42 @@ int main() {
     return Fail("OpFunction generated classification is wrong");
   }
 
+  // Grammar-implied word-count and optional-tail flags must be mutually
+  // exclusive with each other and with fixed_word_count.
+  for (uint16_t i = 0; i < arixv::NumCoreInstructions(); ++i) {
+    const arixv::InstructionDesc& inst = arixv::GetCoreInstruction(i);
+    const bool gi =
+        arixv::HasInstructionFlag(&inst, arixv::kInstGrammarImpliedWordCount);
+    const bool ot = arixv::HasInstructionFlag(&inst, arixv::kInstOptionalTail);
+    if ((inst.fixed_word_count && (gi || ot)) || (gi && ot)) {
+      return Fail("word-count classification flags are not mutually exclusive");
+    }
+  }
+  const uint32_t expected_gi[] = {
+      2, 4, 5, 6, 7, 10, 11, 16, 43, 50, 71, 72, 88, 246, 330, 5610, 5632,
+  };
+  for (uint32_t op : expected_gi) {
+    const arixv::InstructionDesc* d = arixv::FindInstruction(op);
+    if (!d || !arixv::HasInstructionFlag(d, arixv::kInstGrammarImpliedWordCount)) {
+      return Fail("expected kInstGrammarImpliedWordCount flag missing");
+    }
+  }
+  const uint32_t expected_ot[] = {3, 22, 25, 59, 61, 62, 63, 64, 87, 95};
+  for (uint32_t op : expected_ot) {
+    const arixv::InstructionDesc* d = arixv::FindInstruction(op);
+    if (!d || !arixv::HasInstructionFlag(d, arixv::kInstOptionalTail)) {
+      return Fail("expected kInstOptionalTail flag missing");
+    }
+  }
+  const uint32_t expected_var[] = {12, 15, 52, 65, 245, 250, 251};
+  for (uint32_t op : expected_var) {
+    const arixv::InstructionDesc* d = arixv::FindInstruction(op);
+    if (!d || d->fixed_word_count ||
+        arixv::HasInstructionFlag(d, arixv::kInstGrammarImpliedWordCount) ||
+        arixv::HasInstructionFlag(d, arixv::kInstOptionalTail)) {
+      return Fail("variadic instruction unexpectedly classified as deferred/optional");
+    }
+  }
+
   return 0;
 }
