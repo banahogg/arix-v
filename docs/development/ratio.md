@@ -665,8 +665,8 @@ corpus files round-trip (default and `--force-coded`).
 Mean ratio: train 0.17861 → 0.17388 (−2.65%), holdout 0.17793 → 0.17340
 (−2.55%). Median ratio: train 0.17472 → 0.17154 (−1.82%), holdout 0.17285 →
 0.16976 (−1.79%). Small modules gain heavily from eliminating cold-start
-uniformity. Golden vectors: `GoldenSpirvModuleEncoding` unchanged at 68 B
-(content updated); header-only vector unchanged at 14 B.
+uniformity. Golden vectors: `GoldenSpirvModuleEncoding` shrinks 68 → 66 B;
+header-only vector unchanged at 14 B.
 
 **Speed, memory, size.** Decode Ir is virtually flat: 320.2M → 320.35M
 (+0.05%). Wall time (quiet host, `taskset -c 4`, `arixv_decode_bench
@@ -679,6 +679,53 @@ Checks: `make all`, `make test` (generator `--check`, new prior tests in
 `grammar_tables_test` and `model_test`), `make asan`, 3000-iteration fuzz,
 valgrind memcheck with full leak checking (`arixv_test`, `model_test`),
 scalar/SIMD cross-check on 135 files, all 1080 corpus files round-trip.
+
+### 18. Adaptive same-instruction and adjacent-SSA ID list source (2026-11-21)
+
+**Train-only analysis** (`id_ref` ~282 KB full corpus). Item 2 always picked
+a slot's candidate recency list as "the list this `(instruction, slot)` used
+last time" (`own_last`). Polymorphic instructions (`OpFAdd`, `OpFMul`,
+`OpSelect`, `OpStore`, `OpPhi`, `OpCompositeConstruct`, `OpExtInst`) switch
+types frequently between calls, causing repeated misses even when the type
+matches an earlier operand in the same instruction (`op0_list`,
+`prev_op_list`, `elem(prev_op)_list`) or the immediately preceding in-block
+instruction's result (`prev_res_list`).
+
+**Implementation** (all in `src/model.cpp`, zero extra bytes in `InstGroup`):
+- Repurposed `InstGroup::last_id_valid[16]` as `last_id_state[16]`: bit 0 =
+  valid, bits 1–3 = adaptive `id_idx > 0` mode (`own_last`, `op0_list`,
+  `prev_op_list`, `elem(prev_op)_list`, `prev_res_list`), bits 4–5 = disjoint
+  2-bit hysteresis counter (`0..2`, init `1`, selects `prev_res_list` iff `2`)
+  for `id_idx == 0`. Keeping `op0`/`gt0` bitfields disjoint prevents variadic
+  instructions from clobbering each other's mode.
+- Added 4 `uint32_t` per-instruction fields on `ModelState` (`+16 B`) with
+  lazy `PrevResList` resolution and structural cold-start fallback
+  (`InitialIdListForSlot`) on a slot's first occurrence. Cold helpers are
+  `ARIXV_NOINLINE`. Zero extra entropy bits are coded — list-source selection
+  is 0-bit adaptive.
+
+| | corpus bytes | Δ vs item 17 | train total | holdout total | decode Ir | wall |
+|---|---|---|---|---|---|---|
+| item 17 (`015b68c`) | 833,282 | — | 0.13251 | 0.14243 | 320.4M | 77.06 MiB/s |
+| **landed: B1** | **819,900** | **−1.61%** | 0.13046 (−1.55%) | 0.14006 (−1.66%) | 327.4M (+2.21%) | 74.54 MiB/s (−3.20%) |
+
+Holdout generalizes even better than train (−1.66% vs −1.55%). Mean ratio:
+train 0.17388 → 0.17264 (−0.71%), holdout 0.17340 → 0.17197 (−0.82%). Median
+ratio: train 0.17154 → 0.16955 (−1.16%), holdout 0.16976 → 0.16739 (−1.40%).
+Golden vector `GoldenSpirvModuleEncoding` stays 66 B (3 bytes updated).
+
+**Speed, memory, size.** Decode Ir 320.35M → 327.43M (+2.21%). Wall time
+(quiet host, `taskset -c 4`, `arixv_decode_bench --iters=10` on all 1080
+files, 12 interleaved rounds): median 77.06 → 74.54 MiB/s, median paired
+−3.20% (−3.98% to −1.06%). Memory (`memory_breakdown`): heap/decode 183.6 →
+183.5 KB (−176 B, fewer escape `UintModel` allocations); batched minor page
+faults 0.848 → 0.846. Library (−O2, text+data): 314.5 → 319.9 KB (+5.4 KB,
+`model.o`).
+
+Checks: `make all`, `make test` (new `AdaptiveIdListSourceTests` in
+`model_test`), `make asan`, 3000-iteration fuzz, valgrind memcheck with full
+leak checking (`arixv_test`, `model_test`), scalar/SIMD cross-check on 135
+files, all 1080 corpus files round-trip.
 
 
 

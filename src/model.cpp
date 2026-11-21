@@ -414,7 +414,14 @@ struct InstGroup {
   uint32_t last_id[16];
   uint32_t last_id_list[16];  // last_id's type's recency list (valid with it)
   uint32_t last_literal[16];
-  uint8_t last_id_valid[16];
+  // Per-slot ID history state:
+  //   bit 0     = last_id / last_id_list valid
+  //   bits 1-3  = adaptive typed-list source mode for id_idx > 0
+  //               (0 = own_last, 1 = op0_list, 2 = prev_op_list,
+  //                3 = elem(prev_op)_list, 4 = prev_res_list)
+  //   bits 4-5  = 2-bit hysteresis counter for id_idx == 0 (0..2, init 1;
+  //               uses prev_res_list when == 2, own_last otherwise)
+  uint8_t last_id_state[16];
   uint8_t last_literal_valid[16];
   uint32_t last_word_count;
   // Which operand-derived candidate the deferred Result Type matched (see
@@ -612,6 +619,14 @@ struct ModelState {
   Tracker tracker;
   // Result Type of the ID operand CodeIdRef just coded (from its OnIdUse).
   uint32_t last_id_operand_type = 0;
+  // Per-instruction ID operand tracking for CodeIdRef.
+  // kUnresolvedList is distinct from 0 (none), 1..N (typed lists), and
+  // Tracker::kRecentTypesList (~0u).
+  static constexpr uint32_t kUnresolvedList = ~uint32_t{1};
+  uint32_t cur_op0_list = 0;
+  uint32_t cur_prev_op_list = 0;
+  uint32_t cur_prev_res_id = 0;
+  uint32_t cur_prev_res_list = kUnresolvedList;
   Prob swapped_flag;
   Prob version_canonical;
   BitTree<4> version_major;
@@ -1286,23 +1301,172 @@ uint32_t CodeDeferredResultType(Bits& bits, ModelState& model,
   return CodeResultType(bits, model, desc, hint);
 }
 
+// Recency list of values of type_id's element type (pointee, component,
+// element, return type), or 0 if none.
+ARIXV_NOINLINE uint32_t ElemValuesList(const Tracker& tracker,
+                                       uint32_t type_id) {
+  if (type_id == 0) {
+    return 0u;
+  }
+  const uint32_t elem_type = tracker.ElementTypeOf(type_id);
+  if (elem_type == 0) {
+    return 0u;
+  }
+  const Tracker::IdInfo* elem_info = tracker.Find(elem_type);
+  return elem_info != nullptr ? elem_info->values_list : 0u;
+}
+
+ARIXV_NOINLINE uint32_t PrevResListSlow(ModelState& model) {
+  const Tracker::IdInfo* pr = model.tracker.Find(model.cur_prev_res_id);
+  model.cur_prev_res_list = pr != nullptr ? pr->type_list : 0u;
+  return model.cur_prev_res_list;
+}
+
+// Lazily resolves the typed recency list of the immediately preceding
+// instruction's result ID (within a basic block), caching it for the
+// current instruction.
+inline uint32_t PrevResList(ModelState& model) {
+  if (model.cur_prev_res_id == 0u) {
+    return 0u;
+  }
+  return model.cur_prev_res_list != ModelState::kUnresolvedList
+             ? model.cur_prev_res_list
+             : PrevResListSlow(model);
+}
+
+// Cold-start typed-list guess on a slot's very first occurrence in a module
+// (when no per-slot history exists yet), purely from structural SPIR-V type
+// relationships of earlier ID operands in the same instruction or the
+// preceding in-block result.
+ARIXV_NOINLINE uint32_t InitialIdListForSlot(ModelState& model, int id_idx,
+                                             uint32_t op0_type) {
+  if (id_idx >= 2) {
+    return model.cur_prev_op_list;
+  }
+  if (op0_type == 0) {
+    return PrevResList(model);
+  }
+  const Tracker::IdInfo* ti = model.tracker.Find(op0_type);
+  if (ti == nullptr) {
+    return 0u;
+  }
+  switch (ti->type_class) {
+    case Tracker::TypeClass::kInt:
+    case Tracker::TypeClass::kFloat:
+    case Tracker::TypeClass::kVector:
+    case Tracker::TypeClass::kMatrix:
+      return model.cur_op0_list;
+    case Tracker::TypeClass::kPointer:
+      return ElemValuesList(model.tracker, op0_type);
+    default:
+      return 0u;
+  }
+}
+
+// Cold path: updates bits 4-5 (2-bit hysteresis counter in 0..2) for
+// id_idx == 0 to choose between own_last (cnt < 2) and prev_res_list (cnt == 2)
+// without touching bits 1-3 (which may be shared on variadic slots).
+ARIXV_NOINLINE uint8_t UpdateOp0ListSource(ModelState& model, uint32_t own_last,
+                                           uint32_t actual_list,
+                                           uint8_t state) {
+  const uint32_t prl = PrevResList(model);
+  uint32_t cnt = (state >> 4) & 3u;
+  if (prl != 0u && prl != own_last) {
+    if (actual_list == prl && cnt < 2u) {
+      ++cnt;
+    } else if (actual_list == own_last && cnt > 0u) {
+      --cnt;
+    }
+  }
+  return static_cast<uint8_t>((state & ~0x30u) | (cnt << 4) | 1u);
+}
+
+// Cold path: updates bits 1-3 (adaptive list-source mode) for id_idx > 0 when
+// the actual ID's list differed from the chosen list (or on cold start),
+// preserving bits 4-5 for variadic slots shared with id_idx == 0.
+ARIXV_NOINLINE uint8_t UpdateGt0ListSource(ModelState& model, uint32_t own_last,
+                                           uint32_t prev_op_type,
+                                           uint32_t actual_list,
+                                           uint8_t state) {
+  int winner = -1;
+  if (model.cur_prev_op_list == actual_list) {
+    winner = 2;
+  } else if (model.cur_op0_list == actual_list) {
+    winner = 1;
+  } else if (ElemValuesList(model.tracker, prev_op_type) == actual_list) {
+    winner = 3;
+  } else if (own_last == actual_list) {
+    winner = 0;
+  } else if (PrevResList(model) == actual_list) {
+    winner = 4;
+  }
+  if (winner >= 0) {
+    return static_cast<uint8_t>((state & ~0x0eu) | (winner << 1) | 1u);
+  }
+  return static_cast<uint8_t>(state | 1u);
+}
+
 template <class Bits>
 uint32_t CodeIdRef(Bits& bits, ModelState& model, uint16_t inst_index,
-                   const OperandCursor::Field& field, uint32_t hint) {
+                   const OperandCursor::Field& field, uint32_t hint,
+                   int id_idx, uint32_t op0_type) {
   const int bucket = IdCategoryBucket(field.category);
   const uint32_t slot = Slot8(field.slot);
   InstGroup& group = model.inst_group(inst_index);
   const size_t key = Slot16(field.slot);
   IdSlotModel& own = model.IdSlot(group.id_slot[key]);
-  const bool have_last = group.last_id_valid[key] != 0;
+  const uint8_t state = group.last_id_state[key];
+  const bool have_last = (state & 1u) != 0;
   const uint32_t base = have_last ? group.last_id[key] : model.prev_result_id;
-  // First try the recency list of the type this (instruction, slot) took
-  // last time: it holds far more same-typed history than the global list
-  // (corpus oracle: ~24% fewer escapes). On a miss, the global path below.
+  const uint32_t own_last = have_last ? group.last_id_list[key] : 0u;
+  const uint32_t prev_op_type = model.last_id_operand_type;
+  // First try an adaptively chosen typed recency list: for id_idx == 0 either
+  // the slot's own last type list or the preceding in-block result's type list;
+  // for later ID operands of the same instruction, own_last, op0's list,
+  // prev_op's list, elem(prev_op)'s list (e.g. pointer -> pointee), or
+  // prev_res_list. On a miss, fall back to the global recency list below.
+  uint32_t chosen_list = own_last;
+  if (id_idx == 0) {
+    if (!have_last) {
+      chosen_list = PrevResList(model);
+    } else if ((state & 0x20u) != 0u) {
+      const uint32_t prl = PrevResList(model);
+      if (prl != 0u) {
+        chosen_list = prl;
+      }
+    }
+  } else {
+    if (!have_last) {
+      chosen_list = InitialIdListForSlot(model, id_idx, op0_type);
+    } else {
+      switch ((state >> 1) & 7u) {
+        case 0:
+          chosen_list = own_last;
+          break;
+        case 1:
+          chosen_list = model.cur_op0_list;
+          break;
+        case 2:
+          chosen_list = model.cur_prev_op_list;
+          break;
+        case 3:
+          chosen_list = ElemValuesList(model.tracker, prev_op_type);
+          break;
+        case 4:
+          chosen_list = PrevResList(model);
+          break;
+        default:
+          chosen_list = own_last;
+          break;
+      }
+      if (chosen_list == 0u) {
+        chosen_list = own_last;
+      }
+    }
+  }
   uint32_t id = 0;
   bool coded = false;
-  const RecencyList* typed =
-      have_last ? model.tracker.TypedList(group.last_id_list[key]) : nullptr;
+  const RecencyList* typed = model.tracker.TypedList(chosen_list);
   if (typed != nullptr && typed->size() > 0) {
     const int rank = Bits::kEncoding ? typed->Find(hint) : -1;
     if (bits.CodeBit(own.in_typed, rank >= 0)) {
@@ -1321,9 +1485,25 @@ uint32_t CodeIdRef(Bits& bits, ModelState& model, uint16_t inst_index,
                       model.tracker.recent_ids(), hint, base);
   }
   group.last_id[key] = id;
-  group.last_id_valid[key] = 1;
   const Tracker::IdUse use = model.tracker.OnIdUse(id, /*touch_recent_ids=*/!coded);
   model.last_id_operand_type = use.result_type;
+  uint8_t next_state = static_cast<uint8_t>(state | 1u);
+  if (id_idx == 0) {
+    if (!have_last) {
+      next_state = static_cast<uint8_t>((state & ~0x30u) | 0x11u);
+    } else if (use.type_list != 0u && model.cur_prev_res_id != 0u &&
+               (use.type_list != chosen_list || ((state >> 4) & 3u) == 1u)) {
+      next_state = UpdateOp0ListSource(model, own_last, use.type_list, state);
+    }
+    model.cur_op0_list = use.type_list;
+  } else {
+    if (use.type_list != 0u && (!have_last || use.type_list != chosen_list)) {
+      next_state = UpdateGt0ListSource(model, own_last, prev_op_type,
+                                       use.type_list, state);
+    }
+  }
+  model.cur_prev_op_list = use.type_list;
+  group.last_id_state[key] = next_state;
   group.last_id_list[key] = use.type_list;
   return Bits::kEncoding ? hint : id;
 }
@@ -2042,6 +2222,7 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
 
   const size_t body_words = word_count - 5;
   size_t body_pos = 0;
+  uint32_t prev_inst_result_id = 0;
   WordBuffer<kInlineInstructionWords> inst_words;
   WordBuffer<kInlineOperandWords> coded_words;
   std::vector<uint32_t> string_hints;
@@ -2085,6 +2266,9 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
     inst_words.push_back(word0);
 
     model.tracker.OnInstructionStart(opcode, desc, declared_count);
+    model.cur_prev_res_id = model.tracker.in_block() ? prev_inst_result_id : 0u;
+    model.cur_prev_res_list = ModelState::kUnresolvedList;
+    prev_inst_result_id = 0;
     io.EmitBodyWord(word0);
 
     std::array<uint8_t, 4> prev_bytes = {0, 0, 0, 0};
@@ -2152,10 +2336,13 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
             CodeGenericOperandWord(bits, model, prev_bytes, hint0));
       } else {
         switch (field.category) {
-          case OperandCategory::kIdResult:
+          case OperandCategory::kIdResult: {
             stat(kStatResultId);
-            stage_single_word(CodeResultId(bits, model, desc, hint0));
+            const uint32_t rid = CodeResultId(bits, model, desc, hint0);
+            prev_inst_result_id = rid;
+            stage_single_word(rid);
             break;
+          }
           case OperandCategory::kIdResultType: {
             if (defer_result_type && !result_type_deferred) {
               // The encoder stages the true word; the decoder a placeholder
@@ -2176,8 +2363,9 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
           case OperandCategory::kIdScope:
           case OperandCategory::kIdMemorySemantics: {
             stat(kStatIdRef);
-            const uint32_t word =
-                CodeIdRef(bits, model, inst_index, field, hint0);
+            const uint32_t word = CodeIdRef(
+                bits, model, inst_index, field, hint0, num_id_operands,
+                num_id_operands > 0 ? id_operand_types[0] : 0u);
             stage_single_word(word);
             if (num_id_operands < 8) {
               id_operand_types[num_id_operands] = model.last_id_operand_type;

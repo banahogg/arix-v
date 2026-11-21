@@ -855,6 +855,181 @@ void ColdStartPriorAndBoundaryTests() {
   }
 }
 
+void AdaptiveIdListSourceTests() {
+  // 1. Polymorphic in-block chains exercising all adaptive list-source modes:
+  //    - id_idx == 0 hysteresis (own_last vs prev_res_list) across float/vec4
+  //      OpFMul/OpFAdd chains, then resetting across non-result OpStore/OpNop.
+  //    - id_idx > 0 modes: op0_list (OpPhi, OpFAdd), prev_op_list (OpSelect,
+  //      OpCompositeConstruct), elem(prev_op)_list (OpStore alternating
+  //      float*/vec4*/uint* pointers), prev_res_list (OpSelect op1, OpExtInst
+  //      with op0_type == 0), and own_last fallback when chosen_list == 0.
+  //    - Variadic shared-slot instructions (OpCompositeConstruct) with >16 ID
+  //      operands (exercising Slot16 clamping and num_id_operands cap at 8).
+  {
+    std::vector<uint32_t> body;
+    body.insert(body.end(), {Op(11, 6), 1});  // %1 = OpExtInstImport "GLSL.std.450"
+    AppendStringWords("GLSL.std.450", body);
+    body.insert(body.end(), {
+        Op(19, 2), 2,                      // %2 = OpTypeVoid
+        Op(20, 2), 3,                      // %3 = OpTypeBool
+        Op(22, 3), 4, 32,                  // %4 = OpTypeFloat 32
+        Op(21, 4), 5, 32, 0,               // %5 = OpTypeInt 32 0
+        Op(23, 4), 6, 4, 4,                // %6 = OpTypeVector %4 4
+        Op(23, 4), 7, 5, 4,                // %7 = OpTypeVector %5 4
+        Op(32, 4), 8, 7, 4,                // %8 = OpTypePointer Function %4
+        Op(32, 4), 9, 7, 6,                // %9 = OpTypePointer Function %6
+        Op(32, 4), 10, 7, 5,               // %10 = OpTypePointer Function %5
+        Op(33, 3), 11, 2,                  // %11 = OpTypeFunction %2
+        Op(41, 3), 3, 12,                  // %12 = OpConstantTrue %3
+        Op(43, 4), 4, 13, 0x3f800000u,     // %13 = OpConstant %4 1.0
+        Op(43, 4), 4, 14, 0x40000000u,     // %14 = OpConstant %4 2.0
+        Op(43, 4), 5, 15, 20u,             // %15 = OpConstant %5 20
+        Op(43, 4), 5, 16, 7u,              // %16 = OpConstant %5 7
+        Op(28, 4), 17, 4, 15,              // %17 = OpTypeArray %4 %15 (len 20)
+        Op(44, 7), 6, 18, 13, 14, 13, 14,  // %18 = OpConstantComposite %6
+        Op(44, 7), 7, 19, 15, 16, 15, 16,  // %19 = OpConstantComposite %7
+        // Function definition.
+        Op(54, 5), 2, 20, 0, 11,           // %20 = OpFunction %2 None %11
+        Op(248, 2), 21,                    // %21 = OpLabel
+        Op(59, 4), 8, 22, 7,               // %22 = OpVariable %8 (float*)
+        Op(59, 4), 9, 23, 7,               // %23 = OpVariable %9 (vec4*)
+        Op(59, 4), 10, 24, 7,              // %24 = OpVariable %10 (uint*)
+    });
+
+    uint32_t next_id = 25;
+    // Polymorphic OpStore alternating float*, vec4*, uint* (elem(prev_op)).
+    for (int i = 0; i < 6; ++i) {
+      body.insert(body.end(), {
+          Op(62, 3), 22, 13,  // OpStore float* float
+          Op(62, 3), 23, 18,  // OpStore vec4*  vec4
+          Op(62, 3), 24, 15,  // OpStore uint*  uint
+      });
+    }
+
+    // Polymorphic SSA chains alternating float and vec4 so id_idx == 0 adapts
+    // to prev_res_list (cnt: 1 -> 2) and OpFAdd/OpExtInst/OpSelect exercise
+    // op0_list, prev_op_list, and prev_res_list.
+    uint32_t cur_f = 13;
+    uint32_t cur_v = 18;
+    for (int i = 0; i < 8; ++i) {
+      const uint32_t m_f = next_id++;
+      const uint32_t a_f = next_id++;
+      const uint32_t e_f = next_id++;
+      const uint32_t s_f = next_id++;
+      body.insert(body.end(), {
+          Op(133, 5), 4, m_f, cur_f, 14,       // OpFMul float
+          Op(129, 5), 4, a_f, m_f, cur_f,      // OpFAdd float (op0 = prev_res)
+          Op(12, 6), 4, e_f, 1, 4, a_f,        // OpExtInst FAbs (op0_type == 0)
+          Op(169, 6), 4, s_f, 12, e_f, cur_f,  // OpSelect bool float float
+      });
+      cur_f = s_f;
+
+      const uint32_t m_v = next_id++;
+      const uint32_t a_v = next_id++;
+      const uint32_t e_v = next_id++;
+      const uint32_t s_v = next_id++;
+      body.insert(body.end(), {
+          Op(133, 5), 6, m_v, cur_v, 18,       // OpFMul vec4
+          Op(129, 5), 6, a_v, m_v, cur_v,      // OpFAdd vec4 (op0 = prev_res)
+          Op(12, 6), 6, e_v, 1, 4, a_v,        // OpExtInst FAbs vec4
+          Op(169, 6), 6, s_v, 12, e_v, cur_v,  // OpSelect bool vec4 vec4
+      });
+      cur_v = s_v;
+
+      // Non-result instruction clears prev_inst_result_id; then a steady-type
+      // OpFAdd sequence lets id_idx == 0 also adapt back toward own_last.
+      body.insert(body.end(), {Op(62, 3), 22, cur_f, Op(0, 1)});
+    }
+
+    // Variadic OpCompositeConstruct sharing field.slot across id_idx == 0 and
+    // id_idx > 0, alternating float/uint vectors, plus a 20-operand array
+    // construct (>16 operands, testing Slot16 clamp and num_id_operands cap).
+    for (int i = 0; i < 4; ++i) {
+      const uint32_t cv = next_id++;
+      const uint32_t cu = next_id++;
+      body.insert(body.end(), {
+          Op(80, 7), 6, cv, cur_f, 13, 14, cur_f,  // vec4 from floats
+          Op(80, 7), 7, cu, 15, 16, 15, 16,        // uvec4 from uints
+      });
+    }
+    const uint32_t arr_id = next_id++;
+    body.insert(body.end(), {Op(80, 23), 17, arr_id});
+    for (int k = 0; k < 20; ++k) {
+      body.push_back((k & 1) ? 14u : cur_f);
+    }
+
+    // Branch into loop header with OpPhi (op0_list across zero-list labels).
+    const uint32_t loop_lbl = next_id++;
+    const uint32_t phi_f = next_id++;
+    const uint32_t phi_v = next_id++;
+    const uint32_t next_f = next_id++;
+    const uint32_t next_v = next_id++;
+    body.insert(body.end(), {
+        Op(249, 2), loop_lbl,
+        Op(248, 2), loop_lbl,
+        Op(245, 7), 4, phi_f, cur_f, 21, next_f, loop_lbl,
+        Op(245, 7), 6, phi_v, cur_v, 21, next_v, loop_lbl,
+        Op(129, 5), 4, next_f, phi_f, 13,
+        Op(129, 5), 6, next_v, phi_v, 18,
+        Op(253, 1),
+        Op(56, 1),
+    });
+
+    const std::vector<uint8_t> mod = Module(body, 0x00010300u, 0, next_id);
+    RoundTrip(mod, true, arixv::kModeSpirv);
+
+    // Sanity check: adaptive typed-list selection should compress this
+    // repetitive polymorphic shader well below its uncompressed size.
+    arixv::EncodeOptions opts;
+    opts.force_coded = true;
+    const std::vector<uint8_t> encoded =
+        arixv::Encode(mod.data(), mod.size(), opts);
+    assert(encoded.size() * 2 < mod.size());
+  }
+
+  // 2. Hostile / non-canonical edge cases for adaptive list-source tracking:
+  //    - Result ID == 0 and IdRef == 0 at id_idx == 0 and id_idx > 0
+  //    - Truncated/grammar-inconsistent instruction with kIdResult inside a
+  //      block (prev_inst_result_id not inserted into tracker.ids_, so
+  //      PrevResListSlow sees Find() == nullptr)
+  //    - Forward-referenced IDs (type_list == 0) in both id_idx == 0 and > 0
+  //    - OpExtInst referencing an undefined set ID (op0_type == 0)
+  //    - Mid-block redefinition of prev_inst_result_id to untyped OpString
+  {
+    std::vector<uint32_t> body = {
+        Op(19, 2), 1,                       // %1 = OpTypeVoid
+        Op(22, 3), 2, 32,                   // %2 = OpTypeFloat 32
+        Op(33, 3), 3, 1,                    // %3 = OpTypeFunction %1
+        Op(54, 5), 1, 4, 0, 3,              // %4 = OpFunction
+        Op(248, 2), 5,                      // %5 = OpLabel (enters block)
+        // Result ID 0 inside block, followed by OpFAdd using ID 0.
+        Op(129, 5), 2, 0, 99, 98,           // fwd refs %99, %98; res_id == 0
+        Op(129, 5), 2, 6, 0, 0,             // uses ID 0 at id_idx 0 and 1
+        // Grammar-inconsistent OpFAdd (word count 4 instead of fixed 5):
+        // sets prev_inst_result_id = 777 without defining 777 in Tracker.
+        Op(129, 4), 2, 777, 6,
+        // Next instruction queries PrevResList(777) -> Find returns nullptr.
+        Op(129, 5), 2, 7, 6, 6,
+        // OpExtInst with undefined set ID %888 (op0_type == 0, op0_list == 0).
+        Op(12, 6), 2, 8, 888, 4, 7,
+        // Untyped OpString inside a block sets prev_inst_result_id = 9 with
+        // type_list == 0, followed by OpStore and OpSelect.
+        Op(7, 3), 9, 0x00000061u,
+        Op(62, 3), 9, 7,
+        Op(169, 6), 2, 10, 9, 7, 8,
+        // Very wide variadic OpCompositeConstruct with 24 undefined/mixed IDs.
+        Op(80, 27), 2, 11,
+        0, 7, 8, 99, 98, 777, 888, 6, 7, 8, 10, 0,
+        7, 8, 6, 9, 10, 0, 7, 8, 99, 6, 7, 8,
+        Op(253, 1),
+        Op(56, 1),
+        // Post-function instruction must not inherit in-block prev_res_id.
+        Op(62, 3), 7, 8,
+    };
+    RoundTrip(Module(body, 0x00010300u, 0, 900), true, arixv::kModeSpirv);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -867,6 +1042,7 @@ int main() {
   Order1OpcodePromotionModules();
   KindRecencyListTests();
   ColdStartPriorAndBoundaryTests();
+  AdaptiveIdListSourceTests();
   MutatedCorpusRoundTrips();
   return 0;
 }
