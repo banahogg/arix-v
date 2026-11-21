@@ -52,15 +52,20 @@ constexpr int kRecencyListStorageCap =
 static_assert(kRecencyListStorageCap <= 31,
               "RecencyList match masks are 32-bit");
 
-// SSE2 (baseline on x86-64) fast path for the 16-entry recency lists.
+// SIMD fast paths for the 16-entry recency lists.
 #if defined(__SSE2__) && !defined(ARIXV_NO_SIMD)
 #define ARIXV_RECENCY_SSE2 1
 #else
 #define ARIXV_RECENCY_SSE2 0
 #endif
-#if ARIXV_RECENCY_SSE2
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(ARIXV_NO_SIMD)
+#define ARIXV_RECENCY_NEON 1
+#else
+#define ARIXV_RECENCY_NEON 0
+#endif
+#if ARIXV_RECENCY_SSE2 || ARIXV_RECENCY_NEON
 static_assert(kRecencyListStorageCap == 16,
-              "SSE2 recency path handles exactly four 4-lane vectors");
+              "SIMD recency paths handle exactly four 4-lane vectors");
 #endif
 
 // Fixed-capacity move-to-front recency list for rank coding.

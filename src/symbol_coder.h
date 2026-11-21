@@ -29,6 +29,12 @@
 #else
 #define ARIXV_SYMBOL_SSE2 0
 #endif
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(ARIXV_NO_SIMD)
+#define ARIXV_SYMBOL_NEON 1
+#include <arm_neon.h>
+#else
+#define ARIXV_SYMBOL_NEON 0
+#endif
 
 namespace arixv {
 
@@ -64,6 +70,29 @@ struct SymbolCdfConst {
   static constexpr uint16_t kTop = static_cast<uint16_t>(kSymbolScale - kN);
 };
 
+#if ARIXV_SYMBOL_NEON
+// NEON comparisons return all ones for a match. The matching lanes form a
+// prefix, so their count gives the first CDF boundary above the slot.
+ARIXV_FORCE_INLINE int SymbolCdfCountLe(uint16x8_t c, uint16x8_t slot) {
+  return -vaddvq_s16(vreinterpretq_s16_u16(vcleq_u16(c, slot)));
+}
+
+template <int kN, int kBase>
+ARIXV_FORCE_INLINE uint16x8_t SymbolCdfAdaptNeon(uint16x8_t d, uint16x8_t c,
+                                                int s, int rate) {
+  const uint16x8_t lanes = {kBase, kBase + 1, kBase + 2, kBase + 3,
+                            kBase + 4, kBase + 5, kBase + 6, kBase + 7};
+  const uint16x8_t symbol = vdupq_n_u16(static_cast<uint16_t>(s));
+  const int16x8_t shift = vdupq_n_s16(static_cast<int16_t>(-rate));
+  const uint16x8_t top = vdupq_n_u16(SymbolCdfConst<kN>::kTop);
+  const uint16x8_t target =
+      vaddq_u16(lanes, vandq_u16(vcgtq_u16(lanes, symbol), top));
+  const int16x8_t delta =
+      vshlq_s16(vreinterpretq_s16_u16(vsubq_u16(target, c)), shift);
+  return vaddq_u16(d, vreinterpretq_u16_s16(delta));
+}
+#endif
+
 // Coding CDF into c[0..16]; returns the largest s with c[s] <= v (v < 32768),
 // or -1 when called with v = kSymbolScale (no search wanted).
 template <int kN>
@@ -89,6 +118,16 @@ ARIXV_FORCE_INLINE int SymbolCdfLookup(const SymbolCdf& t, uint32_t v, uint16_t 
   const uint32_t mask =
       static_cast<uint32_t>(_mm_movemask_epi8(_mm_packs_epi16(le0, le1)));
   return __builtin_ctz(~mask) - 1;
+#elif ARIXV_SYMBOL_NEON
+  const uint16x8_t c0 = vsetq_lane_u16(
+      0, vaddq_u16(vld1q_u16(t.d), vld1q_u16(K::kUniform)), 0);
+  const uint16x8_t c1 =
+      vaddq_u16(vld1q_u16(t.d + 8), vld1q_u16(K::kUniform + 8));
+  vst1q_u16(c, c0);
+  vst1q_u16(c + 8, c1);
+  c[16] = static_cast<uint16_t>(kSymbolScale);
+  const uint16x8_t slot = vdupq_n_u16(static_cast<uint16_t>(v));
+  return SymbolCdfCountLe(c0, slot) + SymbolCdfCountLe(c1, slot) - 1;
 #else
   int s = -1;
   c[0] = 0;
@@ -134,6 +173,16 @@ ARIXV_FORCE_INLINE void SymbolCdfAdapt(SymbolCdf& t, int s, int rate,
     const __m128i target1 = _mm_add_epi16(lanes1, _mm_and_si128(up1, top));
     const __m128i delta1 = _mm_sra_epi16(_mm_sub_epi16(target1, c1), shift);
     _mm_store_si128(d + 1, _mm_add_epi16(d1, delta1));
+  }
+#elif ARIXV_SYMBOL_NEON
+  const uint16x8_t d0 = vld1q_u16(t.d);
+  const uint16x8_t c0 = vaddq_u16(d0, vld1q_u16(K::kUniform));
+  const uint16x8_t out0 = SymbolCdfAdaptNeon<kN, 0>(d0, c0, s, rate);
+  vst1q_u16(t.d, vsetq_lane_u16(count, out0, 0));
+  if constexpr (kN > 8) {
+    const uint16x8_t d1 = vld1q_u16(t.d + 8);
+    const uint16x8_t c1 = vaddq_u16(d1, vld1q_u16(K::kUniform + 8));
+    vst1q_u16(t.d + 8, SymbolCdfAdaptNeon<kN, 8>(d1, c1, s, rate));
   }
 #else
   constexpr int kEnd = kN <= 8 ? 8 : 16;
@@ -200,6 +249,23 @@ ARIXV_FORCE_INLINE int SymbolCdfDecodeAndUpdate(SymbolCdf& t, uint32_t slot,
         static_cast<uint32_t>(_mm_movemask_epi8(_mm_packs_epi16(le0, le1)));
     s = __builtin_ctz(~mask) - 1;
   }
+#elif ARIXV_SYMBOL_NEON
+  constexpr uint16_t kSaturation = static_cast<uint16_t>((1u << kRateCap) - 2u);
+  const uint16x8_t d0 = vld1q_u16(t.d);
+  const uint16x8_t c0 = vaddq_u16(d0, vld1q_u16(K::kUniform));
+  const uint16x8_t value = vdupq_n_u16(static_cast<uint16_t>(slot));
+  // Lane zero holds the warm-up count and stands for CDF boundary zero.
+  int s = SymbolCdfCountLe(vsetq_lane_u16(0, c0, 0), value) - 1;
+  [[maybe_unused]] uint16x8_t d1{};
+  [[maybe_unused]] uint16x8_t c1{};
+  if constexpr (kN > 8) {
+    d1 = vld1q_u16(t.d + 8);
+    c1 = vaddq_u16(d1, vld1q_u16(K::kUniform + 8));
+    s += SymbolCdfCountLe(c1, value);
+  }
+#endif
+
+#if ARIXV_SYMBOL_SSE2 || ARIXV_SYMBOL_NEON
   const uint32_t lo =
       s == 0 ? 0u : static_cast<uint16_t>(t.d[s] + K::kUniform[s]);
   uint32_t hi;
@@ -212,6 +278,7 @@ ARIXV_FORCE_INLINE int SymbolCdfDecodeAndUpdate(SymbolCdf& t, uint32_t slot,
   *out_lo = lo;
   *out_f = hi - lo;
 
+#if ARIXV_SYMBOL_SSE2
   const uint16_t count = static_cast<uint16_t>(_mm_cvtsi128_si32(d0));
   const int rate = 32 - __builtin_clz(static_cast<unsigned>(count) + 1u);
   const uint16_t next_count =
@@ -233,6 +300,17 @@ ARIXV_FORCE_INLINE int SymbolCdfDecodeAndUpdate(SymbolCdf& t, uint32_t slot,
     const __m128i delta1 = _mm_sra_epi16(_mm_sub_epi16(target1, c1), shift);
     _mm_store_si128(d + 1, _mm_add_epi16(d1, delta1));
   }
+#else
+  const uint16_t count = vgetq_lane_u16(d0, 0);
+  const int rate = 32 - __builtin_clz(static_cast<unsigned>(count) + 1u);
+  const uint16_t next_count =
+      static_cast<uint16_t>(count + (count < kSaturation));
+  const uint16x8_t out0 = SymbolCdfAdaptNeon<kN, 0>(d0, c0, s, rate);
+  vst1q_u16(t.d, vsetq_lane_u16(next_count, out0, 0));
+  if constexpr (kN > 8) {
+    vst1q_u16(t.d + 8, SymbolCdfAdaptNeon<kN, 8>(d1, c1, s, rate));
+  }
+#endif
   return s;
 #else
   constexpr int kEnd = kN <= 8 ? 8 : 16;

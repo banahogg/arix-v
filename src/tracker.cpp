@@ -10,6 +10,8 @@
 
 #if ARIXV_RECENCY_SSE2
 #include <emmintrin.h>
+#elif ARIXV_RECENCY_NEON
+#include <arm_neon.h>
 #endif
 
 #include "operand_cursor.h"
@@ -178,6 +180,17 @@ uint32_t RecencyList::MatchMask(uint32_t id) const {
   const __m128i lo = _mm_packs_epi32(e0, e1);
   const __m128i hi = _mm_packs_epi32(e2, e3);
   mask = static_cast<uint32_t>(_mm_movemask_epi8(_mm_packs_epi16(lo, hi)));
+#elif ARIXV_RECENCY_NEON
+  const uint32x4_t key = vdupq_n_u32(id);
+  const uint32_t* v = items_.data();
+  const uint16x8_t weights = {1, 2, 4, 8, 16, 32, 64, 128};
+  const auto match8 = [key, weights](const uint32_t* entries) {
+    const uint32x4_t lo = vceqq_u32(vld1q_u32(entries), key);
+    const uint32x4_t hi = vceqq_u32(vld1q_u32(entries + 4), key);
+    const uint16x8_t matches = vcombine_u16(vmovn_u32(lo), vmovn_u32(hi));
+    return static_cast<uint32_t>(vaddvq_u16(vandq_u16(matches, weights)));
+  };
+  mask = match8(v) | (match8(v + 8) << 8);
 #else
   for (int i = 0; i < kRecencyListStorageCap; ++i) {
     mask |= static_cast<uint32_t>(items_[static_cast<size_t>(i)] == id) << i;
@@ -262,6 +275,25 @@ void RecencyList::ShiftIn(int last, uint32_t id) {
   _mm_store_si128(v + 1, blend(s1, v1, 4));
   _mm_store_si128(v + 2, blend(s2, v2, 8));
   _mm_store_si128(v + 3, blend(s3, v3, 12));
+#elif ARIXV_RECENCY_NEON
+  uint32_t* v = items_.data();
+  const uint32x4_t v0 = vld1q_u32(v);
+  const uint32x4_t v1 = vld1q_u32(v + 4);
+  const uint32x4_t v2 = vld1q_u32(v + 8);
+  const uint32x4_t v3 = vld1q_u32(v + 12);
+  const uint32x4_t limit = vdupq_n_u32(static_cast<uint32_t>(last));
+  const auto blend = [limit](uint32x4_t shifted, uint32x4_t orig,
+                             uint32x4_t lanes) {
+    return vbslq_u32(vcleq_u32(lanes, limit), shifted, orig);
+  };
+  const uint32x4_t s0 = vextq_u32(vdupq_n_u32(id), v0, 3);
+  const uint32x4_t s1 = vextq_u32(v0, v1, 3);
+  const uint32x4_t s2 = vextq_u32(v1, v2, 3);
+  const uint32x4_t s3 = vextq_u32(v2, v3, 3);
+  vst1q_u32(v, blend(s0, v0, uint32x4_t{0, 1, 2, 3}));
+  vst1q_u32(v + 4, blend(s1, v1, uint32x4_t{4, 5, 6, 7}));
+  vst1q_u32(v + 8, blend(s2, v2, uint32x4_t{8, 9, 10, 11}));
+  vst1q_u32(v + 12, blend(s3, v3, uint32x4_t{12, 13, 14, 15}));
 #else
   const std::array<uint32_t, kRecencyListStorageCap> old = items_;
   for (int i = 1; i < kRecencyListStorageCap; ++i) {
