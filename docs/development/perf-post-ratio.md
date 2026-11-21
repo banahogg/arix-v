@@ -117,9 +117,16 @@ Every byte-identical optimization is evaluated before keeping:
     `SymbolCdfAdapt` reloaded `t.d` and recomputed `d + U` already in XMM regs.
   - Bundled with `__builtin_clz` in `BitWidth` and `if (nbits <= 1) return nbits;`
     short-circuit in `CodeUint` (skips `HighRow` & zero-length bit sequence for `v == 1`).
-- [ ] **2d. Keep `RansDecoder::x_` in a local across multi-chunk walks & 16-bit LE `ReadWord`**
-  - Profile: avoids store-then-immediate-reload of `x_` in `OpcodeTree::CodeValue`,
-    `CodeUint`, and `LazyLeafTree8`; `ReadWord` can use `memcpy`/`movzwl`.
+- [x] **2d. Keep `RansDecoder::x_` in a local across multi-chunk walks & 16-bit LE `ReadWord`** (`26a8861`)
+  - Implemented `RansDecoder::DecodeFirst`/`DecodeNext`/`Commit` behind a zero-overhead
+    `SymbolSession` (`BeginSymbols()`) used by `OpcodeTree::CodeValue`, `BitTree::CodeValue`
+    (`CodeUint` length tree, unknown-opcode tree), and `LazyLeafTree8::CodeValue`, plus
+    `std::memcpy` (`movzwl`) for little-endian `ReadWord()` and `p_ = begin_` pinning on
+    `InitState()` failure (removing dead `x_`/`last_f_` stores and redundant `x == 0`
+    checks on chunk 2+).
+  - Result: shrank `OpcodeTree::CodeValue` (`0x6f9 → 0x5da`), `LazyLeafTree8::CodeValue`
+    (`0x4ca → 0x422`), and `CodeUint` (`0x9df → 0x96c`), cut **−1.43M Ir/pass**
+    (`319.71M → 318.28M`), and gained **+1.05%** wall decode vs `5c` (12/12 faster).
 
 ### Group 3 — Eliminate redundant `Tracker` hash probes & bookkeeping (`src/tracker.h`, `src/tracker.cpp`, `src/model.cpp`)
 - [x] **3a. `CodeResultId` fast-check `candidate > tracker.max_seen_id()`** (`baa1fe1`)
@@ -151,11 +158,16 @@ Every byte-identical optimization is evaluated before keeping:
   - Profile: sequential result IDs in `result_runs_` almost always match slot 0;
     `if (size_ > 0 && items_[0] == old_id) { items_[0] = id; return; }` skips
     the full SSE2 `MatchMask` scan on ~80%+ of result IDs.
-- [ ] **4b. Branchless `RecencyList::Touch` + register reuse into `ShiftIn`**
+- [x] **4b. `RecencyList::Touch` slot-0 head fast path** (`e88186b`)
   - Profile: `RecencyList` is **10.5% Ir** and **5.9% `Bcm`** (`if (last == 0)`
     mispredicts 36.4% = **3.24% of all `Bcm`**; `if (mask != 0)` mispredicts
-    9.8% = **1.69% of all `Bcm`**). Make `last`/`size_` branchless and reuse
-    loaded `v0..v3` registers (or test early-out on `items_[0] == id` before SSE2).
+    9.8% = **1.69% of all `Bcm`**).
+  - Empirical finding: GCC already fuses `MatchMask` + `ShiftIn` automatically.
+    Removing the slot-0 early exit (−2.11%) or unconditionally storing `size_`
+    (−2.85%) regressed wall-clock. Moving the slot-0 check ahead of `MatchMask`
+    (`if (size_ > 0 && items_[0] == id) return;`) and dropping the redundant
+    post-`ctz` `if (last == 0) return;` cut **−1.42M Ir/pass** (`322.98M → 321.56M`)
+    and gained **+0.46%** wall decode (10/12 faster).
 
 ### Group 5 — `CodeModule`, `CodeIdRef`, `CodeDeferredResultType`, `DecodeIO`, `WordBuffer` (`src/model.cpp`)
 - [x] **5a. `ARIXV_NOINLINE` on `BuildDeferredResultTypeCandidates` + inline `choice == 1` fast path** (`3ace310`)
@@ -170,15 +182,25 @@ Every byte-identical optimization is evaluated before keeping:
     reloading `out_.size()` twice); track `inline_cap_` in `WordBuffer` +
     `ARIXV_NOINLINE PushBackSlow` so `push_back` avoids inspecting `spill_` on
     the inline path.
-- [ ] **5c. Unswitch `fixed_layout` loop in `CodeModule` & skip `OperandCursor` construction**
-  - Profile: `if (!fixed_layout)` at `L3051` is **3.88% of all `Bcm`** (27.5%
-    miss rate) despite being loop-invariant, and `OperandCursor` (64B
-    `pending_kinds_`) is constructed on every instruction even when
-    `fixed_layout` is true (~65% of instructions).
-- [ ] **5d. Reduce `CodeIdRef` branch mispredicts (~7.6% of all `Bcm`)**
-  - Profile: `if (id_idx == 0)` mispredicts 41.0% + 31.6% (**4.65% of all `Bcm`**),
-    `switch ((state >> 1) & 7u)` mispredicts 13.9% (**1.21% `Bcm`**). Use a
-    3-entry table for modes `{0, 1, 2}` and streamline `id_idx == 0` vs `> 0`.
+- [x] **5c. Hoist `OperandCursor`, skip per-operand `coded_words.clear()`, & drop unused `cursor_field` copy on `fixed_layout`** (`98d3979`)
+  - Empirical finding: outlining a second variable-layout operand switch
+    (`ARIXV_NOINLINE CodeVariableOperands`) created a second call site to
+    `CodeIdRef`/`CodeResultId`/`CodeValueEnum`/`CodeLiteralInteger`, causing
+    GCC to un-inline all four (+8.59M Ir, −1.62% wall). Keeping the single
+    operand switch while hoisting `OperandCursor cursor;` outside the
+    instruction loop, clearing `coded_words` only on wide multiword operands,
+    and skipping `cursor_field = field` on `fixed_layout` cut **−1.85M Ir/pass**
+    (`321.56M → 319.71M`) and gained **+2.43%** wall decode (12/12 faster).
+- [x] **5d. Evaluate branchless `CodeIdRef` mode select & `id_idx == 0` unification** *(tested & skipped)*
+  - Empirical finding (7 variants tested): unifying `id_idx == 0` / `id_idx > 0`
+    with pure arithmetic masks + `cur_list_by_mode[6]` + bitwise `need_update`
+    cut callgrind's simulated `Bcm` by −174K (−2.6%) and `Bc` by −1.62M, yet
+    added +5.82M Ir and regressed wall decode by −1.34% (0/12). Even replacing
+    only the 5-case `switch` on `id_idx > 0` with `cur_list_by_mode[5]` +
+    removing `kUnresolvedList`/`PrevResListSlow` added +0.92M Ir and lost
+    −0.28% (3/12) because `mode == 0` lost its zero-load fast path and Zen 3's
+    TAGE predictor predicts `id_idx == 0` far better than callgrind's branch
+    simulator. Reverted cleanly.
 
 ### Group 6 — `CodeString` / `TouchString` & `ModelState` setup (`src/model.cpp`)
 - [x] **6a. `ARIXV_NOINLINE` on `CodeGenericOperandWord`** (`3ace310`)
@@ -237,14 +259,25 @@ Baseline (`59f55f3`):
 - Callgrind Bcm (every 8th file, n=135, 1→3 diff/2): `1.49M` (`6.41%`).
 - `arixv_decode_bench --iters=10` (`taskset -c 4`): paired A/B against saved `59f55f3` binary at each step.
 - `arixv_bench` paired A/B (`taskset -c 4`, 6 rounds): `40.82 MiB/s` encode, `75.60 MiB/s` decode (`59f55f3` baseline).
-- `--raw-residual` ceiling (1078 valid SPIR-V files, `--iters=5`): `107.33 MiB/s` (`59f55f3`) → `119.19 MiB/s` (**+11.05%**, checksum `8949125080`).
+- `--raw-residual` ceiling (1078 valid SPIR-V files, `--iters=5`, 6 paired rounds): `114.56 → 133.99 MiB/s` (**+13.91%**, 6/6 faster, checksum `8949125080`).
 
 | Step | Commit | Items | Stateless Ir/pass (Δ vs base) | Wall decode A/B vs base (`--iters=10`, 12 rounds) | Wall encode / decode (`arixv_bench`) | Status |
 |---|---|---|---:|---:|---:|---|
-| Base | `59f55f3` | — | `331.40M` (`0.00%`) | `0.00%` (`~72.3 MiB/s`) | `40.82 / 75.60 MiB/s` (6-rd med) | baseline |
+| Base | `59f55f3` | — | `331.40M` (`0.00%`) | `0.00%` (`~72.3 MiB/s`) | `41.15 / 76.40 MiB/s` (6-rd med) | baseline |
 | Batch 1a | `baa1fe1` | `3a`, `3b`, `3c`, `3d`, `4a` | `328.95M` (`−0.74%`) | `+2.09%` (`73.69 MiB/s`, 12/12) | — | kept |
 | Batch 1b | `3ace310` | `5a`, `5b`, `6a`, `6b`, `7a`, `7b` | `322.38M` (`−2.72%`) | `+4.22%` (`75.37 MiB/s`, 12/12) | `42.82 / 79.15 MiB/s` | kept |
 | Batch 2 | `40c8f06` | `1a`, `1b` (`DecodeBitLocal` branchless) | `330.02M` (`−0.42%`) | `+5.6%` (`+1.33%` vs 1b, 12/12) | `43.79 / 78.74 MiB/s` | kept |
 | Batch 3 | `9da3f71` | `2a`, `2b`, `2c` + `CodeUint` fast paths | `328.17M` (`−0.98%`) | `+6.97%` (`77.40 MiB/s`, 12/12) | — | kept |
 | Batch 4 | `40e6c5b` | `3e` (remove `IdMap::slot_gen_`) | `325.98M` (`−1.64%`) | `+7.73%` (`78.02 MiB/s`, 12/12) | — | kept |
-| Batch 5 | `ba12c71` | `6c` (handle-based `TouchString` & hit fast path) | `322.98M` (`−2.54%`) | `+8.64%` (`78.60 MiB/s`, 12/12) | **`45.16 / 81.67 MiB/s`** (**+10.58% / +7.87%**, 6/6) | kept |
+| Batch 5 | `ba12c71` | `6c` (handle-based `TouchString` & hit fast path) | `322.98M` (`−2.54%`) | `+8.64%` (`78.60 MiB/s`, 12/12) | `45.16 / 81.67 MiB/s` (`+10.58% / +7.87%`, 6/6) | kept |
+| Batch 6 | `e88186b` | `4b` (`RecencyList::Touch` slot-0 head fast path) | `321.56M` (`−2.97%`) | `+9.13%` (`79.02 MiB/s`, 12/12; `+0.46%` vs `6c`) | — | kept |
+| Batch 7 | `98d3979` | `5c` (hoist `OperandCursor`, skip `coded_words.clear()`) | `319.71M` (`−3.53%`) | `+11.41%` (`80.69 MiB/s`, 12/12; `+2.43%` vs `4b`) | — | kept |
+| — | *(reverted)* | `5d` (7 branchless/table `CodeIdRef` variants) | `320.63M..325.53M` | `−0.28%..−2.13%` vs `5c` | — | skipped |
+| Batch 8 | `26a8861` | `2d` (local `RansDecoder` state + 16-bit LE `ReadWord`) | **`318.28M` (`−3.96%`)** | **`+12.04%` (`80.89 MiB/s`, 12/12; `+1.05%` vs `5c`)** | **`45.80 / 84.19 MiB/s` (`+11.58% / +10.00%`, 6/6)** | kept |
+
+### Part A completion summary (`26a8861`)
+- **Byte-identity:** `759,260 B` (`0.125223` ratio on all 1080 corpus files), `arixv_bench` checksum `35796698800`, `arixv_decode_bench` checksum `8949134200`, `--raw-residual` checksum `8949125080`.
+- **Verification:** `make all`, `make test`, `make asan`, `-DARIXV_NO_SIMD` scalar parity (`35796698800`), 300/300 mutated-blob differential matches against `59f55f3`, 3000-iter `fuzz_roundtrip`, and `valgrind --leak-check=full` all passed cleanly.
+- **Branch & memory deltas (`59f55f3` → `26a8861`):**
+  - Callgrind `--branch-sim=yes` (every 8th file, n=135, 1→3 diff/2): `Ir 200.56M → 192.68M` (−3.93%), `Bc 23.30M → 21.71M` (−6.82%), `Bi 328.3K → 305.9K` (−6.82%).
+  - `build/memory_breakdown`: `178,566 → 175,745 B` heap/decode (−2,821 B/decode).
