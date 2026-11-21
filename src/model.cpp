@@ -724,7 +724,11 @@ struct ModelState {
   BitTree<6> string_rank;
   Prob string_canonical;
   std::unique_ptr<StringModel> strings;
-  std::vector<std::string> recent_strings;
+  // Recent literal strings (MTF, cap 64): compact handle order avoids rotating
+  // std::string objects on hits and lets decode hits bypass re-searching.
+  std::vector<std::string> recent_string_pool;
+  std::array<uint8_t, 64> recent_string_order{};
+  uint8_t recent_string_count = 0;
 
 };
 
@@ -1130,31 +1134,45 @@ bool IsCanonicalStringBytes(const std::string& bytes) {
 }
 
 int FindRecentString(const ModelState& model, const std::string& raw) {
-  for (size_t i = 0; i < model.recent_strings.size(); ++i) {
-    if (model.recent_strings[i] == raw) {
+  for (uint32_t i = 0; i < model.recent_string_count; ++i) {
+    if (model.recent_string_pool[model.recent_string_order[i]] == raw) {
       return static_cast<int>(i);
     }
   }
   return -1;
 }
 
-void TouchString(ModelState& model, const std::string& raw) {
+void PromoteRecentString(ModelState& model, uint32_t rank) {
+  if (rank == 0) {
+    return;
+  }
+  const uint8_t slot = model.recent_string_order[rank];
+  std::memmove(model.recent_string_order.data() + 1,
+               model.recent_string_order.data(), rank);
+  model.recent_string_order[0] = slot;
+}
+
+void TouchString(ModelState& model, std::string&& raw) {
   const int found = FindRecentString(model, raw);
-  if (found == 0) {
+  if (found >= 0) {
+    PromoteRecentString(model, static_cast<uint32_t>(found));
     return;
   }
-  if (found > 0) {
-    // Move-to-front by rotating the [0, found] prefix; this moves the existing
-    // strings rather than copying `raw` in and shifting the whole vector.
-    std::rotate(model.recent_strings.begin(),
-                model.recent_strings.begin() + found,
-                model.recent_strings.begin() + found + 1);
-    return;
+  uint8_t slot;
+  if (model.recent_string_count < 64) {
+    slot = model.recent_string_count++;
+    model.recent_string_pool.push_back(std::move(raw));
+    if (slot > 0) {
+      std::memmove(model.recent_string_order.data() + 1,
+                   model.recent_string_order.data(), slot);
+    }
+  } else {
+    slot = model.recent_string_order[63];
+    model.recent_string_pool[slot] = std::move(raw);
+    std::memmove(model.recent_string_order.data() + 1,
+                 model.recent_string_order.data(), 63);
   }
-  model.recent_strings.insert(model.recent_strings.begin(), raw);
-  if (model.recent_strings.size() > 64) {
-    model.recent_strings.pop_back();
-  }
+  model.recent_string_order[0] = slot;
 }
 
 template <class Bits>
@@ -2244,9 +2262,28 @@ ARIXV_NOINLINE void CodeString(Bits& bits, ModelState& model,
         model.string_rank.CodeValue(bits,
                                     rank >= 0 ? static_cast<uint32_t>(rank)
                                               : 0);
-    if (!Bits::kEncoding &&
-        coded_rank < static_cast<uint32_t>(model.recent_strings.size())) {
-      raw = model.recent_strings[coded_rank];
+    if constexpr (Bits::kEncoding) {
+      PushStringHistory(*model.strings, raw);
+      const uint32_t span = static_cast<uint32_t>((raw.size() + 3u) / 4u);
+      *span_out = span == 0 ? 1 : span;
+      words.clear();
+      for (uint32_t i = 0; i < *span_out; ++i) {
+        words.push_back(WordFromBytes(raw, i));
+      }
+      PromoteRecentString(model, static_cast<uint32_t>(rank));
+      return;
+    } else if (coded_rank < model.recent_string_count) {
+      const std::string& hit =
+          model.recent_string_pool[model.recent_string_order[coded_rank]];
+      PushStringHistory(*model.strings, hit);
+      const uint32_t span = static_cast<uint32_t>((hit.size() + 3u) / 4u);
+      *span_out = span == 0 ? 1 : span;
+      words.clear();
+      for (uint32_t i = 0; i < *span_out; ++i) {
+        words.push_back(WordFromBytes(hit, i));
+      }
+      PromoteRecentString(model, coded_rank);
+      return;
     }
     PushStringHistory(*model.strings, raw);
   } else {
@@ -2319,7 +2356,7 @@ ARIXV_NOINLINE void CodeString(Bits& bits, ModelState& model,
       while ((coded.size() & 3u) != 0) {
         coded.push_back('\0');
       }
-      raw = coded;
+      raw = std::move(coded);
     } else {
       raw.clear();
       std::array<uint8_t, 4> prev_bytes = {0, 0, 0, 0};
@@ -2358,7 +2395,7 @@ ARIXV_NOINLINE void CodeString(Bits& bits, ModelState& model,
   for (uint32_t i = 0; i < *span_out; ++i) {
     words.push_back(WordFromBytes(raw, i));
   }
-  TouchString(model, raw);
+  TouchString(model, std::move(raw));
 }
 
 template <class Bits>
@@ -3253,8 +3290,8 @@ void RecordModelMemory(const ModelState& m) {
       m.tracker.IdMapBytes() / (sizeof(uint32_t) + sizeof(Tracker::IdInfo)) *
           sizeof(uint32_t),
       true);
-  size_t strings = VecBytes(m.recent_strings);
-  for (const std::string& str : m.recent_strings) strings += str.capacity() > 15 ? str.capacity() + 1 : 0;
+  size_t strings = VecBytes(m.recent_string_pool);
+  for (const std::string& str : m.recent_string_pool) strings += str.capacity() > 15 ? str.capacity() + 1 : 0;
   add("recent_strings", strings, true);
 }
 }  // namespace
