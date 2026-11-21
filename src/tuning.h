@@ -123,16 +123,15 @@ constexpr uint8_t kModeCoded = ARIXV_KMODE_CODED;
 // Container mode for the M2 SPIR-V structural model.
 constexpr uint8_t kModeSpirv = ARIXV_KMODE_SPIRV;
 
-// Maximum byte count encoded by the v1 uvarint size field.
+// Maximum byte count encoded by the compact uint32 size field.
 constexpr int kMaxSizeVarintBytes = ARIXV_KMAX_SIZE_VARINT_BYTES;
 
 // Maximum number of bytes emitted by RangeEncoder::Flush().
 constexpr int kRangeFlushBytes = ARIXV_KRANGE_FLUSH_BYTES;
 
-// Bytes the range decoder reads past the encoder's last byte. The flush pins
-// a code value whose low 16 bits are zero, so its last two bytes are left
-// out and whatever the decoder reads there (the start of the rANS words, or
-// virtual zeros past the payload end) cannot change a decision.
+// Minimum number of bytes the range decoder reads past the encoder's last byte
+// (the narrow-range 3-byte flush leaves 2 don't-care tail bytes; wide-range
+// flushes emit 2 bytes with 3 slack bytes, and empty streams emit 0 with 4).
 constexpr int kRangeTailSlack = 5 - kRangeFlushBytes;
 static_assert(kRangeTailSlack == 2, "flush/slack must cover a 4-byte window");
 

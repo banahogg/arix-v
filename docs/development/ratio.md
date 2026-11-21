@@ -844,5 +844,54 @@ in `model_test`), `make asan`, 3000-iteration fuzz, valgrind memcheck with
 full leak checking (`arixv_test`, `model_test`), scalar/SIMD cross-check on
 135 files, all 1080 corpus files round-trip.
 
+### 13. Container and coder framing overhead reduction (2026-11-21)
+
+**Train-only analysis** (`[0-7]*.spv`, 534 files). Container and entropy-coder
+framing overhead was `11.01 B/module` above raw entropy (`4 B` `"ARX2"` magic,
+`1 B` mode byte, `2.05 B` uncompressed size varint, `~1.5 B` range-coder flush,
+`~2.45 B` rANS final state).
+
+**Implementation** (keeping `"ARX2"` magic and byte-4 mode byte intact):
+- `src/range_coder.h`: adaptive minimal flush in `RangeEncoder::Flush` (`0`
+  bytes when `range_ == 0xFFFFFFFFu`, `2` bytes when `range_ >= 0x01FFFFFFu`,
+  `3` bytes otherwise) with matching `RangeDecoder::TailSlack()` derived from
+  `range_`.
+- `src/symbol_coder.h`: lowered `kRansL` from `2^16` to `2^15` with variable
+  3/4-byte final state encoding (`y = x - kRansL`, MSB of last byte selects 3
+  vs 4 bytes with canonical/bounds validation), plus deferred renormalization
+  in `RansDecoder::DecodeSymbol` paired with seeding the final symbol at
+  `x = kRansL + lo` in `RansEncoder::Flush`.
+- `src/arixv.cpp`: canonical 1..5-byte prefix-coded `AppendCompactUint32` /
+  `ReadCompactUint32` (`0..191` in 1 B, `192..15,551` in 2 B, preserving the
+  ≤10 B max header guarantee), coding SPIR-V body-word count `(size - 20) / 4`
+  for `kModeSpirv` with overflow/OOM checks, plus a bounds check fixing a
+  1-byte OOB read on exact 4-byte `"ARX2"` inputs.
+
+| | corpus bytes | Δ vs item 20 | train total | holdout total | decode Ir | wall |
+|---|---|---|---|---|---|---|
+| item 20 (`f9be40c`) | 763,727 | — | 0.12137 | 0.13061 | 330.7M | 71.72 MiB/s |
+| **landed: item 13** | **761,259** | **−0.32%** | 0.12098 (−0.32%) | 0.13019 (−0.32%) | 332.2M (+0.44%) | **72.20 MiB/s (+0.55%)** |
+
+Saves **2.29 B/module** across the 1,080-file corpus (`−2,468 B` total).
+Mean ratio: train 0.15875 → 0.15735 (−0.88%), holdout 0.15834 → 0.15697
+(−0.87%). Median ratio: train 0.15703 → 0.15641 (−0.39%), holdout 0.15432 →
+0.15340 (−0.60%). Golden vectors shrink: `GoldenSpirvModuleEncoding` 59 → 56 B,
+`GoldenSpirvHeaderOnlyEncoding` 14 → 11 B.
+
+**Speed, memory, size.** Decode Ir 330.74M → 332.20M (+0.44%). Wall time
+(quiet host, `taskset -c 4`, `arixv_decode_bench --iters=10` on all 1080
+files, 12 interleaved rounds): median 71.72 → **72.20 MiB/s (+0.55%, 9/12
+rounds faster)**. Cumulative vs item 3 (`e76155b`): corpus bytes **844,347 →
+761,259 B (−9.84%)**, mean **0.17827 → 0.15715 (−11.85%)**, median
+**0.17333 → 0.15430 (−10.98%)**, heap/decode **183.6 → 178.6 KB (−5.0 KB)**,
+batched minor page faults **0.85 → 0.628 (−26.1%)**, wall **77.61 → 72.25
+MiB/s (−6.92%)**. Library (−O2, text+data): 338.0 → 340.3 KB (+2.3 KB).
+
+Checks: `make all`, `make test` (new `CompactSizeEdgeCases`, expanded
+`HostileInputs`, `AdaptiveFlushBoundaries`, and `RansMinimalFlushAndHostile`),
+`make asan`, 3000-iteration fuzz, valgrind memcheck with full leak checking
+(`range_coder_test`, `arixv_test`, `model_test`), scalar/SIMD cross-check on
+135 files, all 1080 corpus files round-trip.
+
 
 
