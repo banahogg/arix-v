@@ -85,56 +85,69 @@ Every byte-identical optimization is evaluated before keeping:
 ## Part A: Byte-identical optimizations (zero format / zero ratio change)
 
 ### Group 1 — Branchless range coder & `kProbShift == 3` warm-up (`src/range_coder.h`)
-- [ ] **1a. Branch-free `kProbShift == 3` warm-up in `Prob::UpdateFromRaw`**
+- [x] **1a. Branch-free `kProbShift == 3` warm-up in `Prob::UpdateFromRaw`** (`40c8f06`)
   - Profile: `L55` is **3.20% of all `Bcm`** + `bsr` instruction.
   - Because `ARIXV_KPROB_SHIFT == 3` sets `kPackedSaturation = 3` (`count ∈ {0,1,2,3}`),
     `shift = 1 + ((count + 1) >> 1)` and `next_count = count + (count < 3)` are
     exact with zero branch and zero `bsr`. (Unlike the earlier `kProbShift == 5`
     attempt in `performance.md`, no `bsr` is needed.)
-- [ ] **1b. Branchless bit decision & `v` update in `DecodeBit` / `DecodeBitLocal`**
+- [x] **1b. Branchless bit decision & `v` update in `DecodeBitLocal`** (`40c8f06`)
   - Profile: `DecodeBitLocal` (`L297`) is **7.77% of all `Bcm`** (42.5% miss
     rate on uint mantissas); `DecodeBit` (`L222`) is **4.98% of all `Bcm`**
-    (16.9% miss rate). Both currently emit hard `jae` jumps.
-  - Use branchless `code < bound` (`cmov`/mask) for `range`, `code`, and `v`
-    update while keeping renormalization loop identical.
+    (16.9% miss rate).
+  - Empirical finding: making `DecodeBit` itself branchless (83% predicted)
+    caused GCC register spills and doubled its instruction count (+24.5M Ir),
+    whereas keeping `DecodeBit` branching and making `DecodeBitLocal` branchless
+    via mask + parallel `v0`/`v1` (`Prob::UpdateFromRawBranchless`) gave a clean
+    +1.33% wall-clock decode win (12/12 faster).
 
 ### Group 2 — `SymbolCdf` / rANS hot path (`src/symbol_coder.h`, `src/prob.h`, `src/model.cpp`)
-- [ ] **2a. `if constexpr (kN <= 8)` fast path in `SymbolCdfLookup` & `SymbolCdfAdapt`**
+- [x] **2a. `if constexpr (kN <= 8)` fast path in `SymbolCdfLookup` & `SymbolCdfAdapt`** (`9da3f71`)
   - Profile: `OpcodeTree::root`, `UintModel::length` root, and
     `result_type_choice` (>1.1M calls) have `kN <= 8` where `d[8..15]` is
-    mathematically `0` forever, yet we currently load/compare/shift/store all 16
-    lanes. Halves SIMD work for `kN <= 8`.
-- [ ] **2b. Merge `t.d[0] = count` into lane 0 before the single 16B SSE2 store**
-  - Profile: `SymbolCdfAdapt` writes `movaps %xmm0, (%rdx)` then immediately
+    mathematically `0` forever, yet we previously loaded/compared/shifted/stored
+    all 16 lanes. Halves SIMD work for `kN <= 8`.
+- [x] **2b. Merge `t.d[0] = count` into lane 0 before the single 16B SSE2 store** (`9da3f71`)
+  - Profile: `SymbolCdfAdapt` wrote `movaps %xmm0, (%rdx)` then immediately
     `mov %ax, (%rdx)`, causing a 16B→2B store-to-load forwarding stall whenever
-    a CDF is reused back-to-back.
-- [ ] **2c. Fuse `SymbolCdfLookup` + `SymbolCdfAdapt` & eliminate `uint16_t c[17]` stack array**
-  - Profile: `uint16_t c[17]` on stack forces `-fstack-protector` `%fs:0x28`
+    a CDF was reused back-to-back. Merged via `_mm_insert_epi16`.
+- [x] **2c. Fuse `SymbolCdfLookup` + `SymbolCdfAdapt`, eliminate `uint16_t c[17]` stack array, & `CodeUint` fast paths** (`9da3f71`)
+  - Profile: `uint16_t c[17]` on stack forced `-fstack-protector` `%fs:0x28`
     canary setup/teardown on every tree function + 16B→2B stall on `c[s]`, and
-    `SymbolCdfAdapt` reloads `t.d` and recomputes `d + U` already in XMM regs.
+    `SymbolCdfAdapt` reloaded `t.d` and recomputed `d + U` already in XMM regs.
+  - Bundled with `__builtin_clz` in `BitWidth` and `if (nbits <= 1) return nbits;`
+    short-circuit in `CodeUint` (skips `HighRow` & zero-length bit sequence for `v == 1`).
 - [ ] **2d. Keep `RansDecoder::x_` in a local across multi-chunk walks & 16-bit LE `ReadWord`**
   - Profile: avoids store-then-immediate-reload of `x_` in `OpcodeTree::CodeValue`,
     `CodeUint`, and `LazyLeafTree8`; `ReadWord` can use `memcpy`/`movzwl`.
 
 ### Group 3 — Eliminate redundant `Tracker` hash probes & bookkeeping (`src/tracker.h`, `src/tracker.cpp`, `src/model.cpp`)
-- [ ] **3a. `CodeResultId` fast-check `candidate > tracker.max_seen_id()`**
-  - Profile: `tracker.Find(prev_result_id + 1)` does 239K hash probes; `slot_gen_`
-    probe loop is **1.85% of all `Bcm`** + D1 misses. Any `candidate > max_seen_id()`
+- [x] **3a. `CodeResultId` fast-check `candidate > tracker.max_seen_id()`** (`baa1fe1`)
+  - Profile: `tracker.Find(prev_result_id + 1)` did 239K hash probes; probe loop
+    was **1.85% of all `Bcm`** + D1 misses. Any `candidate > max_seen_id()`
     cannot exist in `ids_`; skips ~85–90% of lookups.
-- [ ] **3b. Eliminate `PrevResListSlow` hash lookup**
+- [x] **3b. Eliminate `PrevResListSlow` hash lookup** (`baa1fe1`)
   - Profile: **0.93M Ir** + D1 misses. `Tracker::OnInstructionEnd` already
     computed `info.type_list` for the previous instruction's result ID; returning
     and storing it directly on `ModelState` removes `tracker.Find(cur_prev_res_id)`.
-- [ ] **3c. Cache `{last_rtype_id, last_rtype_values_list}` from `OnResultTypeUse` for `ValuesListFor`**
-  - Profile: `OnInstructionEnd` immediately re-hashes `info.result_type` right
+- [x] **3c. Cache `{last_rtype_id, last_rtype_values_list}` from `OnResultTypeUse` for `ValuesListFor`** (`baa1fe1`)
+  - Profile: `OnInstructionEnd` immediately re-hashed `info.result_type` right
     after `OnResultTypeUse(type)` already looked up that exact ID.
-- [ ] **3d. Fast-path `Tracker::OnInstructionEnd`**
+- [x] **3d. Fast-path `Tracker::OnInstructionEnd`** (`baa1fe1`)
   - Profile: **3.68% Ir**, 3.9 KB code. Skip `forward_refs_.Remove` when
     `forward_refs_.size() == 0`; load `desc->flags` once and short-circuit all
-    11 `HasInstructionFlag` checks (**0.52% Ir** alone) when `flags == 0`.
+    11 `HasInstructionFlag` checks (**0.52% Ir** alone) via `kResultKindFlags`
+    and `kBlockStateFlags`.
+- [x] **3e. Remove `Tracker::IdMap::slot_gen_` using `keys_[i] == 0` empty sentinel** (`40e6c5b`)
+  - Discovery: `IdMap` still allocated and probed a separate `slot_gen_` array
+    left over from the removed reusable decoder. Because `id == 0` already uses
+    `zero_info_`, zero-initialized `keys_` (`keys_[i] == 0` ⇒ empty) eliminates
+    `slot_gen_` completely — saving 1 heap allocation per decode, ~2.5 KB/decode
+    heap (`178,352 → 176,039 B`), 1 cache line touch per `Find`/`Ensure`, and
+    **−2.19M Ir/pass** (+1.04% wall decode).
 
 ### Group 4 — `RecencyList` branchless `Touch` & `Replace` fast path (`src/tracker.cpp`)
-- [ ] **4a. `RecencyList::Replace` head fast path (`items_[0] == old_id`)**
+- [x] **4a. `RecencyList::Replace` head fast path (`items_[0] == old_id`)** (`baa1fe1`)
   - Profile: sequential result IDs in `result_runs_` almost always match slot 0;
     `if (size_ > 0 && items_[0] == old_id) { items_[0] = id; return; }` skips
     the full SSE2 `MatchMask` scan on ~80%+ of result IDs.
@@ -145,16 +158,18 @@ Every byte-identical optimization is evaluated before keeping:
     loaded `v0..v3` registers (or test early-out on `items_[0] == id` before SSE2).
 
 ### Group 5 — `CodeModule`, `CodeIdRef`, `CodeDeferredResultType`, `DecodeIO`, `WordBuffer` (`src/model.cpp`)
-- [ ] **5a. `ARIXV_NOINLINE` on `BuildDeferredResultTypeCandidates` + inline `choice == 1` fast path**
-  - Profile: `BuildDeferredResultTypeCandidates` is 5.0 KB and cloned twice by
+- [x] **5a. `ARIXV_NOINLINE` on `BuildDeferredResultTypeCandidates` + inline `choice == 1` fast path** (`3ace310`)
+  - Profile: `BuildDeferredResultTypeCandidates` was 5.0 KB and cloned twice by
     LTO (**8.5% of all L1i misses**); candidate 1 (`ElementTypeOf(operand_types[0])`,
     e.g., `OpLoad`) hits more often than candidate 0. Inline fast path for
-    `choice == 1 && total_ids == 1 && num_literal_ints == 0` avoids calling into
-    it on `OpLoad` and unary extract ops.
-- [ ] **5b. Tighten `DecodeIO::Append` (1.67% Ir) & `WordBuffer::push_back` (1.39% Ir)**
+    `choice == 1` when `num_ids > 0 && num_literal_ints == 0 && operand_types[0] != 0`
+    and `total_ids == 1 || t0->type_class != kPointer` avoids calling into it on
+    `OpLoad` and unary extract ops.
+- [x] **5b. Tighten `DecodeIO::Append` (1.67% Ir) & `WordBuffer::push_back` (1.39% Ir)** (`3ace310`)
   - Cache `uint8_t* ptr_` / `end_` in `DecodeIO` (single compare instead of
-    reloading `out_.size()` twice); track `inline_cap_` in `WordBuffer` so
-    `push_back` avoids inspecting `spill_` on the inline path.
+    reloading `out_.size()` twice); track `inline_cap_` in `WordBuffer` +
+    `ARIXV_NOINLINE PushBackSlow` so `push_back` avoids inspecting `spill_` on
+    the inline path.
 - [ ] **5c. Unswitch `fixed_layout` loop in `CodeModule` & skip `OperandCursor` construction**
   - Profile: `if (!fixed_layout)` at `L3051` is **3.88% of all `Bcm`** (27.5%
     miss rate) despite being loop-invariant, and `OperandCursor` (64B
@@ -166,29 +181,26 @@ Every byte-identical optimization is evaluated before keeping:
     3-entry table for modes `{0, 1, 2}` and streamline `id_idx == 0` vs `> 0`.
 
 ### Group 6 — `CodeString` / `TouchString` & `ModelState` setup (`src/model.cpp`)
-- [ ] **6a. `ARIXV_NOINLINE` on `CodeGenericOperandWord`**
-  - Profile: only hit in 4/1080 files, yet inlining bloats `CodeString<BitDecoder>`
+- [x] **6a. `ARIXV_NOINLINE` on `CodeGenericOperandWord`** (`3ace310`)
+  - Profile: only hit in 4/1080 files, yet inlining bloated `CodeString<BitDecoder>`
     to 8.9 KB (**7.6% of all L1i misses**).
-- [ ] **6b. Static grammar `value_enum_ordinal` & flat `type_in_list`/`type_rank` in `ModelState`**
-  - Profile: `ModelState::ModelState` is **8.7% of all L1d misses**.
-    `value_enum_ordinal` is allocated and recomputed in a 91-iteration loop on
-    every `Decode()` despite being a compile-time grammar constant;
-    `type_in_list` (58 B) and `type_rank` (928 B) do 4 heap allocations via
-    `unique_ptr<vector<...>>`.
-- [ ] **6c. Handle-based `TouchString` & avoid decode-hit re-search**
-  - Profile: **0.97% Ir**, **2.53% `Bcm`**. On decode list hits, `CodeString`
-    copies `recent_strings[coded_rank]` then re-searches with `std::string::operator==`
-    and rotates up to 64 `std::string` objects (~2 KB SSO copies). Rotate
-    `uint16_t` handles and pass `coded_rank` directly on hits.
+- [x] **6b. Static grammar `value_enum_ordinal` & flat `type_in_list`/`type_rank` in `ModelState`** (`3ace310`)
+  - Profile: `ModelState::ModelState` was **8.7% of all L1d misses**.
+    `GetValueEnumOrdinals()` is now a static table, and `type_in_list` /
+    `type_rank` are direct `std::vector`s (removing 4 heap allocations).
+- [x] **6c. Handle-based `TouchString` & avoid decode-hit re-search** (`ba12c71`)
+  - Profile: **0.97% Ir**, **2.53% `Bcm`**. Replaced `vector<string>` rotation
+    with `recent_string_pool` + 64-byte `recent_string_order` handle array and
+    fast-pathed encode/decode hits directly via `PromoteRecentString` (**−3.00M
+    Ir/pass**, +0.84% wall decode, 12/12 faster).
 
 ### Group 7 — Encoder hot path (`src/prob.h`, `src/model.cpp`)
-- [ ] **7a. Scalar lookup in `BitEncoder::CodeSymbol`**
-  - Profile: **11.2% of encode Ir!** Currently calls full SSE2 `SymbolCdfLookup`
-    + stack copy just to read `c[s]` and `c[s+1]`, which are two scalar loads
-    (`t.d[s] + K::kUniform[s]`).
-- [ ] **7b. Bypass `coded_words` in `SingleWordStager` on encode too**
-  - Profile: `WordBuffer<8>::push_back` is **1.2% of encode Ir** because
-    `SingleWordStager` currently only fast-paths decode.
+- [x] **7a. Scalar lookup in `BitEncoder::CodeSymbol`** (`3ace310`)
+  - Profile: **11.2% of encode Ir!** Replaced full SSE2 `SymbolCdfLookup` +
+    stack `c[17]` copy with direct scalar loads (`t.d[s] + K::kUniform[s]`).
+- [x] **7b. Bypass `coded_words` in `SingleWordStager` on encode too** (`3ace310`)
+  - Profile: `WordBuffer<8>::push_back` was **1.2% of encode Ir** because
+    `SingleWordStager` previously only fast-pathed decode.
 
 ---
 
@@ -223,9 +235,16 @@ Baseline (`59f55f3`):
 - Encoded bytes: `759,260 B` (ratio `0.125223`), `arixv_bench` checksum `35796698800`, `arixv_decode_bench` checksum `8949134200`.
 - Callgrind stateless Ir/pass (every 4th file, n=270): `331.4M`.
 - Callgrind Bcm (every 8th file, n=135, 1→3 diff/2): `1.49M` (`6.41%`).
-- `arixv_decode_bench --iters=10` (`taskset -c 4`): baseline measured per A/B step.
-- `arixv_bench` (single pass, `taskset -c 4`): `38.43 MiB/s` encode, `71.80 MiB/s` decode.
+- `arixv_decode_bench --iters=10` (`taskset -c 4`): paired A/B against saved `59f55f3` binary at each step.
+- `arixv_bench` paired A/B (`taskset -c 4`, 6 rounds): `40.82 MiB/s` encode, `75.60 MiB/s` decode (`59f55f3` baseline).
+- `--raw-residual` ceiling (1078 valid SPIR-V files, `--iters=5`): `107.33 MiB/s` (`59f55f3`) → `119.19 MiB/s` (**+11.05%**, checksum `8949125080`).
 
-| Step | Items | Stateless Ir/pass (Δ vs base) | Wall decode A/B vs base | Wall encode (`arixv_bench`) | Status |
-|---|---|---:|---:|---:|---|
-| Base (`59f55f3`) | — | `331.4M` | `0.0%` | `38.43 MiB/s` | baseline |
+| Step | Commit | Items | Stateless Ir/pass (Δ vs base) | Wall decode A/B vs base (`--iters=10`, 12 rounds) | Wall encode / decode (`arixv_bench`) | Status |
+|---|---|---|---:|---:|---:|---|
+| Base | `59f55f3` | — | `331.40M` (`0.00%`) | `0.00%` (`~72.3 MiB/s`) | `40.82 / 75.60 MiB/s` (6-rd med) | baseline |
+| Batch 1a | `baa1fe1` | `3a`, `3b`, `3c`, `3d`, `4a` | `328.95M` (`−0.74%`) | `+2.09%` (`73.69 MiB/s`, 12/12) | — | kept |
+| Batch 1b | `3ace310` | `5a`, `5b`, `6a`, `6b`, `7a`, `7b` | `322.38M` (`−2.72%`) | `+4.22%` (`75.37 MiB/s`, 12/12) | `42.82 / 79.15 MiB/s` | kept |
+| Batch 2 | `40c8f06` | `1a`, `1b` (`DecodeBitLocal` branchless) | `330.02M` (`−0.42%`) | `+5.6%` (`+1.33%` vs 1b, 12/12) | `43.79 / 78.74 MiB/s` | kept |
+| Batch 3 | `9da3f71` | `2a`, `2b`, `2c` + `CodeUint` fast paths | `328.17M` (`−0.98%`) | `+6.97%` (`77.40 MiB/s`, 12/12) | — | kept |
+| Batch 4 | `40e6c5b` | `3e` (remove `IdMap::slot_gen_`) | `325.98M` (`−1.64%`) | `+7.73%` (`78.02 MiB/s`, 12/12) | — | kept |
+| Batch 5 | `ba12c71` | `6c` (handle-based `TouchString` & hit fast path) | `322.98M` (`−2.54%`) | `+8.64%` (`78.60 MiB/s`, 12/12) | **`45.16 / 81.67 MiB/s`** (**+10.58% / +7.87%**, 6/6) | kept |
