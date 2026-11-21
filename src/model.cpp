@@ -31,7 +31,10 @@ namespace {
 
 constexpr uint32_t kSpirvMagic = 0x07230203u;
 constexpr uint32_t kSpirvMagicSwapped = 0x03022307u;
-constexpr uint32_t kOpcodeOrder1MinCount = 4;
+#ifndef ARIXV_KOPCODE_ORDER1_MIN_COUNT
+#define ARIXV_KOPCODE_ORDER1_MIN_COUNT 4
+#endif
+constexpr uint32_t kOpcodeOrder1MinCount = ARIXV_KOPCODE_ORDER1_MIN_COUNT;
 constexpr size_t kInlineInstructionWords = 256;
 constexpr size_t kInlineOperandWords = 8;
 

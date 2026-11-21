@@ -893,5 +893,69 @@ Checks: `make all`, `make test` (new `CompactSizeEdgeCases`, expanded
 (`range_coder_test`, `arixv_test`, `model_test`), scalar/SIMD cross-check on
 135 files, all 1080 corpus files round-trip.
 
+### 12. Scalar adaptation tuning on settled model (2026-11-21)
+
+**Train-only coordinate descent** (`[0-7]*.spv`, 534 files, `369,392 B` at
+item 13) over all hand-set scalar knobs in `src/tuning.h` and
+`kOpcodeOrder1MinCount` in `src/model.cpp`:
+- `ARIXV_KPROB_SHIFT`: `2` (+3,205 B), **`3` (−1,164 B, −0.315%)**, `4`
+  (−1,105 B), `5` (baseline), `6` (+1,184 B, also unpacks `Prob` from 2 → 4 B).
+  With finer-grained per-slot/per-opcode binary flags added across items
+  16–20, faster steady adaptation (`shift = 3`, still 2-byte packed `Prob`)
+  tracks phase changes within shaders much better while leaving `kModeCoded`
+  random-data expansion unchanged at `+3.64%`.
+- `ARIXV_KBYTE_SYMBOL_RATE_CAP`: `4` saved −230 B on train, but pushed
+  `kModeCoded` forced-coded 1 MiB random-input expansion to `+13.84%` (violating
+  `RandomRoundTrips`'s `+5%` guard); `6` passed (`+4.39%`) for only −53 B, so
+  `7` (`+3.64%` margin) was kept.
+- `ARIXV_KSYMBOL_RATE_CAP` (`5`), `ARIXV_KOPCODE_ORDER1_MIN_COUNT` (`4`),
+  `ARIXV_KRANK_LIST_CAP_IDS` (`16`), `ARIXV_KRANK_LIST_CAP_TYPES` (`16`),
+  `ARIXV_KVALID_FLAG_PRIOR` (`1/32`; `1/64` was −11 B noise), and
+  `ARIXV_KUINT_HIGH_BITS` (`8`; `12` was −14 B at 2× `short_rows` memory)
+  all stayed at their existing defaults.
+
+**Implementation:** updated `ARIXV_KPROB_SHIFT` from `5` to `3` in
+`src/tuning.h`, exposed `ARIXV_KSYMBOL_RATE_CAP` / `ARIXV_KBYTE_SYMBOL_RATE_CAP`
+/ `ARIXV_KOPCODE_ORDER1_MIN_COUNT` as `#ifndef` build overrides, updated
+`scripts/bench/tune_scalars.py` defaults, and updated 5 bytes of
+`GoldenSpirvModuleEncoding` (still 56 B).
+
+| | corpus bytes | Δ vs item 13 | train total | holdout total | decode Ir | wall |
+|---|---|---|---|---|---|---|
+| item 13 (`683d2d0`) | 761,259 | — | 0.12098 | 0.13019 | 332.2M | 72.52 MiB/s |
+| **landed: item 12** | **759,260** | **−0.26%** | 0.12060 (−0.32%) | 0.12991 (−0.21%) | **331.4M (−0.25%)** | **72.64 MiB/s (+0.20%)** |
+
+Mean ratio: train 0.15735 → 0.15695 (−0.25%), holdout 0.15697 → 0.15657
+(−0.25%). Median ratio: train 0.15641 → 0.15623 (−0.12%), holdout 0.15340 →
+0.15316 (−0.16%).
+
+**Speed, memory, size.** Decode Ir 332.20M → 331.38M (−0.25%). Wall time
+(quiet host, `taskset -c 4`, `arixv_decode_bench --iters=10` on all 1080
+files, 12 interleaved rounds): median 72.52 → 72.64 MiB/s (+0.20%, 9/12
+faster). Heap/decode unchanged at 178.6 KB; batched minor page faults 0.629;
+library (−O2, text+data) 340.3 → 339.9 KB (−0.4 KB).
+
+**Updated field entropy breakdown (`ARIXV_STATS=1`, full corpus: 749,067 B
+entropy in 759,260 B container, 9.44 B/module overhead, −25.05% vs `main`):**
+
+| field | `main` (049e8ad) | current | share | Δ vs `main` |
+|---|---:|---:|---:|---:|
+| `id_ref` | 332,328 | 267,561 | 35.7% | −19.5% |
+| `opcode` | 154,474 | 133,919 | 17.9% | −13.3% |
+| `result_id` | 145,823 | 129,273 | 17.3% | −11.3% |
+| `string` | 130,674 | 88,630 | 11.8% | −32.2% |
+| `literal_int + literal_cdn` | 73,088 | 57,075 | 7.6% | −21.9% |
+| `result_type` | 69,606 | 23,783 | 3.2% | −65.8% |
+| `value_enum` | 33,441 | 21,959 | 2.9% | −34.3% |
+| `word_count` | 47,657 | 16,424 | 2.2% | −65.5% |
+| other (`header`, `bit_enum`, `ext_inst_num`, ...) | ~13,100 | 10,443 | 1.4% | −20.3% |
+| container + coder framing | 12,790 | 10,193 | — | −20.3% |
+| **TOTAL container** | **1,013,012** | **759,260** | — | **−25.05%** |
+
+Checks: `make all`, `make test`, `make asan`, 3000-iteration fuzz, valgrind
+memcheck with full leak checking (`range_coder_test`, `arixv_test`,
+`model_test`), scalar/SIMD cross-check on 135 files, all 1080 corpus files
+round-trip.
+
 
 

@@ -17,7 +17,7 @@
 #define ARIXV_KPROB_INIT (ARIXV_KPROB_SCALE >> 1)
 #endif
 #ifndef ARIXV_KPROB_SHIFT
-#define ARIXV_KPROB_SHIFT 5
+#define ARIXV_KPROB_SHIFT 3
 #endif
 #ifndef ARIXV_KPROB_ADAPT_SATURATION
 #define ARIXV_KPROB_ADAPT_SATURATION 30
@@ -151,8 +151,14 @@ constexpr int kRankListCapTypes = ARIXV_KRANK_LIST_CAP_TYPES;
 // and grows with the per-table count up to the tree's cap (also the steady
 // rate used for shadow training). Byte trees (high-entropy string and
 // fallback bytes) adapt more slowly.
-constexpr int kSymbolRateCap = 5;
-constexpr int kByteSymbolRateCap = 7;
+#ifndef ARIXV_KSYMBOL_RATE_CAP
+#define ARIXV_KSYMBOL_RATE_CAP 5
+#endif
+#ifndef ARIXV_KBYTE_SYMBOL_RATE_CAP
+#define ARIXV_KBYTE_SYMBOL_RATE_CAP 7
+#endif
+constexpr int kSymbolRateCap = ARIXV_KSYMBOL_RATE_CAP;
+constexpr int kByteSymbolRateCap = ARIXV_KBYTE_SYMBOL_RATE_CAP;
 
 // Result-ID prediction: the smallest never-seen ID above the previous
 // result ID, scanning at most this many already-seen IDs (bounds decode work

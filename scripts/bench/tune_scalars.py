@@ -25,7 +25,9 @@ SOURCES = [
 # knob -> candidate values (first entry = current default). Rank-list caps
 # must stay <= 2^kRankTreeBits = 16 (static_assert in tuning.h).
 KNOBS: dict[str, list[int]] = {
-    "ARIXV_KPROB_SHIFT": [5, 4, 6],
+    "ARIXV_KPROB_SHIFT": [3, 2, 4, 5],
+    "ARIXV_KSYMBOL_RATE_CAP": [5, 4, 6],
+    "ARIXV_KBYTE_SYMBOL_RATE_CAP": [7, 6, 8],
     "ARIXV_KRANK_LIST_CAP_IDS": [16, 8, 12],
     "ARIXV_KRANK_LIST_CAP_TYPES": [16, 8, 12],
     "ARIXV_KUINT_HIGH_BITS": [8, 6, 12],
