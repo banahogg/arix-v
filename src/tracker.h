@@ -114,8 +114,27 @@ class Tracker {
     bool defined;   // result ID has been seen
     // For kind==kType: what type this ID declares.
     TypeClass type_class;
-    uint32_t width;         // OpTypeInt/OpTypeFloat bit width
-    const ExtInstSetDesc* ext_set;  // kind==kExtInstSet
+    // Discriminated by kind and type_class:
+    //   kConstant:       1 iff width holds a 32-bit integer constant
+    //   kType && kInt:   signedness (0 = unsigned, 1 = signed)
+    uint8_t aux_flag;
+    // Multi-purpose 32-bit metadata, discriminated by kind and type_class:
+    //   kType kInt/kFloat:       bit width
+    //   kType kPointer:          StorageClass
+    //   kType kVector/kMatrix:   component / column count
+    //   kType kArray:            constant array length (if known; 0 otherwise)
+    //   kType kImage:            most recent OpTypeSampledImage referencing it
+    //   kConstant (aux_flag):    32-bit integer constant value
+    uint32_t width;
+    // Discriminated by kind (& type_class). members is listed first
+    // (8 bytes on both 32- and 64-bit) so IdInfo{} zeroes all 8 bytes.
+    union {
+      struct {
+        uint32_t offset;
+        uint32_t count;
+      } members;                      // kType && (kStruct || kFunction)
+      const ExtInstSetDesc* ext_set;  // kind==kExtInstSet
+    };
     uint32_t result_type;   // the defining instruction's Result Type, or 0
     // For kind==kType: the declaration's first ID operand — the pointee of a
     // pointer, the component of a vector, the element of an array, the
@@ -133,6 +152,7 @@ class Tracker {
                     static_cast<int>(IdKind::kUnknown) == 0 &&
                     static_cast<int>(TypeClass::kOther) == 0,
                 "IdInfo{} must be the all-zero default");
+  static_assert(sizeof(IdInfo) == 32, "IdInfo must stay compact (32 bytes)");
 
   Tracker();
 
@@ -151,6 +171,13 @@ class Tracker {
   // Null if the ID was never seen (neither defined nor referenced).
   const IdInfo* Find(uint32_t id) const;
 
+  // Extended instruction set imported by `id`, or nullptr if not an import.
+  const ExtInstSetDesc* ExtInstSetOf(uint32_t id) const {
+    const IdInfo* info = Find(id);
+    return (info && info->kind == IdKind::kExtInstSet) ? info->ext_set
+                                                       : nullptr;
+  }
+
   // Width of the type `type_id` if it is a known int/float type (for
   // LiteralContextDependentNumber), else 0.
   uint32_t TypeWidth(uint32_t type_id) const;
@@ -159,9 +186,84 @@ class Tracker {
     const IdInfo* info = Find(id);
     return info ? info->result_type : 0;
   }
+  // StorageClass of an OpTypePointer type ID. Returns true and writes *out
+  // iff type_id is a known pointer type (0 is StorageClass::UniformConstant).
+  bool PointerStorageClass(uint32_t type_id, uint32_t* out) const {
+    const IdInfo* info = Find(type_id);
+    if (!info || info->kind != IdKind::kType ||
+        info->type_class != TypeClass::kPointer) {
+      return false;
+    }
+    *out = info->width;
+    return true;
+  }
+  // Scalar 32-bit integer value of an OpConstant/OpSpecConstant/OpConstantNull ID.
+  bool ConstantIntValue(uint32_t id, uint32_t* out) const {
+    const IdInfo* info = Find(id);
+    if (!info || info->kind != IdKind::kConstant || info->aux_flag == 0) {
+      return false;
+    }
+    *out = info->width;
+    return true;
+  }
+  // Member type ID of a struct type (0 if out of range or not a struct).
+  uint32_t StructMemberType(const IdInfo& struct_info, uint32_t index) const {
+    if (struct_info.kind != IdKind::kType ||
+        struct_info.type_class != TypeClass::kStruct ||
+        index >= struct_info.members.count) {
+      return 0;
+    }
+    return member_types_[struct_info.members.offset + index];
+  }
+  // Expected Result Type of the next OpFunctionParameter in the current
+  // function header (between OpFunction and the first OpLabel), or 0.
+  uint32_t CurrentFunctionParamType() const {
+    if (current_fn_type_ == 0) {
+      return 0;
+    }
+    const IdInfo* fn = Find(current_fn_type_);
+    if (!fn || fn->kind != IdKind::kType ||
+        fn->type_class != TypeClass::kFunction ||
+        current_fn_param_index_ >= fn->members.count) {
+      return 0;
+    }
+    return member_types_[fn->members.offset + current_fn_param_index_];
+  }
+  // Most recently declared OpTypeBool ID, or 0 if none yet.
+  uint32_t bool_type_id() const { return bool_type_id_; }
+  // Most recently declared scalar type ID: kind 0=uint, 1=sint, 2=float;
+  // width in {8, 16, 32, 64}. Returns 0 if absent.
+  uint32_t ScalarTypeOf(int kind, uint32_t width) const {
+    const int wb = ScalarWidthBucket(width);
+    return (wb >= 0 && kind >= 0 && kind < 3) ? scalar_types_[kind][wb] : 0;
+  }
+  // OpTypeSampledImage referencing `img_info` (when kImage), or 0.
+  static uint32_t SampledImageTypeOf(const IdInfo& img_info) {
+    return (img_info.kind == IdKind::kType &&
+            img_info.type_class == TypeClass::kImage)
+               ? img_info.width
+               : 0;
+  }
+  // Reverse lookups for OpTypePointer, OpTypeVector, OpTypeMatrix, OpTypeArray,
+  // OpTypeStruct (0 if absent or beyond per-module caps).
+  uint32_t PointerTypeOf(uint32_t storage_class, uint32_t pointee_type) const;
+  uint32_t VectorTypeOf(uint32_t elem_type, uint32_t count) const;
+  uint32_t MatrixTypeOf(uint32_t col_type, uint32_t count) const;
+  uint32_t ArrayTypeOf(uint32_t elem_type, uint32_t length) const;
+  uint32_t StructTypeOf(const uint32_t* member_types, uint32_t count) const;
+  // Walks a composite type through ID index operands (OpAccessChain) or
+  // literal integer index operands (OpCompositeExtract). Returns 0 if any step
+  // cannot be resolved.
+  uint32_t WalkCompositeByIds(uint32_t type_id, const uint32_t* index_ids,
+                              uint32_t count) const;
+  uint32_t WalkCompositeByLiterals(uint32_t type_id, const uint32_t* indices,
+                                   uint32_t count) const;
   // Sentinel list handle for IdKind::kType, aliasing recent_types_ instead of
   // maintaining a duplicate list in typed_lists_.
   static constexpr uint32_t kRecentTypesList = ~uint32_t{0};
+  // Per-module caps bounding type-algebra tables against hostile inputs.
+  static constexpr size_t kMaxMemberTypes = 4096;
+  static constexpr size_t kMaxDerivedTypeEntries = 256;
 
   // Recency list number `list` (an IdInfo::type_list / values_list value:
   // 1-based, 0 = none, kRecentTypesList = recent_types_), most recent first;
@@ -288,6 +390,36 @@ class Tracker {
   uint32_t ValuesListFor(uint32_t type);
   // 1-based typed_lists_ handle for `kind`, created on first use.
   uint32_t KindListFor(IdKind kind);
+
+  static constexpr int ScalarWidthBucket(uint32_t width) {
+    return width == 8    ? 0
+           : width == 16 ? 1
+           : width == 32 ? 2
+           : width == 64 ? 3
+                         : -1;
+  }
+
+  struct DerivedTypeEntry {
+    uint32_t key_a;
+    uint32_t key_b;
+    uint32_t type_id;
+  };
+  static void RecordDerivedType(std::vector<DerivedTypeEntry>& table,
+                                uint32_t key_a, uint32_t key_b,
+                                uint32_t type_id);
+  static uint32_t LookupDerivedType(const std::vector<DerivedTypeEntry>& table,
+                                    uint32_t key_a, uint32_t key_b);
+
+  uint32_t bool_type_id_ = 0;
+  uint32_t scalar_types_[3][4]{};
+  uint32_t current_fn_type_ = 0;
+  uint32_t current_fn_param_index_ = 0;
+  std::vector<uint32_t> member_types_;
+  std::vector<uint32_t> struct_types_;
+  std::vector<DerivedTypeEntry> ptr_types_;
+  std::vector<DerivedTypeEntry> vec_types_;
+  std::vector<DerivedTypeEntry> mat_types_;
+  std::vector<DerivedTypeEntry> arr_types_;
 
   const InstructionDesc* cur_desc_ = nullptr;
   uint32_t cur_opcode_ = 0;

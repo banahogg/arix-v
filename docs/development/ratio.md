@@ -727,5 +727,63 @@ Checks: `make all`, `make test` (new `AdaptiveIdListSourceTests` in
 leak checking (`arixv_test`, `model_test`), scalar/SIMD cross-check on 135
 files, all 1080 corpus files round-trip.
 
+### 19. Pointer-derived `OpVariable` `StorageClass` and type-algebra deferred `ResultType` (2026-11-21)
+
+**Train-only analysis** (`[0-7]*.spv`, 534 files). Three structural gaps
+remained in `result_type` and `value_enum` coding, all derivable directly
+from SPIR-V spec type rules with zero shipped corpus knowledge:
+- **B4 (`OpVariable` `StorageClass`):** `OpVariable`'s `StorageClass` operand
+  matches the storage class of its `OpTypePointer` `ResultType` 100% of the
+  time on valid modules (`−2,314 B` on train alone).
+- **B5 (`ElementTypeOf` on type-ID operands):** `CodeDeferredResultType` only
+  checked `ElementTypeOf(TypeOf(operand))`, missing instructions like
+  `OpFunction` whose operand *is* a `Function` type whose element type is the
+  return type (`−824 B` on train alone).
+- **A2 (Type-algebra `ResultType` candidates):** `OpAccessChain` /
+  `OpInBoundsAccessChain` (`−5,198 B`), `OpCompositeConstruct` (`−2,582 B`),
+  comparisons → `bool`/`bvecN` (`−1,346 B`), `OpVectorShuffle` (`−895 B`),
+  scalar/vector conversions (`−901 B`), `OpFunctionParameter` (`−441 B`),
+  image sampling → `vec4` (`−315 B`), `OpCompositeExtract` (`−124 B`), bool
+  0-op constants, `OpSampledImage`, and matrix-vector/matrix-matrix products
+  all have spec-defined result types computable from tracked type declarations.
+
+**Implementation:**
+- `src/tracker.h`, `src/tracker.cpp`: kept `Tracker::IdInfo` at 32 bytes
+  (reusing union `members`/`ext_set`, `aux_flag`, and `kImage`→`OpTypeSampledImage`
+  backlink in `width`), added bounded reverse type tables (`kMaxMemberTypes =
+  4096`, `kMaxDerivedTypeEntries = 256`), inline `scalar_types_[3][4]` peer
+  table, function-header parameter tracking, integer constant value tracking,
+  and depth-capped (`kMaxWalkDepth = 32`) composite walks.
+- `src/model.cpp`: B4 predicts `OpVariable` `StorageClass` via
+  `ModelState::var_sc_matches` (`ValidFlag()`, lossless fallback on mismatch
+  or non-pointer), B5 adds `ElementTypeOf(id_operands[i])`, and non-template
+  `BuildDeferredResultTypeCandidates` emits shape-first candidates into the
+  existing `BitTree<3>` (`BitTree<4>` regressed +1,024 B on train) with an
+  inline `choice == 0` decode fast path.
+
+| | corpus bytes | Δ vs item 18 | train total | holdout total | decode Ir | wall |
+|---|---|---|---|---|---|---|
+| item 18 (`61f4ac2`) | 819,900 | — | 0.13046 | 0.14006 | 327.4M | 74.64 MiB/s |
+| **landed: A2+B4+B5** | **788,893** | **−3.78%** | 0.12546 (−3.83%) | 0.13483 (−3.74%) | 333.0M (+1.69%) | 72.49 MiB/s (−2.85%) |
+
+Mean ratio: train 0.17264 → 0.16692 (−3.31%), holdout 0.17197 → 0.16625
+(−3.33%). Median ratio: train 0.16955 → 0.16332 (−3.67%), holdout 0.16739 →
+0.16137 (−3.60%). Golden vector `GoldenSpirvModuleEncoding` shrinks 66 → 64 B.
+
+**Speed, memory, size.** Decode Ir 327.43M → 332.97M (+1.69%). Wall time
+(quiet host, `taskset -c 4`, `arixv_decode_bench --iters=10` on all 1080
+files, 12 interleaved rounds): median 74.64 → 72.49 MiB/s, median paired
+−2.85% (−3.69% to −2.24%). Memory (`memory_breakdown`): heap/decode drops
+183.5 → **181.5 KB (−2.0 KB)** and arena blocks/decode drops 93.0 → 90.4 KB
+(−2.6 KB) because skipping `OpVariable` `ValueEnumModel` and fallback
+`UintModel` allocations outweighs the compact tracker tables; batched minor
+page faults drop **0.846 → 0.612 (−27.7%)**. Library (−O2, text+data): 319.9
+→ 330.2 KB (+10.4 KB: +5.8 KB `model.o`, +4.5 KB `tracker.o`).
+
+Checks: `make all`, `make test` (new `TypeAlgebraAndVariableStorageClassTests`
+in `model_test`), `make asan`, 3000-iteration fuzz, valgrind memcheck with
+full leak checking (`arixv_test`, `model_test`), scalar/SIMD cross-check on
+135 files, all 1080 corpus files round-trip.
+
 
 

@@ -589,6 +589,7 @@ struct ModelState {
     version_canonical = ValidFlag();
     schema_zero = ValidFlag();
     bound_matches = ValidFlag();
+    var_sc_matches = ValidFlag();
     string_canonical = ValidFlag();
     known_opcode.fill(ValidFlag());
   }
@@ -637,6 +638,7 @@ struct ModelState {
   ArenaPtr<UintModel> generator_id_escape;  // unregistered tools only
   Prob schema_zero;
   Prob bound_matches;
+  Prob var_sc_matches;
 
   std::array<Prob, static_cast<size_t>(Section::kCount) * 2> known_opcode{};
   std::vector<ArenaPtr<OpcodeTree>> opcode_index_trees;
@@ -1237,54 +1239,330 @@ uint32_t CodeResultType(Bits& bits, ModelState& model,
   return Bits::kEncoding ? hint : id;
 }
 
-// Result Type coded after the instruction's operands. Candidates are each ID
-// operand's own Result Type, then that type's element type (pointee,
-// component, element, return type), deduplicated in operand order; which
-// one matches is learned per instruction — arithmetic takes its operands'
-// type, a load its pointer's pointee — with no per-opcode rules. A miss
-// (choice 7, or any index past the candidates) falls back to the ranked
-// recent-types coding.
+// Result Type coded after the instruction's operands. Candidates combine each
+// ID operand's own Result Type and element type (or ElementTypeOf(id) for
+// type-ID operands like OpFunction's function type) with pure SPIR-V OpType*
+// type-algebra derivations (OpFunctionParameter, OpAccessChain pointer walk,
+// OpCompositeExtract literal walk, OpVectorShuffle vector size,
+// OpCompositeConstruct/OpConstantComposite vector/matrix/array/struct, scalar
+// and vector conversions, comparisons bool/bvec, OpVectorTimesMatrix /
+// OpMatrixTimesMatrix, and image/sampled-image types), deduplicated and built
+// lazily up to `limit` on decode. A miss (choice 7, or any index past the
+// candidates) falls back to ranked recent-types coding.
 constexpr int kMaxResultTypeCandidates = 7;
+
+// Non-template so the type-algebra candidate builder is compiled once instead
+// of once per coder template (keeps CodeModule within GCC's inlining budget).
+int BuildDeferredResultTypeCandidates(
+    const Tracker& tracker, const uint32_t* id_operands,
+    const uint32_t* operand_types, int num_ids, int total_ids,
+    const uint32_t* inst_words, uint32_t word_count,
+    uint32_t first_literal_word, uint32_t num_literal_ints, uint32_t* cand,
+    int limit) {
+  int count = 0;
+  const auto add = [cand, &count, limit](uint32_t type) {
+    if (type == 0 || count >= limit) {
+      return;
+    }
+    for (int i = 0; i < count; ++i) {
+      if (cand[i] == type) {
+        return;
+      }
+    }
+    cand[count++] = type;
+  };
+
+  if (num_ids == 0) {
+    add(tracker.CurrentFunctionParamType());
+    add(tracker.bool_type_id());
+    return count;
+  }
+
+  const Tracker::IdInfo* type0_info = nullptr;
+  bool type0_fetched = false;
+  const auto get_type0 = [&]() -> const Tracker::IdInfo* {
+    if (!type0_fetched) {
+      type0_fetched = true;
+      if (operand_types[0] != 0) {
+        const Tracker::IdInfo* info = tracker.Find(operand_types[0]);
+        if (info && info->kind == Tracker::IdKind::kType) {
+          type0_info = info;
+        }
+      }
+    }
+    return type0_info;
+  };
+
+  // Shape-specific derivations with literal indices (OpCompositeExtract and
+  // OpVectorShuffle) run first so their exact result hits candidate 0.
+  if (num_literal_ints >= 1) {
+    if (total_ids == 1 && first_literal_word + num_literal_ints <= word_count) {
+      const Tracker::IdInfo* t0 = get_type0();
+      if (t0 != nullptr) {
+        if (num_literal_ints == 1) {
+          if (t0->type_class == Tracker::TypeClass::kStruct) {
+            add(tracker.StructMemberType(*t0, inst_words[first_literal_word]));
+          } else if (t0->type_class == Tracker::TypeClass::kVector ||
+                     t0->type_class == Tracker::TypeClass::kMatrix ||
+                     t0->type_class == Tracker::TypeClass::kArray ||
+                     t0->type_class == Tracker::TypeClass::kRuntimeArray) {
+            add(t0->element_type);
+          }
+        } else {
+          add(tracker.WalkCompositeByLiterals(
+              operand_types[0], inst_words + first_literal_word,
+              num_literal_ints));
+        }
+      }
+    } else if (total_ids == 2 && num_literal_ints >= 2) {
+      const Tracker::IdInfo* t0 = get_type0();
+      if (t0 != nullptr && t0->type_class == Tracker::TypeClass::kVector) {
+        add(tracker.VectorTypeOf(t0->element_type, num_literal_ints));
+      }
+    }
+    if (count >= limit) {
+      return count;
+    }
+  }
+
+  // Operand 0: its Result Type first (keeps the decode choice-0 fast path
+  // hash-lookup-free for arithmetic/value ops), then access-chain pointer walk
+  // (when operand 0 is a pointer with ID indices) and element type (or
+  // ElementTypeOf(id) when operand 0 is itself a type ID, e.g. OpFunction).
+  if (operand_types[0] != 0) {
+    add(operand_types[0]);
+    if (count >= limit) {
+      return count;
+    }
+    const Tracker::IdInfo* t0 = get_type0();
+    if (t0 != nullptr) {
+      if (total_ids >= 2 && num_literal_ints == 0 &&
+          t0->type_class == Tracker::TypeClass::kPointer &&
+          word_count == static_cast<uint32_t>(total_ids) + 3u) {
+        const uint32_t leaf = tracker.WalkCompositeByIds(
+            t0->element_type, inst_words + 4, word_count - 4u);
+        if (leaf != 0) {
+          add(tracker.PointerTypeOf(t0->width, leaf));
+          if (count >= limit) {
+            return count;
+          }
+        }
+      }
+      add(t0->element_type);
+      if (count >= limit) {
+        return count;
+      }
+      // Image / SampledImage result types.
+      if (t0->type_class == Tracker::TypeClass::kSampledImage) {
+        const uint32_t samp = tracker.ElementTypeOf(t0->element_type);
+        if (samp != 0) {
+          add(tracker.VectorTypeOf(samp, 4));
+          add(samp);
+        }
+      } else if (t0->type_class == Tracker::TypeClass::kImage) {
+        if (total_ids == 2 && num_literal_ints == 0) {
+          add(Tracker::SampledImageTypeOf(*t0));
+        }
+        const uint32_t samp = t0->element_type;
+        if (samp != 0) {
+          add(tracker.VectorTypeOf(samp, 4));
+        }
+      } else if (total_ids == 2 && num_ids >= 2 && num_literal_ints == 0 &&
+                 operand_types[1] != 0 &&
+                 (t0->type_class == Tracker::TypeClass::kVector ||
+                  t0->type_class == Tracker::TypeClass::kMatrix)) {
+        // OpVectorTimesMatrix / OpMatrixTimesMatrix.
+        const Tracker::IdInfo* t1 = tracker.Find(operand_types[1]);
+        if (t1 && t1->kind == Tracker::IdKind::kType &&
+            t1->type_class == Tracker::TypeClass::kMatrix) {
+          if (t0->type_class == Tracker::TypeClass::kVector) {
+            add(tracker.VectorTypeOf(t0->element_type, t1->width));
+          } else {
+            add(tracker.MatrixTypeOf(t0->element_type, t1->width));
+          }
+        }
+      } else if (total_ids == 1 && num_literal_ints == 0) {
+        // Unary scalar / vector conversions (OpBitcast, OpConvert*, Op*Convert).
+        const Tracker::IdInfo* base = nullptr;
+        uint32_t vec_len = 0;
+        if (t0->type_class == Tracker::TypeClass::kFloat ||
+            t0->type_class == Tracker::TypeClass::kInt) {
+          base = t0;
+        } else if (t0->type_class == Tracker::TypeClass::kVector) {
+          const Tracker::IdInfo* elem = tracker.Find(t0->element_type);
+          if (elem && elem->kind == Tracker::IdKind::kType &&
+              (elem->type_class == Tracker::TypeClass::kFloat ||
+               elem->type_class == Tracker::TypeClass::kInt)) {
+            base = elem;
+            vec_len = t0->width;
+          }
+        }
+        if (base != nullptr) {
+          const auto add_peer = [&](uint32_t scalar_tid) {
+            if (scalar_tid == 0) {
+              return;
+            }
+            add(vec_len == 0 ? scalar_tid
+                             : tracker.VectorTypeOf(scalar_tid, vec_len));
+          };
+          const uint32_t w = base->width;
+          if (base->type_class == Tracker::TypeClass::kInt) {
+            const int is_signed = base->aux_flag != 0 ? 1 : 0;
+            add_peer(tracker.ScalarTypeOf(2, w));
+            add_peer(tracker.ScalarTypeOf(1 - is_signed, w));
+            if (w == 32) {
+              add_peer(tracker.ScalarTypeOf(is_signed, 16));
+              add_peer(tracker.ScalarTypeOf(is_signed, 64));
+            } else {
+              add_peer(tracker.ScalarTypeOf(is_signed, 32));
+            }
+          } else {
+            add_peer(tracker.ScalarTypeOf(1, w));
+            add_peer(tracker.ScalarTypeOf(0, w));
+            if (w == 32) {
+              add_peer(tracker.ScalarTypeOf(2, 16));
+              add_peer(tracker.ScalarTypeOf(2, 64));
+            } else {
+              add_peer(tracker.ScalarTypeOf(2, 32));
+            }
+          }
+        }
+      }
+    }
+  } else {
+    add(tracker.ElementTypeOf(id_operands[0]));
+  }
+
+  // Remaining ID operands (i >= 1).
+  for (int i = 1; i < num_ids && count < limit; ++i) {
+    const uint32_t type = operand_types[i];
+    if (type != 0) {
+      add(type);
+      if (count < limit) {
+        add(tracker.ElementTypeOf(type));
+      }
+    } else {
+      add(tracker.ElementTypeOf(id_operands[i]));
+    }
+  }
+
+  // Composite construction (vector, vector concat, matrix, array, struct).
+  if (count < limit && num_literal_ints == 0) {
+    if (total_ids >= 2) {
+      const Tracker::IdInfo* t0 = get_type0();
+      if (t0 != nullptr) {
+        const uint32_t type0 = operand_types[0];
+        const uint32_t n = static_cast<uint32_t>(total_ids);
+        const Tracker::TypeClass tc = t0->type_class;
+        if (tc == Tracker::TypeClass::kFloat ||
+            tc == Tracker::TypeClass::kInt ||
+            tc == Tracker::TypeClass::kBool) {
+          add(tracker.VectorTypeOf(type0, n));
+          if (total_ids == num_ids) {
+            uint32_t total_comp = 1;
+            bool has_vec = false;
+            bool ok = true;
+            for (int i = 1; i < num_ids && ok; ++i) {
+              const uint32_t ti = operand_types[i];
+              if (ti == type0) {
+                ++total_comp;
+              } else {
+                const Tracker::IdInfo* inf = tracker.Find(ti);
+                if (inf && inf->kind == Tracker::IdKind::kType &&
+                    inf->type_class == Tracker::TypeClass::kVector &&
+                    inf->element_type == type0) {
+                  total_comp += inf->width;
+                  has_vec = true;
+                } else {
+                  ok = false;
+                }
+              }
+            }
+            if (ok && has_vec) {
+              add(tracker.VectorTypeOf(type0, total_comp));
+            }
+          }
+          add(tracker.ArrayTypeOf(type0, n));
+        } else if (tc == Tracker::TypeClass::kVector) {
+          add(tracker.MatrixTypeOf(type0, n));
+          if (total_ids == num_ids) {
+            const uint32_t elem = t0->element_type;
+            uint32_t total_comp = t0->width;
+            bool ok = elem != 0 && total_comp > 0;
+            for (int i = 1; i < num_ids && ok; ++i) {
+              const uint32_t ti = operand_types[i];
+              if (ti == elem) {
+                ++total_comp;
+              } else {
+                const Tracker::IdInfo* inf = tracker.Find(ti);
+                if (inf && inf->kind == Tracker::IdKind::kType &&
+                    inf->type_class == Tracker::TypeClass::kVector &&
+                    inf->element_type == elem) {
+                  total_comp += inf->width;
+                } else {
+                  ok = false;
+                }
+              }
+            }
+            if (ok && total_comp != t0->width) {
+              add(tracker.VectorTypeOf(elem, total_comp));
+            }
+          }
+          add(tracker.ArrayTypeOf(type0, n));
+        } else {
+          add(tracker.ArrayTypeOf(type0, n));
+        }
+      }
+    }
+    if (count < limit && total_ids >= 1 && total_ids == num_ids &&
+        operand_types[0] != 0) {
+      add(tracker.StructTypeOf(operand_types, static_cast<uint32_t>(num_ids)));
+    }
+  }
+
+  // Comparisons and relational ops -> matching bvecN or scalar bool.
+  if (count < limit) {
+    const uint32_t bool_tid = tracker.bool_type_id();
+    if (bool_tid != 0) {
+      const Tracker::IdInfo* t0 = get_type0();
+      if (t0 != nullptr && t0->type_class == Tracker::TypeClass::kVector) {
+        add(tracker.VectorTypeOf(bool_tid, t0->width));
+        add(bool_tid);
+      } else {
+        add(bool_tid);
+      }
+    }
+  }
+  return count;
+}
 
 template <class Bits>
 uint32_t CodeDeferredResultType(Bits& bits, ModelState& model,
                                 const InstructionDesc* desc,
                                 uint16_t inst_index,
+                                const uint32_t* id_operands,
                                 const uint32_t* operand_types,
-                                int num_ids, uint32_t hint) {
-  // Builds the candidate list, stopping once it has `limit` entries: the
-  // decoder only needs candidates up to the index it decoded (none on a
-  // miss), so it skips most of the per-operand type lookups.
+                                int num_ids, int total_ids,
+                                const uint32_t* inst_words, uint32_t word_count,
+                                uint32_t first_literal_word,
+                                uint32_t num_literal_ints, uint32_t hint) {
   uint32_t cand[kMaxResultTypeCandidates];
-  const auto build = [&](int limit) {
-    int count = 0;
-    const auto add = [&cand, &count](uint32_t type) {
-      if (type == 0) {
-        return;
-      }
-      for (int i = 0; i < count; ++i) {
-        if (cand[i] == type) {
-          return;
-        }
-      }
-      cand[count++] = type;
-    };
-    for (int i = 0; i < num_ids && count < limit; ++i) {
-      const uint32_t type = operand_types[i];
-      add(type);
-      if (count < limit) {
-        add(model.tracker.ElementTypeOf(type));
-      }
-    }
-    return count;
-  };
   uint32_t choice = kMaxResultTypeCandidates;
   if constexpr (Bits::kEncoding) {
-    const int count = build(kMaxResultTypeCandidates);
-    for (int i = 0; i < count; ++i) {
-      if (cand[i] == hint) {
-        choice = static_cast<uint32_t>(i);
-        break;
+    if (num_ids > 0 && num_literal_ints == 0 && operand_types[0] != 0 &&
+        operand_types[0] == hint) {
+      cand[0] = hint;
+      choice = 0;
+    } else {
+      const int count = BuildDeferredResultTypeCandidates(
+          model.tracker, id_operands, operand_types, num_ids, total_ids,
+          inst_words, word_count, first_literal_word, num_literal_ints, cand,
+          kMaxResultTypeCandidates);
+      for (int i = 0; i < count; ++i) {
+        if (cand[i] == hint) {
+          choice = static_cast<uint32_t>(i);
+          break;
+        }
       }
     }
   }
@@ -1292,11 +1570,26 @@ uint32_t CodeDeferredResultType(Bits& bits, ModelState& model,
   // instructions but was slower in wall time and cost 0.25% ratio.)
   choice = model.inst_group(inst_index).result_type_choice.CodeValue(bits,
                                                                    choice);
-  if (choice < static_cast<uint32_t>(kMaxResultTypeCandidates) &&
-      (Bits::kEncoding ||
-       build(static_cast<int>(choice) + 1) > static_cast<int>(choice))) {
-    model.tracker.OnResultTypeUse(cand[choice]);
-    return Bits::kEncoding ? hint : cand[choice];
+  if (choice < static_cast<uint32_t>(kMaxResultTypeCandidates)) {
+    if constexpr (Bits::kEncoding) {
+      model.tracker.OnResultTypeUse(cand[choice]);
+      return hint;
+    } else {
+      // Fast path: when there are no literal indices and operand 0 has a known
+      // Result Type, candidate 0 is always operand_types[0] (no hash lookup).
+      if (choice == 0 && num_ids > 0 && num_literal_ints == 0 &&
+          operand_types[0] != 0) {
+        model.tracker.OnResultTypeUse(operand_types[0]);
+        return operand_types[0];
+      }
+      if (BuildDeferredResultTypeCandidates(
+              model.tracker, id_operands, operand_types, num_ids, total_ids,
+              inst_words, word_count, first_literal_word, num_literal_ints,
+              cand, static_cast<int>(choice) + 1) > static_cast<int>(choice)) {
+        model.tracker.OnResultTypeUse(cand[choice]);
+        return cand[choice];
+      }
+    }
   }
   return CodeResultType(bits, model, desc, hint);
 }
@@ -2289,16 +2582,22 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
     bool has_last_enum = false;
     uint32_t last_enum = 0;
     // Result Type is coded after the operands unless operand parsing depends
-    // on it (context-dependent literal widths).
-    const bool defer_result_type = desc != nullptr && !opaque &&
-                                   desc->has_result_type &&
-                                   !HasInstructionFlag(desc, kInstConstantNumber);
+    // on it (context-dependent literal widths) or OpVariable (whose
+    // StorageClass operand is predicted from the pointer Result Type).
+    const bool defer_result_type =
+        desc != nullptr && !opaque && desc->has_result_type &&
+        !HasInstructionFlag(desc, kInstConstantNumber) &&
+        !HasInstructionFlag(desc, kInstVariable);
     bool result_type_deferred = false;
     size_t result_type_body_index = 0;
     uint32_t result_type_hint = 0;
     uint32_t id_operands[8];
     uint32_t id_operand_types[8];
     int num_id_operands = 0;
+    int total_id_operands = 0;
+    uint32_t first_literal_word = 0;
+    uint32_t num_literal_ints = 0;
+    bool literals_contiguous = true;
     while (consumed < operand_words) {
       const uint32_t remaining = operand_words - consumed;
       OperandCursor::Field cursor_field;
@@ -2367,20 +2666,30 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
                 bits, model, inst_index, field, hint0, num_id_operands,
                 num_id_operands > 0 ? id_operand_types[0] : 0u);
             stage_single_word(word);
+            ++total_id_operands;
             if (num_id_operands < 8) {
               id_operand_types[num_id_operands] = model.last_id_operand_type;
               id_operands[num_id_operands++] = word;
             }
             if (desc && desc->opcode == 12 && field.slot == 2) {
-              const Tracker::IdInfo* info = model.tracker.Find(word);
-              current_ext_set = info ? info->ext_set : nullptr;
+              current_ext_set = model.tracker.ExtInstSetOf(word);
               cursor.SetExtInstSet(current_ext_set);
             }
             break;
           }
           case OperandCategory::kValueEnum: {
             stat(kStatValueEnum);
-            const uint32_t word = CodeValueEnum(bits, model, field, hint0);
+            uint32_t word;
+            uint32_t pred_sc = 0;
+            if (HasInstructionFlag(desc, kInstVariable) && field.slot == 2 &&
+                model.tracker.PointerStorageClass(current_result_type,
+                                                  &pred_sc) &&
+                bits.CodeBit(model.var_sc_matches,
+                             Bits::kEncoding && hint0 == pred_sc)) {
+              word = pred_sc;
+            } else {
+              word = CodeValueEnum(bits, model, field, hint0);
+            }
             stage_single_word(word);
             has_last_enum = true;
             last_enum = word;
@@ -2392,6 +2701,15 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
             break;
           case OperandCategory::kLiteralInteger:
             stat(kStatLitInt);
+            if (num_literal_ints == 0) {
+              first_literal_word = static_cast<uint32_t>(inst_words.size());
+              num_literal_ints = 1;
+            } else if (first_literal_word + num_literal_ints ==
+                       static_cast<uint32_t>(inst_words.size())) {
+              ++num_literal_ints;
+            } else {
+              literals_contiguous = false;
+            }
             stage_single_word(CodeLiteralInteger(bits, model, desc, field,
                                                  inst_index, has_last_enum,
                                                  last_enum, hint0));
@@ -2506,8 +2824,10 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
     if (result_type_deferred && inst_words.size() > 1) {
       stat(kStatResultType);
       const uint32_t type = CodeDeferredResultType(
-          bits, model, desc, inst_index, id_operand_types, num_id_operands,
-          result_type_hint);
+          bits, model, desc, inst_index, id_operands, id_operand_types,
+          num_id_operands, total_id_operands, inst_words.data(),
+          static_cast<uint32_t>(inst_words.size()), first_literal_word,
+          literals_contiguous ? num_literal_ints : 0u, result_type_hint);
       inst_words.data()[1] = type;
       io.PatchBodyWord(result_type_body_index, type);
     }

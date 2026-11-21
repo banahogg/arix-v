@@ -1030,6 +1030,298 @@ void AdaptiveIdListSourceTests() {
   }
 }
 
+void TypeAlgebraAndVariableStorageClassTests() {
+  // Direct Tracker type-algebra unit tests.
+  {
+    arixv::Tracker tracker;
+    const auto feed = [&](const std::vector<uint32_t>& words,
+                          uint32_t first_id = 0) {
+      const uint16_t opcode = static_cast<uint16_t>(words[0] & 0xffffu);
+      const arixv::InstructionDesc* desc = arixv::FindInstruction(opcode);
+      const int idx = arixv::FindInstructionIndex(opcode);
+      const uint16_t inst_idx =
+          idx >= 0 ? static_cast<uint16_t>(idx) : arixv::NumCoreInstructions();
+      tracker.OnInstructionStart(opcode, desc,
+                                 static_cast<uint32_t>(words.size()));
+      tracker.OnInstructionEnd(words.data(),
+                               static_cast<uint32_t>(words.size()), inst_idx,
+                               first_id);
+    };
+
+    // Declare scalar, composite, pointer, image, and function types.
+    feed({Op(19, 2), 1});                    // %1 = OpTypeVoid
+    feed({Op(20, 2), 2});                    // %2 = OpTypeBool
+    feed({Op(21, 4), 3, 32, 0});             // %3 = OpTypeInt 32 0 (uint)
+    feed({Op(21, 4), 4, 32, 1});             // %4 = OpTypeInt 32 1 (sint)
+    feed({Op(22, 3), 5, 32});                // %5 = OpTypeFloat 32
+    feed({Op(22, 3), 6, 16});                // %6 = OpTypeFloat 16
+    feed({Op(23, 4), 7, 5, 4}, 5);           // %7 = vec4
+    feed({Op(23, 4), 8, 5, 3}, 5);           // %8 = vec3
+    feed({Op(23, 4), 9, 2, 4}, 2);           // %9 = bvec4
+    feed({Op(24, 4), 10, 7, 3}, 7);          // %10 = mat3x4
+    feed({Op(43, 4), 3, 11, 2});             // %11 = uint(2)
+    feed({Op(43, 4), 4, 12, 0});             // %12 = sint(0)
+    feed({Op(43, 4), 4, 13, 1});             // %13 = sint(1)
+    feed({Op(46, 3), 4, 14});                // %14 = OpConstantNull sint (=0)
+    feed({Op(43, 4), 5, 15, 0x3f800000u});   // %15 = float(1.0)
+    feed({Op(28, 4), 16, 10, 11}, 10);       // %16 = mat3x4[2]
+    feed({Op(30, 4), 17, 5, 16}, 5);         // %17 = struct { float, mat3x4[2] }
+    feed({Op(32, 4), 18, 0, 17}, 17);        // %18 = ptr UniformConstant(0) %17
+    feed({Op(32, 4), 19, 7, 5}, 5);          // %19 = ptr Function(7) float
+    feed({Op(25, 9), 20, 5, 1, 0, 0, 0, 1, 0}, 5);  // %20 = OpTypeImage float
+    feed({Op(27, 3), 21, 20}, 20);           // %21 = OpTypeSampledImage %20
+    feed({Op(33, 5), 22, 5, 3, 7}, 5);       // %22 = OpTypeFunction float(uint, vec4)
+
+    assert(tracker.bool_type_id() == 2);
+    assert(tracker.ScalarTypeOf(0, 32) == 3);
+    assert(tracker.ScalarTypeOf(1, 32) == 4);
+    assert(tracker.ScalarTypeOf(2, 32) == 5);
+    assert(tracker.ScalarTypeOf(2, 16) == 6);
+    assert(tracker.ScalarTypeOf(2, 64) == 0);
+
+    uint32_t sc = 99;
+    assert(tracker.PointerStorageClass(18, &sc) && sc == 0);
+    assert(tracker.PointerStorageClass(19, &sc) && sc == 7);
+    assert(!tracker.PointerStorageClass(17, &sc));
+    assert(!tracker.PointerStorageClass(999, &sc));
+
+    uint32_t cv = 99;
+    assert(tracker.ConstantIntValue(11, &cv) && cv == 2);
+    assert(tracker.ConstantIntValue(14, &cv) && cv == 0);
+    assert(!tracker.ConstantIntValue(15, &cv));  // float constant
+
+    assert(tracker.PointerTypeOf(0, 17) == 18);
+    assert(tracker.PointerTypeOf(7, 5) == 19);
+    assert(tracker.PointerTypeOf(7, 17) == 0);
+    assert(tracker.VectorTypeOf(5, 4) == 7);
+    assert(tracker.VectorTypeOf(2, 4) == 9);
+    assert(tracker.MatrixTypeOf(7, 3) == 10);
+    assert(tracker.ArrayTypeOf(10, 2) == 16);
+    assert(arixv::Tracker::SampledImageTypeOf(*tracker.Find(20)) == 21);
+
+    const uint32_t smembers[2] = {5, 16};
+    assert(tracker.StructTypeOf(smembers, 2) == 17);
+    const uint32_t swrong[2] = {16, 5};
+    assert(tracker.StructTypeOf(swrong, 2) == 0);
+
+    // Nested composite walk: struct{float, mat3x4[2]} -> [1]=mat3x4[2] ->
+    // [dyn]=mat3x4 -> [dyn]=vec4 -> [dyn]=float.
+    const uint32_t id_path[4] = {13, 999, 999, 999};
+    assert(tracker.WalkCompositeByIds(17, id_path, 1) == 16);
+    assert(tracker.WalkCompositeByIds(17, id_path, 2) == 10);
+    assert(tracker.WalkCompositeByIds(17, id_path, 3) == 7);
+    assert(tracker.WalkCompositeByIds(17, id_path, 4) == 5);
+    // Out-of-range struct index (2 >= 2) and non-constant struct index (999).
+    const uint32_t bad_idx1[1] = {11};
+    const uint32_t bad_idx2[1] = {999};
+    assert(tracker.WalkCompositeByIds(17, bad_idx1, 1) == 0);
+    assert(tracker.WalkCompositeByIds(17, bad_idx2, 1) == 0);
+    // OpConstantNull int=0 selects member 0 (float).
+    const uint32_t null_idx[1] = {14};
+    assert(tracker.WalkCompositeByIds(17, null_idx, 1) == 5);
+
+    const uint32_t lit_path[4] = {1, 0, 2, 3};
+    assert(tracker.WalkCompositeByLiterals(17, lit_path, 1) == 16);
+    assert(tracker.WalkCompositeByLiterals(17, lit_path, 2) == 10);
+    assert(tracker.WalkCompositeByLiterals(17, lit_path, 3) == 7);
+    assert(tracker.WalkCompositeByLiterals(17, lit_path, 4) == 5);
+    const uint32_t bad_lit[1] = {2};
+    assert(tracker.WalkCompositeByLiterals(17, bad_lit, 1) == 0);
+
+    // Function parameter tracking: OpFunction -> params 0, 1 -> extra -> OpLabel.
+    assert(tracker.CurrentFunctionParamType() == 0);
+    feed({Op(54, 5), 5, 30, 0, 22}, 22);     // OpFunction %5 %30 None %22
+    assert(tracker.CurrentFunctionParamType() == 3);
+    feed({Op(55, 3), 3, 31});                // param 0
+    assert(tracker.CurrentFunctionParamType() == 7);
+    feed({Op(55, 3), 7, 32});                // param 1
+    assert(tracker.CurrentFunctionParamType() == 0);
+    feed({Op(55, 3), 5, 33});                // extra hostile param
+    assert(tracker.CurrentFunctionParamType() == 0);
+    feed({Op(248, 2), 34});                  // OpLabel clears header state
+    assert(tracker.CurrentFunctionParamType() == 0);
+
+    // Cyclic struct & depth > 32 must terminate cleanly.
+    feed({Op(30, 3), 40, 40}, 40);           // %40 = OpTypeStruct %40
+    const uint32_t cyc_ids[4] = {12, 12, 12, 12};
+    assert(tracker.WalkCompositeByIds(40, cyc_ids, 4) == 40);
+    std::vector<uint32_t> deep_lits(40, 0u);
+    assert(tracker.WalkCompositeByLiterals(40, deep_lits.data(), 40) == 0);
+  }
+
+  // Full valid SPIR-V module exercising B4, B5, and every A2 rule.
+  {
+    std::vector<uint32_t> body = {
+        Op(17, 2), 1,                             // OpCapability Shader
+        Op(14, 3), 0, 1,                          // OpMemoryModel Logical GLSL450
+        Op(19, 2), 1,                             // %1 = void
+        Op(20, 2), 2,                             // %2 = bool
+        Op(21, 4), 3, 32, 0,                      // %3 = uint32
+        Op(21, 4), 4, 32, 1,                      // %4 = sint32
+        Op(21, 4), 5, 16, 1,                      // %5 = sint16
+        Op(22, 3), 6, 32,                         // %6 = float32
+        Op(22, 3), 7, 16,                         // %7 = float16
+        Op(23, 4), 8, 6, 2,                       // %8 = vec2
+        Op(23, 4), 9, 6, 3,                       // %9 = vec3
+        Op(23, 4), 10, 6, 4,                      // %10 = vec4
+        Op(23, 4), 11, 3, 4,                      // %11 = uvec4
+        Op(23, 4), 12, 4, 4,                      // %12 = ivec4
+        Op(23, 4), 13, 2, 4,                      // %13 = bvec4
+        Op(24, 4), 14, 10, 3,                     // %14 = mat3x4
+        Op(24, 4), 15, 9, 2,                      // %15 = mat2x3
+        Op(24, 4), 16, 10, 2,                     // %16 = mat2x4
+        Op(43, 4), 3, 17, 2,                      // %17 = uint(2)
+        Op(28, 4), 18, 14, 17,                    // %18 = mat3x4[2]
+        Op(29, 3), 19, 10,                        // %19 = runtime array vec4
+        Op(30, 5), 20, 6, 18, 19,                 // %20 = struct { float, mat3x4[2], vec4[] }
+        Op(30, 4), 21, 6, 3,                      // %21 = struct { float, uint }
+        Op(32, 4), 22, 2, 20,                     // %22 = ptr Uniform %20
+        Op(32, 4), 23, 2, 14,                     // %23 = ptr Uniform mat3x4
+        Op(32, 4), 24, 2, 10,                     // %24 = ptr Uniform vec4
+        Op(32, 4), 25, 2, 6,                      // %25 = ptr Uniform float
+        Op(32, 4), 26, 7, 6,                      // %26 = ptr Function float
+        Op(25, 9), 27, 6, 1, 0, 0, 0, 1, 0,       // %27 = OpTypeImage float 2D
+        Op(26, 2), 28,                            // %28 = OpTypeSampler
+        Op(27, 3), 29, 27,                        // %29 = OpTypeSampledImage %27
+        Op(32, 4), 30, 0, 27,                     // %30 = ptr UniformConstant image
+        Op(32, 4), 31, 0, 28,                     // %31 = ptr UniformConstant sampler
+        Op(33, 6), 32, 10, 3, 6, 10,              // %32 = fn vec4(uint, float, vec4)
+        Op(43, 4), 4, 33, 0,                      // %33 = sint(0)
+        Op(43, 4), 4, 34, 1,                      // %34 = sint(1)
+        Op(43, 4), 4, 35, 2,                      // %35 = sint(2)
+        Op(43, 4), 6, 36, 0x3f800000u,            // %36 = float(1.0)
+        Op(41, 3), 2, 37,                         // %37 = OpConstantTrue
+        Op(42, 3), 2, 38,                         // %38 = OpConstantFalse
+        Op(49, 3), 2, 39,                         // %39 = OpSpecConstantFalse
+        Op(46, 3), 4, 40,                         // %40 = OpConstantNull sint
+        Op(44, 7), 10, 41, 36, 36, 36, 36,        // %41 = OpConstantComposite vec4
+        Op(44, 5), 21, 42, 36, 17,                // %42 = OpConstantComposite struct{float,uint}
+        // B4: canonical OpVariables (UniformConstant=0, Uniform=2, Function=7).
+        Op(59, 4), 22, 43, 2,                     // %43 = OpVariable %22 Uniform
+        Op(59, 4), 30, 44, 0,                     // %44 = OpVariable %30 UniformConstant
+        Op(59, 4), 31, 45, 0,                     // %45 = OpVariable %31 UniformConstant
+        // B5: OpFunction return type from OpTypeFunction %32 -> vec4 (%10).
+        Op(54, 5), 10, 46, 0, 32,                 // %46 = OpFunction %10 None %32
+        // A2: OpFunctionParameter (uint, float, vec4).
+        Op(55, 3), 3, 47,                         // %47 = param 0 (uint)
+        Op(55, 3), 6, 48,                         // %48 = param 1 (float)
+        Op(55, 3), 10, 49,                        // %49 = param 2 (vec4)
+        Op(248, 2), 50,                           // %50 = OpLabel
+        Op(59, 5), 26, 51, 7, 36,                 // %51 = OpVariable Function w/ init
+        // A2: OpAccessChain & OpInBoundsAccessChain (struct -> array -> mat -> vec -> float).
+        Op(65, 6), 23, 52, 43, 34, 47,            // ptr mat3x4 (dynamic array idx)
+        Op(65, 8), 25, 53, 43, 34, 47, 33, 34,    // ptr float
+        Op(66, 6), 24, 54, 43, 35, 47,            // OpInBoundsAccessChain runtime array -> ptr vec4
+        Op(65, 5), 25, 55, 43, 40,                // OpConstantNull idx 0 -> ptr float
+        Op(61, 4), 14, 56, 52,                    // %56 = OpLoad mat3x4
+        Op(61, 4), 6, 57, 53,                     // %57 = OpLoad float
+        // A2: OpCompositeExtract (1-level and nested).
+        Op(81, 5), 10, 58, 56, 0,                 // mat3x4 -> vec4
+        Op(81, 6), 6, 59, 56, 1, 2,               // mat3x4 -> float
+        Op(81, 5), 3, 60, 42, 1,                  // struct{float,uint} -> uint
+        // A2: OpVectorShuffle (vec4 -> vec2, vec4 -> vec3, vec4 -> vec4).
+        Op(79, 7), 8, 61, 49, 58, 0, 1,           // vec2
+        Op(79, 8), 9, 62, 49, 58, 0, 1, 2,        // vec3
+        Op(79, 9), 10, 63, 49, 58, 3, 2, 1, 0,    // vec4
+        // A2: OpCompositeConstruct (vec, vec concat, mat, array, struct).
+        Op(80, 6), 9, 64, 48, 57, 36,             // vec3 from 3 floats
+        Op(80, 6), 10, 65, 61, 48, 57,            // vec4 from vec2 + float + float
+        Op(80, 5), 10, 66, 48, 64,                // vec4 from float + vec3
+        Op(80, 6), 14, 67, 49, 58, 65,            // mat3x4 from 3 vec4s
+        Op(80, 5), 15, 68, 62, 64,                // mat2x3 from 2 vec3s
+        Op(80, 5), 18, 69, 56, 67,                // mat3x4[2] from 2 mat3x4s
+        Op(80, 5), 21, 70, 57, 60,                // struct{float,uint}
+        // A2: OpVectorTimesMatrix & OpMatrixTimesMatrix.
+        Op(144, 5), 9, 71, 49, 56,                // vec4 * mat3x4 -> vec3
+        Op(146, 5), 16, 72, 56, 68,               // mat3x4 * mat2x3 -> mat2x4
+        // A2: Comparisons -> bool & bvec4.
+        Op(184, 5), 2, 73, 48, 57,                // OpFOrdLessThan float -> bool
+        Op(184, 5), 13, 74, 49, 58,               // OpFOrdLessThan vec4 -> bvec4
+        Op(154, 4), 2, 75, 74,                    // OpAny bvec4 -> bool
+        // A2: Scalar & vector conversions.
+        Op(124, 4), 3, 76, 57,                    // OpBitcast float -> uint
+        Op(124, 4), 6, 77, 76,                    // OpBitcast uint -> float
+        Op(124, 4), 11, 78, 49,                   // OpBitcast vec4 -> uvec4
+        Op(124, 4), 12, 79, 78,                   // OpBitcast uvec4 -> ivec4
+        Op(111, 4), 6, 80, 34,                    // OpConvertSToF sint -> float
+        Op(112, 4), 6, 81, 47,                    // OpConvertUToF uint -> float
+        Op(110, 4), 4, 82, 80,                    // OpConvertFToS float -> sint
+        Op(109, 4), 3, 83, 81,                    // OpConvertFToU float -> uint
+        Op(115, 4), 7, 84, 80,                    // OpFConvert f32 -> f16
+        Op(115, 4), 6, 85, 84,                    // OpFConvert f16 -> f32
+        Op(114, 4), 5, 86, 82,                    // OpSConvert i32 -> i16
+        // A2: Image & SampledImage.
+        Op(61, 4), 27, 87, 44,                    // OpLoad image
+        Op(61, 4), 28, 88, 45,                    // OpLoad sampler
+        Op(86, 5), 29, 89, 87, 88,                // OpSampledImage -> %29
+        Op(87, 5), 10, 90, 89, 61,                // OpImageSampleImplicitLod -> vec4
+        Op(90, 6), 6, 91, 89, 61, 57,             // OpImageSampleDrefImplicitLod -> float
+        Op(95, 5), 10, 92, 87, 61,                // OpImageFetch -> vec4
+        Op(254, 2), 90,                           // OpReturnValue
+        Op(56, 1),                                // OpFunctionEnd
+    };
+    RoundTrip(Module(body, 0x00010300u, 0, 93), true, arixv::kModeSpirv);
+  }
+
+  // Hostile / non-canonical round-trip: mismatched OpVariable StorageClass,
+  // non-pointer OpVariable ResultType, out-of-range/missing indices, cyclic
+  // types, huge struct (> kMaxMemberTypes), non-canonical ResultTypes, and
+  // union-member redefinition (OpExtInstImport <-> OpTypeStruct <-> OpTypeFunction).
+  {
+    std::vector<uint32_t> body = {
+        Op(19, 2), 1,                             // %1 = void
+        Op(21, 4), 2, 32, 0,                      // %2 = uint32
+        Op(22, 3), 3, 32,                         // %3 = float32
+        Op(32, 4), 4, 7, 3,                       // %4 = ptr Function(7) float
+        Op(59, 4), 4, 5, 2,                       // B4 MISMATCH: ptr Function, SC Uniform(2)
+        Op(59, 4), 3, 6, 7,                       // B4 NON-PTR: ResultType is float, SC Function
+        Op(59, 4), 999, 7, 1,                     // B4 UNKNOWN: undeclared ResultType
+        // Cyclic struct & pointer.
+        Op(30, 3), 8, 8,                          // %8 = OpTypeStruct %8
+        Op(32, 4), 9, 7, 8,                       // %9 = ptr Function %8
+        Op(43, 4), 2, 10, 0,                      // %10 = uint(0)
+        Op(43, 4), 2, 11, 99,                     // %11 = uint(99) out of range
+        Op(59, 4), 9, 12, 7,                      // %12 = var ptr %8
+        // Non-canonical OpAccessChain (wrong ResultType %1, out-of-range idx, deep cyclic walk).
+        Op(65, 5), 1, 13, 12, 11,
+        Op(65, 44), 1, 14, 12,
+        10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+        10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+        10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+        10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+        // Non-canonical OpCompositeExtract (out-of-range literal, deep cyclic walk).
+        Op(81, 5), 1, 15, 12, 500,
+        Op(81, 44), 1, 16, 12,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        // Union-member redefinition: OpExtInstImport -> OpTypeStruct -> OpTypeFunction.
+        Op(11, 6), 20,
+    };
+    AppendStringWords("GLSL.std.450", body);
+    body.insert(body.end(), {
+        Op(30, 4), 20, 2, 3,                      // redefine %20 as struct
+        Op(33, 4), 20, 1, 3,                      // redefine %20 as fn type
+        Op(54, 5), 1, 21, 0, 20,                  // OpFunction using %20
+        Op(55, 3), 2, 22,                         // param 0 non-canonical type
+        Op(55, 3), 3, 23,                         // extra param past arity
+        Op(56, 1),
+    });
+    // Huge struct with 5000 members (> kMaxMemberTypes = 4096).
+    body.push_back(Op(30, 5002));
+    body.push_back(24);
+    for (uint32_t i = 0; i < 5000; ++i) {
+      body.push_back((i & 1u) ? 3u : 2u);
+    }
+    body.insert(body.end(), {
+        Op(81, 5), 2, 25, 24, 10,                 // within cap
+        Op(81, 5), 3, 26, 24, 4999,               // past cap -> safe fallback
+    });
+    RoundTrip(Module(body, 0x00010300u, 0, 1000), true, arixv::kModeSpirv);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1043,6 +1335,7 @@ int main() {
   KindRecencyListTests();
   ColdStartPriorAndBoundaryTests();
   AdaptiveIdListSourceTests();
+  TypeAlgebraAndVariableStorageClassTests();
   MutatedCorpusRoundTrips();
   return 0;
 }

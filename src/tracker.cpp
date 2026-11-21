@@ -306,6 +306,149 @@ uint32_t Tracker::TypeWidth(uint32_t type_id) const {
              : 0;
 }
 
+void Tracker::RecordDerivedType(std::vector<DerivedTypeEntry>& table,
+                                uint32_t key_a, uint32_t key_b,
+                                uint32_t type_id) {
+  if (table.size() >= kMaxDerivedTypeEntries) {
+    return;
+  }
+  for (DerivedTypeEntry& entry : table) {
+    if (entry.key_a == key_a && entry.key_b == key_b) {
+      entry.type_id = type_id;
+      return;
+    }
+  }
+  table.push_back(DerivedTypeEntry{key_a, key_b, type_id});
+}
+
+uint32_t Tracker::LookupDerivedType(const std::vector<DerivedTypeEntry>& table,
+                                    uint32_t key_a, uint32_t key_b) {
+  for (const DerivedTypeEntry& entry : table) {
+    if (entry.key_a == key_a && entry.key_b == key_b) {
+      return entry.type_id;
+    }
+  }
+  return 0;
+}
+
+uint32_t Tracker::PointerTypeOf(uint32_t storage_class,
+                                uint32_t pointee_type) const {
+  return pointee_type != 0
+             ? LookupDerivedType(ptr_types_, storage_class, pointee_type)
+             : 0;
+}
+
+uint32_t Tracker::VectorTypeOf(uint32_t elem_type, uint32_t count) const {
+  return elem_type != 0 ? LookupDerivedType(vec_types_, elem_type, count) : 0;
+}
+
+uint32_t Tracker::MatrixTypeOf(uint32_t col_type, uint32_t count) const {
+  return col_type != 0 ? LookupDerivedType(mat_types_, col_type, count) : 0;
+}
+
+uint32_t Tracker::ArrayTypeOf(uint32_t elem_type, uint32_t length) const {
+  return elem_type != 0 ? LookupDerivedType(arr_types_, elem_type, length) : 0;
+}
+
+uint32_t Tracker::StructTypeOf(const uint32_t* member_types,
+                               uint32_t count) const {
+  if (count == 0) {
+    return 0;
+  }
+  for (size_t i = struct_types_.size(); i > 0; --i) {
+    const uint32_t sid = struct_types_[i - 1];
+    const IdInfo* info = Find(sid);
+    if (!info || info->kind != IdKind::kType ||
+        info->type_class != TypeClass::kStruct ||
+        info->members.count != count) {
+      continue;
+    }
+    const uint32_t* stored = member_types_.data() + info->members.offset;
+    bool match = true;
+    for (uint32_t k = 0; k < count; ++k) {
+      if (stored[k] != member_types[k]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      return sid;
+    }
+  }
+  return 0;
+}
+
+uint32_t Tracker::WalkCompositeByIds(uint32_t type_id,
+                                     const uint32_t* index_ids,
+                                     uint32_t count) const {
+  constexpr uint32_t kMaxWalkDepth = 32;
+  if (type_id == 0 || count == 0 || count > kMaxWalkDepth) {
+    return 0;
+  }
+  uint32_t cur = type_id;
+  for (uint32_t i = 0; i < count; ++i) {
+    const IdInfo* info = Find(cur);
+    if (!info || info->kind != IdKind::kType) {
+      return 0;
+    }
+    switch (info->type_class) {
+      case TypeClass::kStruct: {
+        uint32_t member_index = 0;
+        if (!ConstantIntValue(index_ids[i], &member_index)) {
+          return 0;
+        }
+        cur = StructMemberType(*info, member_index);
+        break;
+      }
+      case TypeClass::kVector:
+      case TypeClass::kMatrix:
+      case TypeClass::kArray:
+      case TypeClass::kRuntimeArray:
+        cur = info->element_type;
+        break;
+      default:
+        return 0;
+    }
+    if (cur == 0) {
+      return 0;
+    }
+  }
+  return cur;
+}
+
+uint32_t Tracker::WalkCompositeByLiterals(uint32_t type_id,
+                                          const uint32_t* indices,
+                                          uint32_t count) const {
+  constexpr uint32_t kMaxWalkDepth = 32;
+  if (type_id == 0 || count == 0 || count > kMaxWalkDepth) {
+    return 0;
+  }
+  uint32_t cur = type_id;
+  for (uint32_t i = 0; i < count; ++i) {
+    const IdInfo* info = Find(cur);
+    if (!info || info->kind != IdKind::kType) {
+      return 0;
+    }
+    switch (info->type_class) {
+      case TypeClass::kStruct:
+        cur = StructMemberType(*info, indices[i]);
+        break;
+      case TypeClass::kVector:
+      case TypeClass::kMatrix:
+      case TypeClass::kArray:
+      case TypeClass::kRuntimeArray:
+        cur = info->element_type;
+        break;
+      default:
+        return 0;
+    }
+    if (cur == 0) {
+      return 0;
+    }
+  }
+  return cur;
+}
+
 void Tracker::OnInstructionStart(uint32_t opcode, const InstructionDesc* desc,
                                  uint32_t /*word_count*/) {
   cur_opcode_ = opcode;
@@ -408,18 +551,103 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
       IdInfo& info = Ensure(result_id);
       info.defined = true;
       info.result_type = desc->has_result_type ? words[1] : 0;
+      info.type_class = TypeClass::kOther;
+      info.aux_flag = 0;
+      info.width = 0;
+      info.members = {0, 0};
+      info.element_type = 0;
       forward_refs_.Remove(result_id);
       uint32_t list = 0;
       if (HasInstructionFlag(desc, kInstDeclaresType)) {
         info.kind = IdKind::kType;
         info.element_type = first_id_operand;
         info.type_class = ToTrackerTypeClass(desc->type_class);
-        info.width =
-            HasInstructionFlag(desc, kInstTypeWidth) ? words[desc->aux_word] : 0;
+        if (HasInstructionFlag(desc, kInstTypeWidth)) {
+          info.width = words[desc->aux_word];
+          const int wb = ScalarWidthBucket(info.width);
+          if (info.type_class == TypeClass::kInt && count >= 4) {
+            const uint8_t is_signed = words[3] != 0 ? 1u : 0u;
+            info.aux_flag = is_signed;
+            if (wb >= 0) {
+              scalar_types_[is_signed][wb] = result_id;
+            }
+          } else if (info.type_class == TypeClass::kFloat && wb >= 0) {
+            scalar_types_[2][wb] = result_id;
+          }
+        } else if (info.type_class == TypeClass::kBool) {
+          bool_type_id_ = result_id;
+        } else if (info.type_class == TypeClass::kPointer && count >= 4) {
+          info.width = words[2];
+          RecordDerivedType(ptr_types_, words[2], words[3], result_id);
+        } else if (info.type_class == TypeClass::kVector && count >= 4) {
+          info.width = words[3];
+          RecordDerivedType(vec_types_, words[2], words[3], result_id);
+        } else if (info.type_class == TypeClass::kMatrix && count >= 4) {
+          info.width = words[3];
+          RecordDerivedType(mat_types_, words[2], words[3], result_id);
+        } else if (info.type_class == TypeClass::kArray && count >= 4) {
+          uint32_t len = 0;
+          if (ConstantIntValue(words[3], &len)) {
+            info.width = len;
+            RecordDerivedType(arr_types_, words[2], len, result_id);
+          }
+        } else if (info.type_class == TypeClass::kSampledImage && count >= 3) {
+          IdInfo* img = ids_.FindMutable(words[2]);
+          if (img && img->kind == IdKind::kType &&
+              img->type_class == TypeClass::kImage) {
+            img->width = result_id;
+          }
+        } else if (info.type_class == TypeClass::kStruct) {
+          const uint32_t num_members = count > 2 ? count - 2 : 0;
+          const size_t avail = member_types_.size() < kMaxMemberTypes
+                                   ? kMaxMemberTypes - member_types_.size()
+                                   : 0;
+          const uint32_t take =
+              static_cast<uint32_t>(std::min<size_t>(num_members, avail));
+          info.members.offset = static_cast<uint32_t>(member_types_.size());
+          info.members.count = take;
+          if (take > 0) {
+            member_types_.insert(member_types_.end(), words + 2,
+                                 words + 2 + take);
+          }
+          if (take == num_members && num_members > 0 &&
+              struct_types_.size() < kMaxDerivedTypeEntries) {
+            struct_types_.push_back(result_id);
+          }
+        } else if (info.type_class == TypeClass::kFunction) {
+          const uint32_t num_params = count > 3 ? count - 3 : 0;
+          const size_t avail = member_types_.size() < kMaxMemberTypes
+                                   ? kMaxMemberTypes - member_types_.size()
+                                   : 0;
+          const uint32_t take =
+              static_cast<uint32_t>(std::min<size_t>(num_params, avail));
+          info.members.offset = static_cast<uint32_t>(member_types_.size());
+          info.members.count = take;
+          if (take > 0) {
+            member_types_.insert(member_types_.end(), words + 3,
+                                 words + 3 + take);
+          }
+        }
         recent_types_.Touch(result_id);
         list = kRecentTypesList;
       } else if (desc->result_bucket == 1) {
         info.kind = IdKind::kConstant;
+        if (HasInstructionFlag(desc, kInstConstantNumber) &&
+            (count == 4 || (count == 5 && words[4] == 0))) {
+          const IdInfo* rtype = Find(words[1]);
+          if (rtype && rtype->kind == IdKind::kType &&
+              rtype->type_class == TypeClass::kInt) {
+            info.aux_flag = 1;
+            info.width = words[3];
+          }
+        } else if (opcode == 46 && count == 3) {
+          const IdInfo* rtype = Find(words[1]);
+          if (rtype && rtype->kind == IdKind::kType &&
+              rtype->type_class == TypeClass::kInt) {
+            info.aux_flag = 1;
+            info.width = 0;
+          }
+        }
       } else if (HasInstructionFlag(desc, kInstVariable)) {
         info.kind = IdKind::kVariable;
         list = KindListFor(IdKind::kVariable);
@@ -450,13 +678,21 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
   if (HasInstructionFlag(desc, kInstFunction)) {
     in_function_ = true;
     in_block_ = false;
+    current_fn_type_ = (desc && count >= 5) ? words[4] : 0;
+    current_fn_param_index_ = 0;
   } else if (HasInstructionFlag(desc, kInstFunctionEnd)) {
     in_function_ = false;
     in_block_ = false;
+    current_fn_type_ = 0;
+    current_fn_param_index_ = 0;
   } else if (HasInstructionFlag(desc, kInstLabel)) {
     in_block_ = true;
+    current_fn_type_ = 0;
+    current_fn_param_index_ = 0;
   } else if (HasInstructionFlag(desc, kInstTerminator)) {
     in_block_ = false;
+  } else if (opcode == 55 && current_fn_type_ != 0) {
+    ++current_fn_param_index_;
   }
 
   prev_opcode_ = static_cast<uint16_t>(opcode);
@@ -481,6 +717,16 @@ void Tracker::Reset() {
   result_runs_.Clear();
   typed_lists_.clear();
   kind_lists_.fill(0);
+  bool_type_id_ = 0;
+  std::memset(scalar_types_, 0, sizeof(scalar_types_));
+  current_fn_type_ = 0;
+  current_fn_param_index_ = 0;
+  member_types_.clear();
+  struct_types_.clear();
+  ptr_types_.clear();
+  vec_types_.clear();
+  mat_types_.clear();
+  arr_types_.clear();
   cur_desc_ = nullptr;
   cur_opcode_ = 0;
 }
