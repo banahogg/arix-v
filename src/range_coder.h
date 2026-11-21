@@ -49,19 +49,47 @@ struct Prob {
   }
 
   void UpdateFromRaw(uint16_t old_state, int bit) {
-    uint16_t count = old_state >> kProbBits;
-    uint16_t v = old_state & kValueMask;
-    int shift = kProbShift;
-    if (count < kPackedSaturation) {
-      ++count;
-      shift = 32 - __builtin_clz(static_cast<unsigned int>(count));
+    uint32_t count = old_state >> kProbBits;
+    uint32_t v = old_state & kValueMask;
+    uint32_t shift;
+    if constexpr (kProbShift == 3 && kPackedSaturation == 3) {
+      shift = 1u + ((count + 1u) >> 1);
+      count += count < 3u ? 1u : 0u;
+    } else {
+      shift = kProbShift;
+      if (count < kPackedSaturation) {
+        ++count;
+        shift = 32u - static_cast<uint32_t>(
+                          __builtin_clz(static_cast<unsigned int>(count)));
+      }
     }
     if (bit == 0) {
-      v = static_cast<uint16_t>(v + ((kProbScale - v) >> shift));
+      v = v + ((kProbScale - v) >> shift);
     } else {
-      v = static_cast<uint16_t>(v - (v >> shift));
+      v = v - (v >> shift);
     }
     state = static_cast<uint16_t>((count << kProbBits) | v);
+  }
+
+  void UpdateFromRawBranchless(uint16_t old_state, int bit) {
+    uint32_t count = old_state >> kProbBits;
+    const uint32_t v = old_state & kValueMask;
+    uint32_t shift;
+    if constexpr (kProbShift == 3 && kPackedSaturation == 3) {
+      shift = 1u + ((count + 1u) >> 1);
+      count += count < 3u ? 1u : 0u;
+    } else {
+      shift = kProbShift;
+      if (count < kPackedSaturation) {
+        ++count;
+        shift = 32u - static_cast<uint32_t>(
+                          __builtin_clz(static_cast<unsigned int>(count)));
+      }
+    }
+    const uint32_t v0 = v + ((kProbScale - v) >> shift);
+    const uint32_t v1 = v - (v >> shift);
+    const uint32_t new_v = bit ? v1 : v0;
+    state = static_cast<uint16_t>((count << kProbBits) | new_v);
   }
 };
 
@@ -112,6 +140,7 @@ struct Prob {
   }
 
   void UpdateFromRaw(uint16_t, int bit) { Update(bit); }
+  void UpdateFromRawBranchless(uint16_t, int bit) { Update(bit); }
 };
 
 #endif
@@ -245,11 +274,8 @@ class RangeDecoder {
 
   int DecodeBitDirect() {
     range_ >>= 1;
-    int bit = 0;
-    if (code_ >= range_) {
-      code_ -= range_;
-      bit = 1;
-    }
+    const int bit = code_ >= range_ ? 1 : 0;
+    code_ -= range_ & -static_cast<uint32_t>(bit);
     Normalize();
     return bit;
   }
@@ -290,18 +316,16 @@ class RangeDecoder {
   }
 
   // Same arithmetic as DecodeBit/Normalize/ReadByte, on local state.
+  // Used for uint mantissa runs (~42% branch mispredict rate), so keep the
+  // code < bound decision and probability update branchless.
   int DecodeBitLocal(State& st, Prob& p) {
     const uint16_t raw = p.raw();
     const uint32_t bound = (st.range >> kProbBits) * Prob::ValueFromRaw(raw);
-    int bit = 0;
-    if (st.code < bound) {
-      st.range = bound;
-    } else {
-      st.code -= bound;
-      st.range -= bound;
-      bit = 1;
-    }
-    p.UpdateFromRaw(raw, bit);
+    const int bit = st.code >= bound ? 1 : 0;
+    const uint32_t mask = -static_cast<uint32_t>(bit);
+    st.code -= bound & mask;
+    st.range = (bound & ~mask) | ((st.range - bound) & mask);
+    p.UpdateFromRawBranchless(raw, bit);
     while (st.range < kRangeTop) {
       st.range <<= 8;
       st.code = (st.code << 8) | Fetch(st.pos);
