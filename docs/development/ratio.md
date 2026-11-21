@@ -377,3 +377,61 @@ Checks: `make test` (including the new prior-table tests), `make asan`,
 3000-iteration fuzz, valgrind memcheck with full leak checking (corpus
 decodes, `arixv_test`, 180 mutated/truncated/overwritten blobs),
 scalar/SIMD cross-check on 108 files, all 1080 corpus files round-trip.
+
+### 16. Per-(instruction, slot) ID hit and rank models (2026-11-20)
+
+Proposed by a separate model's review of ID-operand coding. That review
+reported 873,594 bytes from a prototype patch; this is a reimplementation,
+not the patch. Item 2 already picks an operand's *candidate list* by its
+exact (instruction, slot). The "in this list?" flags and "which rank?" trees
+were still shared per operand position across instructions, by
+`IdCategoryBucket` × `Slot8`. Now each (instruction, slot) gets its own,
+created fresh on first use: `IdSlotModel` holds two flags and two 16-way
+rank trees. The candidates, the escape path and the shared escape models
+are unchanged. All of it is learned per module; no shipped knowledge.
+
+| variant | corpus bytes |
+|---|---|
+| item 7 (311e2dc) | 895,010 |
+| **private flags and both rank trees, from first use (landed)** | **873,594** |
+| shared global-list rank tree | 878,348 |
+| shared rank trees (private flags only) | 884,828 |
+| global-list path fully shared | 883,194 |
+| promoted after 4 uses, copied from the shared models | 878,351 |
+| promoted after 4 uses, fresh | 876,175 |
+| promoted after 16 uses, copied from the shared models | 881,500 |
+
+Every part contributes. "Promote hot slots" (code with the shared models
+first, then switch) loses ratio at every threshold. Starting fresh beats
+starting from the shared statistics, so the shared models were not a
+useful prior for a particular slot.
+
+Train total 0.14251 → 0.13895 (−2.5%), holdout 0.15279 → 0.14929 (−2.3%).
+Mean ratio −0.7% train and −0.7% holdout; median train 0.18112 → 0.18013,
+holdout 0.17991 → 0.17865. `id_ref` entropy 312.0 → 290.8 KB.
+
+**Memory.** Pointers to the slot models in each `InstGroup` (16 × 8 B per
+instruction context) cost more than the models (~37 per decode, 80 B
+each). They also pushed decodes into the next doubled arena block:
++17.0 KB heap per decode and batched faults 0.74 → 1.03. Landed layout:
+16-bit handles (32 B per instruction) into a `ModelState` vector reserved
+for 32 models. Heap 177.5 → 184.1 KB per decode (+6.6 KB); batched faults
+per decode 0.74 → ~0.86 (`faults.sh`: (faults at 21 iterations − at 1) / 20
+in 64-file processes; ±0.05 between runs).
+
+Costs: decode Ir 321.5M → 323.5M (+0.61%). Library +1.3 KB. Wall (8 min
+after boot, load ~1.5, `taskset -c 4`, 12 interleaved rounds): median
+76.79 → 76.44 MiB/s, a median paired difference of −0.77%; noisy, one
+round −4%. The 19-instruction golden vector stays 73 bytes with new
+contents.
+
+Checks: `make test`, `make asan`, 3000-iteration fuzz, valgrind memcheck
+with full leak checking (corpus decodes, `arixv_test`, 180
+mutated/truncated/overwritten blobs), scalar/SIMD cross-check on 108 files,
+all 1080 corpus files round-trip.
+
+Open follow-ups from the same review: a short per-slot history of recent
+IDs (−1.6% more on top, but about 6% slower in its prototype: a speed/ratio
+branch); copying a repeated `OpPhi` parent-label column (small ceiling,
+~1K label operands); predicting an operand's offset from the latest
+result ID (train-only so far, overlaps the history).

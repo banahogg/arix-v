@@ -379,7 +379,21 @@ void DumpStats() {
 // Per-instruction caches: the last ID and last literal seen in each of the
 // 16 operand slots (each guarded by a valid flag) and the last word count.
 // InstGroup{} is the first-touch state.
+// ID-operand hit and rank models for one (instruction, operand slot),
+// created on the slot's first ID. Sharing them per operand position across
+// instructions cost 2.4% of the corpus; starting a private model from the
+// shared one after a few uses was worse than starting it fresh.
+struct IdSlotModel {
+  Prob in_typed;
+  Prob in_list;
+  BitTree<kRankTreeBits> typed_rank;
+  BitTree<kRankTreeBits> rank;
+};
+
 struct InstGroup {
+  // 1 + index into ModelState::id_slots (0 = none yet); see IdSlotModel.
+  // Indices, not pointers: 32 bytes per instruction instead of 128.
+  uint16_t id_slot[16];
   uint32_t last_id[16];
   uint32_t last_id_list[16];  // last_id's type's recency list (valid with it)
   uint32_t last_literal[16];
@@ -503,6 +517,7 @@ struct ModelState {
       }
     }
     value_enums.resize(value_enum_kinds * 16);
+    id_slots.reserve(32);  // the corpus averages ~37 slots per module
     // Grammar cold-start priors for the header (see docs/development/ratio.md
     // item 7): versions the grammar defines, registered tool IDs, and the
     // spec-valid side of the header flags.
@@ -524,6 +539,20 @@ struct ModelState {
   InstGroup& inst_group(uint16_t inst_index) {
     return inst_contexts[inst_index]->group;
   }
+
+  // The (instruction, slot) ID model behind an InstGroup::id_slot entry,
+  // created on first use. A module has far fewer than 65535 such slots
+  // (~875 instructions x 16 slots); past that, slots share the last model.
+  IdSlotModel& IdSlot(uint16_t& handle) {
+    if (handle == 0) {
+      if (id_slots.size() < 0xffffu) {
+        id_slots.emplace_back();
+      }
+      handle = static_cast<uint16_t>(id_slots.size());
+    }
+    return id_slots[handle - 1u];
+  }
+  std::vector<IdSlotModel> id_slots;
 
   Tracker tracker;
   // Result Type of the ID operand CodeIdRef just coded (from its OnIdUse).
@@ -575,12 +604,9 @@ struct ModelState {
   // somewhere, but through only a handful of the 27/29 slots.
   std::vector<ArenaPtr<UintModel>> type_escape;
 
-  std::array<std::array<Prob, 9>, 3> id_in_list{};
   // ID operands are first looked up in the recency list of the type the same
-  // (instruction, slot) took last time (see CodeIdRef).
-  std::array<std::array<Prob, 9>, 3> id_in_typed{};
-  std::array<std::array<BitTree<kRankTreeBits>, 9>, 3> id_typed_rank{};
-  std::array<std::array<BitTree<kRankTreeBits>, 9>, 3> id_rank{};
+  // (instruction, slot) took last time (see CodeIdRef); hit and rank models
+  // are per (instruction, slot) (InstGroup::id_slot).
   std::array<std::array<ArenaPtr<UintModel>, 9>, 3> id_escape{};
 
   // Value-enum contexts are indexed by (value-enum ordinal, slot): only 56 of
@@ -1204,6 +1230,7 @@ uint32_t CodeIdRef(Bits& bits, ModelState& model, uint16_t inst_index,
   const uint32_t slot = Slot8(field.slot);
   InstGroup& group = model.inst_group(inst_index);
   const size_t key = Slot16(field.slot);
+  IdSlotModel& own = model.IdSlot(group.id_slot[key]);
   const bool have_last = group.last_id_valid[key] != 0;
   const uint32_t base = have_last ? group.last_id[key] : model.prev_result_id;
   // First try the recency list of the type this (instruction, slot) took
@@ -1215,8 +1242,8 @@ uint32_t CodeIdRef(Bits& bits, ModelState& model, uint16_t inst_index,
       have_last ? model.tracker.TypedList(group.last_id_list[key]) : nullptr;
   if (typed != nullptr && typed->size() > 0) {
     const int rank = Bits::kEncoding ? typed->Find(hint) : -1;
-    if (bits.CodeBit(model.id_in_typed[bucket][slot], rank >= 0)) {
-      const uint32_t coded_rank = model.id_typed_rank[bucket][slot].CodeValue(
+    if (bits.CodeBit(own.in_typed, rank >= 0)) {
+      const uint32_t coded_rank = own.typed_rank.CodeValue(
           bits, rank >= 0 ? static_cast<uint32_t>(rank) : 0u);
       id = Bits::kEncoding ? hint
            : coded_rank < static_cast<uint32_t>(typed->size())
@@ -1226,8 +1253,7 @@ uint32_t CodeIdRef(Bits& bits, ModelState& model, uint16_t inst_index,
     }
   }
   if (!coded) {
-    id = CodeRankedId(bits, model.id_in_list[bucket][slot],
-                      model.id_rank[bucket][slot], model.arena,
+    id = CodeRankedId(bits, own.in_list, own.rank, model.arena,
                       model.id_escape[bucket][slot],
                       model.tracker.recent_ids(), hint, base);
   }
