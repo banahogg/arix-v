@@ -124,8 +124,9 @@ class Tracker {
     // For a type ID: 1 + index of the recency list of IDs of that type
     // (typed_lists_), or 0 before its first value.
     uint32_t values_list;
-    // For a value ID: its type's values_list, copied at definition so a use
-    // needs no second lookup.
+    // Recency list handle for this ID (its type's values_list, a unified kind
+    // list, or kRecentTypesList for types), copied at definition so a use
+    // needs no second lookup; 0 if none.
     uint32_t type_list;
   };
   static_assert(std::is_trivially_default_constructible_v<IdInfo> &&
@@ -158,12 +159,18 @@ class Tracker {
     const IdInfo* info = Find(id);
     return info ? info->result_type : 0;
   }
+  // Sentinel list handle for IdKind::kType, aliasing recent_types_ instead of
+  // maintaining a duplicate list in typed_lists_.
+  static constexpr uint32_t kRecentTypesList = ~uint32_t{0};
+
   // Recency list number `list` (an IdInfo::type_list / values_list value:
-  // 1-based, 0 = none), most recent first; null for 0. Valid until the next
-  // tracker update.
+  // 1-based, 0 = none, kRecentTypesList = recent_types_), most recent first;
+  // null for 0. Valid until the next tracker update.
   const RecencyList* TypedList(uint32_t list) const {
-    return list != 0 && list <= typed_lists_.size() ? &typed_lists_[list - 1]
-                                                    : nullptr;
+    if (list != 0 && list <= typed_lists_.size()) {
+      return &typed_lists_[list - 1];
+    }
+    return list == kRecentTypesList ? &recent_types_ : nullptr;
   }
   // Element type recorded for a type ID (0 if none).
   uint32_t ElementTypeOf(uint32_t type_id) const {
@@ -274,10 +281,13 @@ class Tracker {
   RecencyList recent_types_{kRankListCapTypes};
   RecencyList forward_refs_{kRankListCapIds};
   RecencyList result_runs_{kRankListCap};
-  // Per-type recency lists (see TypedList), created on a type's first value.
+  // Per-type and per-kind recency lists (see TypedList), created lazily.
   std::vector<RecencyList> typed_lists_;
+  std::array<uint32_t, static_cast<size_t>(IdKind::kCount)> kind_lists_{};
   // values_list of `type`, created on first use (0 if the type is unknown).
   uint32_t ValuesListFor(uint32_t type);
+  // 1-based typed_lists_ handle for `kind`, created on first use.
+  uint32_t KindListFor(IdKind kind);
 
   const InstructionDesc* cur_desc_ = nullptr;
   uint32_t cur_opcode_ = 0;

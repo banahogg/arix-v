@@ -567,4 +567,66 @@ leak checking (40 corpus decodes, `arixv_test`, 180 mutated/truncated/
 overwritten blobs), scalar/SIMD cross-check on 108 files, all 1080 corpus
 files round-trip (default and `--force-coded`).
 
+### 3. Kind recency lists for types, ext-inst sets, variables, and functions (2026-11-20)
+
+**Train-only analysis** (`id_ref` 290.8 KB full corpus). Replacing Item 2's
+per-type lists with kind-split lists regressed ratio, but *complementing*
+Item 2 through the existing `IdInfo::type_list` / `Tracker::TypedList()`
+dispatch — with zero extra flags and zero edits to `src/model.cpp` — fixed
+two remaining gaps:
+- Untyped IDs (`kType`, `kExtInstSet`) had `type_list == 0`, so slots
+  referencing types (`OpTypePointer`, `OpTypeVector`, `OpTypeStruct`,
+  `OpTypeArray`, `OpTypeFunction`) or extended instruction sets (`OpExtInst`)
+  always missed the typed list and fell back to `recent_ids_`.
+- Variables (`OpVariable`) and functions (`OpFunction`) were split across
+  per-pointer-type and per-return-type lists, missing whenever a slot
+  switched between variables of different pointer types or functions of
+  different return types.
+
+Train ablations (534 files, on top of item 9 `417,525 B`):
+- `kType` aliasing `recent_types_` (−0.15%) beat a separate `kType` list
+  (−0.12%) while allocating 0 bytes and avoiding duplicate `Touch()` calls,
+  because `OnResultTypeUse` keeps active types warm.
+- `kExtInstSet` alone −0.21%; unified `kVariable` alone −0.47%; unified
+  `kFunction` alone −0.07%.
+- `kLabel` hurt (+0.005% alone, +14 B combined, +3,300 flags) because
+  branch targets are mostly forward refs and `OpPhi` alternates values and
+  labels in the same slot; left at `type_list = 0`.
+
+**Implementation** (entirely in `src/tracker.h` and `src/tracker.cpp`):
+- `kType` assigns sentinel `Tracker::kRecentTypesList` (`~uint32_t{0}`),
+  resolved by `TypedList()` to `&recent_types_`.
+- `kVariable`, `kFunction`, and `kExtInstSet` use lazily allocated 1-based
+  handles in `typed_lists_` via `Tracker::KindListFor()` (cleared in
+  `Tracker::Reset()`).
+- `OnInstructionEnd` unconditionally assigns `info.type_list = list` so
+  hostile ID redefinitions cannot leave stale handles.
+
+| | corpus bytes | Δ vs item 8A | train total | holdout total | decode Ir | wall |
+|---|---|---|---|---|---|---|
+| item 8A (`fdcf2c6`) | 852,694 | — | 0.13549 | 0.14585 | 320.1M | 75.76 MiB/s |
+| **landed: item 3** | **844,347** | **−0.98%** | 0.13429 (−0.89%) | 0.14430 (−1.06%) | **320.2M (+0.02%)** | **76.93 MiB/s (+1.62%)** |
+
+Mean ratio: train 0.17981 → 0.17861 (−0.67%), holdout 0.17920 → 0.17793
+(−0.71%). Median ratio: train 0.17647 → 0.17472 (−0.99%), holdout 0.17421 →
+0.17285 (−0.78%). `id_ref` entropy 290.8 → 282.4 KB (−2.9%), adaptive
+`id_ref` decisions 1,883K → 1,830K (−53.7K). Both golden vectors in
+`tests/arixv_test.cpp` remain byte-identical (68 B and 14 B).
+
+**Speed, memory, size.** Decode Ir is flat at 320.1M → 320.2M (+0.02%).
+Wall time (load ~0.5, `taskset -c 4`, `arixv_decode_bench --iters=10` on all
+1080 files, 12 interleaved rounds): median 75.76 → 76.93 MiB/s, median paired
+**+1.62%** (−0.50% to +3.42%, 11/12 rounds faster) — higher typed-list hit
+rates skip global `recent_ids_.Touch()` calls and drop ~54K adaptive coder
+decisions. Memory (`memory_breakdown`): heap/decode 184.3 → 183.6 KB (−0.7 KB,
+fewer per-pointer-type and `OpTypeVoid` lists); batched minor page faults
+0.87 → 0.85 (−0.02). Library (−O2, text+data): 310.7 → 311.3 KB (+0.6 KB).
+
+Checks: `make all`, `make test` (new `KindRecencyListTests` in `model_test`),
+`make asan`, 3000-iteration fuzz, valgrind memcheck with full leak checking
+(`arixv_test`, `model_test`, plus 40 corpus decodes and 180 mutated/truncated/
+overwritten blobs on branch), scalar/SIMD cross-check on 108 files, all 1080
+corpus files round-trip (default and `--force-coded`).
+
+
 

@@ -9,6 +9,7 @@
 
 #include "arixv.h"
 #include "model.h"
+#include "tracker.h"
 #include "tuning.h"
 
 namespace {
@@ -512,6 +513,204 @@ void Order1OpcodePromotionModules() {
   RoundTrip(Module(body, 0x00010300u, 0, id), true, arixv::kModeSpirv);
 }
 
+void KindRecencyListTests() {
+  // Direct Tracker invariants for kind lists, kRecentTypesList aliasing,
+  // forward references, Reset(), and hostile redefinitions.
+  {
+    arixv::Tracker tracker;
+    const auto feed = [&](const std::vector<uint32_t>& words,
+                          uint32_t first_id_op = 0) {
+      const uint16_t opcode = static_cast<uint16_t>(words[0] & 0xffffu);
+      const arixv::InstructionDesc* desc = arixv::FindInstruction(opcode);
+      const int idx = arixv::FindInstructionIndex(opcode);
+      const uint16_t inst_index =
+          idx >= 0 ? static_cast<uint16_t>(idx) : arixv::NumCoreInstructions();
+      tracker.OnInstructionStart(opcode, desc,
+                                 static_cast<uint32_t>(words.size()));
+      tracker.OnInstructionEnd(words.data(),
+                               static_cast<uint32_t>(words.size()), inst_index,
+                               first_id_op);
+    };
+
+    // Forward reference to an undefined label (%50) and variable (%20) has
+    // type_list == 0.
+    assert(tracker.OnIdUse(50).type_list == 0);
+    assert(tracker.OnIdUse(20).type_list == 0);
+
+    // Types alias recent_types_ via kRecentTypesList.
+    feed({Op(19, 2), 1});             // %1 = OpTypeVoid
+    feed({Op(22, 3), 2, 32});         // %2 = OpTypeFloat 32
+    feed({Op(21, 4), 3, 32, 0});      // %3 = OpTypeInt 32 0
+    feed({Op(32, 4), 4, 7, 2}, 2);    // %4 = OpTypePointer Function %2
+    feed({Op(32, 4), 5, 7, 3}, 3);    // %5 = OpTypePointer Function %3
+    feed({Op(33, 3), 6, 1}, 1);       // %6 = OpTypeFunction %1
+    feed({Op(33, 3), 7, 2}, 2);       // %7 = OpTypeFunction %2
+    const auto* t2 = tracker.Find(2);
+    assert(t2 != nullptr && t2->kind == arixv::Tracker::IdKind::kType);
+    assert(t2->type_list == arixv::Tracker::kRecentTypesList);
+    assert(tracker.TypedList(t2->type_list) == &tracker.recent_types());
+    assert(tracker.TypedList(0) == nullptr);
+
+    // Variables of distinct pointer types (%4 vs %5) share one unified
+    // kVariable list, without creating per-pointer-type lists.
+    feed({Op(59, 4), 4, 20, 7});      // %20 = OpVariable %4 Function
+    feed({Op(59, 4), 5, 21, 7});      // %21 = OpVariable %5 Function
+    const auto* v20 = tracker.Find(20);
+    const auto* v21 = tracker.Find(21);
+    assert(v20 != nullptr && v21 != nullptr);
+    assert(v20->kind == arixv::Tracker::IdKind::kVariable);
+    assert(v21->kind == arixv::Tracker::IdKind::kVariable);
+    assert(v20->type_list != 0 && v20->type_list == v21->type_list);
+    assert(tracker.Find(4)->values_list == 0);
+    assert(tracker.Find(5)->values_list == 0);
+    const arixv::RecencyList* var_list = tracker.TypedList(v20->type_list);
+    assert(var_list != nullptr && var_list->size() == 2);
+    assert(var_list->at(0) == 21 && var_list->at(1) == 20);
+    assert(tracker.OnIdUse(20).type_list == v20->type_list);
+    assert(var_list->at(0) == 20);
+
+    // Functions of distinct return types (%1 void vs %2 float) share one
+    // unified kFunction list.
+    feed({Op(54, 5), 1, 30, 0, 6}, 6);  // %30 = OpFunction %1 None %6
+    feed({Op(56, 1)});                  // OpFunctionEnd
+    feed({Op(54, 5), 2, 31, 0, 7}, 7);  // %31 = OpFunction %2 None %7
+    const auto* f30 = tracker.Find(30);
+    const auto* f31 = tracker.Find(31);
+    assert(f30 != nullptr && f31 != nullptr);
+    assert(f30->type_list != 0 && f30->type_list == f31->type_list);
+    assert(f30->type_list != v20->type_list);
+
+    // Ext-inst sets share a dedicated kExtInstSet list.
+    std::vector<uint32_t> ext1 = {Op(11, 6), 40};
+    AppendStringWords("GLSL.std.450", ext1);
+    feed(ext1);
+    std::vector<uint32_t> ext2 = {Op(11, 5), 41};
+    AppendStringWords("OpenCL.std", ext2);
+    feed(ext2);
+    const auto* e40 = tracker.Find(40);
+    const auto* e41 = tracker.Find(41);
+    assert(e40 != nullptr && e41 != nullptr);
+    assert(e40->type_list != 0 && e40->type_list == e41->type_list);
+    assert(e40->type_list != v20->type_list &&
+           e40->type_list != f30->type_list);
+
+    // Labels keep type_list == 0 (forward-ref and after definition).
+    feed({Op(248, 2), 50});  // %50 = OpLabel
+    const auto* l50 = tracker.Find(50);
+    assert(l50 != nullptr && l50->kind == arixv::Tracker::IdKind::kLabel);
+    assert(l50->type_list == 0);
+
+    // Hostile redefinition: redefining a kType ID (%2) as untyped OpString
+    // must clear type_list to 0 (no stale kRecentTypesList handle).
+    std::vector<uint32_t> str_redef = {Op(7, 3), 2};
+    AppendStringWords("x", str_redef);
+    feed(str_redef);
+    const auto* redef2 = tracker.Find(2);
+    assert(redef2 != nullptr && redef2->kind == arixv::Tracker::IdKind::kValue);
+    assert(redef2->type_list == 0);
+    assert(tracker.OnIdUse(2).type_list == 0);
+
+    // Reset() clears kind_lists_ and typed_lists_ cleanly.
+    tracker.Reset();
+    assert(tracker.TypedList(1) == nullptr);
+    assert(tracker.TypedList(arixv::Tracker::kRecentTypesList) ==
+           &tracker.recent_types());
+    assert(tracker.recent_types().size() == 0);
+    feed({Op(22, 3), 1, 32});
+    feed({Op(32, 4), 2, 7, 1}, 1);
+    feed({Op(59, 4), 2, 3, 7});
+    assert(tracker.Find(3)->type_list == 1);
+  }
+
+  // Round-trip module exercising repeated type operands, multiple ext-inst
+  // sets, variables of multiple pointer types, functions of multiple return
+  // types, and forward- and backward-referenced labels.
+  {
+    std::vector<uint32_t> body;
+    body.insert(body.end(), {Op(11, 6), 1});
+    AppendStringWords("GLSL.std.450", body);
+    body.insert(body.end(), {Op(11, 5), 2});
+    AppendStringWords("OpenCL.std", body);
+    body.insert(body.end(), {
+        Op(19, 2), 3,                     // %3 = OpTypeVoid
+        Op(22, 3), 4, 32,                 // %4 = OpTypeFloat 32
+        Op(21, 4), 5, 32, 0,              // %5 = OpTypeInt 32 0
+        Op(20, 2), 6,                     // %6 = OpTypeBool
+        Op(23, 4), 7, 4, 4,               // %7 = OpTypeVector %4 4
+        Op(23, 4), 8, 5, 4,               // %8 = OpTypeVector %5 4
+        Op(30, 4), 9, 4, 5,               // %9 = OpTypeStruct %4 %5
+        Op(30, 4), 10, 7, 8,              // %10 = OpTypeStruct %7 %8
+        Op(32, 4), 11, 7, 4,              // %11 = OpTypePointer Function %4
+        Op(32, 4), 12, 7, 5,              // %12 = OpTypePointer Function %5
+        Op(32, 4), 13, 7, 7,              // %13 = OpTypePointer Function %7
+        Op(32, 4), 14, 7, 9,              // %14 = OpTypePointer Function %9
+        Op(33, 3), 15, 3,                 // %15 = OpTypeFunction %3
+        Op(33, 3), 16, 4,                 // %16 = OpTypeFunction %4
+        Op(33, 3), 17, 5,                 // %17 = OpTypeFunction %5
+        Op(43, 4), 4, 18, 0x3f800000u,    // %18 = OpConstant %4 1.0
+        Op(43, 4), 5, 19, 1,              // %19 = OpConstant %5 1
+        Op(41, 3), 6, 20,                 // %20 = OpConstantTrue %6
+        // Helper functions with distinct return types (%4 float, %5 uint).
+        Op(54, 5), 4, 21, 0, 16,
+        Op(248, 2), 22,
+        Op(254, 2), 18,
+        Op(56, 1),
+        Op(54, 5), 5, 23, 0, 17,
+        Op(248, 2), 24,
+        Op(254, 2), 19,
+        Op(56, 1),
+        // Main function with multiple pointer-type variables, interleaved
+        // OpLoad/OpStore/OpFunctionCall/OpExtInst, and forward/back labels.
+        Op(54, 5), 3, 25, 0, 15,
+        Op(248, 2), 26,
+        Op(59, 4), 11, 27, 7,             // var float*
+        Op(59, 4), 12, 28, 7,             // var uint*
+        Op(59, 4), 13, 29, 7,             // var vec4*
+        Op(59, 4), 14, 30, 7,             // var struct*
+        Op(62, 3), 27, 18,                // OpStore %27 %18
+        Op(62, 3), 28, 19,                // OpStore %28 %19
+        Op(249, 2), 31,                   // OpBranch %31 (forward ref)
+        Op(248, 2), 31,                   // %31 = OpLabel (loop header)
+        Op(245, 7), 4, 32, 18, 26, 35, 31,  // OpPhi with fwd %35 & back %31
+        Op(61, 4), 4, 33, 27,             // OpLoad %27
+        Op(61, 4), 5, 34, 28,             // OpLoad %28
+        Op(12, 6), 4, 35, 1, 4, 33,       // OpExtInst %1 (GLSL) FAbs
+        Op(12, 6), 4, 36, 1, 4, 35,       // OpExtInst %1 (GLSL) FAbs
+        Op(12, 6), 4, 37, 2, 16, 36,      // OpExtInst %2 (OpenCL)
+        Op(57, 4), 4, 38, 21,             // OpFunctionCall %21
+        Op(57, 4), 5, 39, 23,             // OpFunctionCall %23
+        Op(57, 4), 4, 40, 21,             // OpFunctionCall %21
+        Op(62, 3), 27, 38,                // OpStore %27 %38
+        Op(62, 3), 28, 39,                // OpStore %28 %39
+        Op(250, 4), 20, 31, 41,           // OpBranchConditional %20 %31(back) %41(fwd)
+        Op(248, 2), 41,                   // %41 = OpLabel
+        Op(253, 1),                       // OpReturn
+        Op(56, 1),                        // OpFunctionEnd
+    });
+    RoundTrip(Module(body, 0x00010300u, 0, 42), true, arixv::kModeSpirv);
+  }
+
+  // Hostile round-trip: redefines IDs across kType, kVariable, kFunction,
+  // kExtInstSet, kLabel, and untyped OpString, referencing them throughout.
+  {
+    std::vector<uint32_t> body = {
+        Op(22, 3), 5, 32,              // %5 = OpTypeFloat 32 (kType)
+        Op(32, 4), 6, 7, 5,            // %6 = OpTypePointer Function %5
+        Op(32, 4), 7, 7, 5,            // uses %5 (kRecentTypesList)
+        Op(59, 4), 6, 5, 7,            // redefine %5 as OpVariable
+        Op(61, 4), 5, 8, 5,            // uses %5 (kVariable)
+        Op(248, 2), 5,                 // redefine %5 as OpLabel (type_list=0)
+        Op(249, 2), 5,                 // uses %5 (type_list=0)
+        Op(54, 5), 6, 5, 0, 7,         // redefine %5 as OpFunction
+        Op(57, 4), 6, 9, 5,            // uses %5 (kFunction)
+        Op(22, 3), 5, 32,              // redefine %5 as OpTypeFloat again
+        Op(7, 3), 5, 0x00000061u,      // redefine %5 as OpString (type_list=0)
+        Op(62, 3), 5, 8,               // uses %5 (type_list=0)
+    };
+    RoundTrip(Module(body, 0x00010300u, 0, 10), true, arixv::kModeSpirv);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -522,6 +721,7 @@ int main() {
   M4aModules();
   LiteralModelingModules();
   Order1OpcodePromotionModules();
+  KindRecencyListTests();
   MutatedCorpusRoundTrips();
   return 0;
 }

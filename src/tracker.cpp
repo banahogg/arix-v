@@ -4,6 +4,7 @@
 #include "tracker.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 #include <string>
 
@@ -321,8 +322,8 @@ Tracker::IdUse Tracker::OnIdUse(uint32_t id, bool touch_recent_ids) {
   }
   if (info.kind == IdKind::kType) {
     recent_types_.Touch(id);
-  }
-  if (info.type_list != 0) {
+  } else if (info.type_list != 0) {
+    assert(info.type_list != kRecentTypesList);
     typed_lists_[info.type_list - 1].Touch(id);
   }
   return IdUse{info.result_type, info.type_list};
@@ -340,6 +341,15 @@ uint32_t Tracker::ValuesListFor(uint32_t type) {
     type_info->values_list = static_cast<uint32_t>(typed_lists_.size());
   }
   return type_info->values_list;
+}
+
+uint32_t Tracker::KindListFor(IdKind kind) {
+  uint32_t& list = kind_lists_[static_cast<size_t>(kind)];
+  if (list == 0) {
+    typed_lists_.emplace_back(kRankListCapIds);
+    list = static_cast<uint32_t>(typed_lists_.size());
+  }
+  return list;
 }
 
 // Result types are coded from recent_types(), so touching recent_ids() here
@@ -399,6 +409,7 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
       info.defined = true;
       info.result_type = desc->has_result_type ? words[1] : 0;
       forward_refs_.Remove(result_id);
+      uint32_t list = 0;
       if (HasInstructionFlag(desc, kInstDeclaresType)) {
         info.kind = IdKind::kType;
         info.element_type = first_id_operand;
@@ -406,27 +417,32 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
         info.width =
             HasInstructionFlag(desc, kInstTypeWidth) ? words[desc->aux_word] : 0;
         recent_types_.Touch(result_id);
+        list = kRecentTypesList;
       } else if (desc->result_bucket == 1) {
         info.kind = IdKind::kConstant;
       } else if (HasInstructionFlag(desc, kInstVariable)) {
         info.kind = IdKind::kVariable;
+        list = KindListFor(IdKind::kVariable);
       } else if (HasInstructionFlag(desc, kInstFunction)) {
         info.kind = IdKind::kFunction;
+        list = KindListFor(IdKind::kFunction);
       } else if (HasInstructionFlag(desc, kInstLabel)) {
         info.kind = IdKind::kLabel;
       } else if (HasInstructionFlag(desc, kInstExtInstImport)) {
         info.kind = IdKind::kExtInstSet;
         info.ext_set = FindExtInstSet(
             ReadString(words, desc->aux_word, count - desc->aux_word));
+        list = KindListFor(IdKind::kExtInstSet);
       } else {
         info.kind = IdKind::kValue;
       }
       recent_ids_.Touch(result_id);
-      if (info.result_type != 0) {
-        info.type_list = ValuesListFor(info.result_type);
-        if (info.type_list != 0) {
-          typed_lists_[info.type_list - 1].Touch(result_id);
-        }
+      if (list == 0 && info.result_type != 0) {
+        list = ValuesListFor(info.result_type);
+      }
+      info.type_list = list;
+      if (list != 0 && list != kRecentTypesList) {
+        typed_lists_[list - 1].Touch(result_id);
       }
     }
   }
@@ -464,6 +480,7 @@ void Tracker::Reset() {
   forward_refs_.Clear();
   result_runs_.Clear();
   typed_lists_.clear();
+  kind_lists_.fill(0);
   cur_desc_ = nullptr;
   cur_opcode_ = 0;
 }
