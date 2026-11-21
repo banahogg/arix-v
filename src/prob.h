@@ -372,12 +372,7 @@ struct UintModel {
 };
 
 inline uint32_t BitWidth(uint32_t v) {
-  uint32_t n = 0;
-  while (v != 0) {
-    ++n;
-    v >>= 1;
-  }
-  return n;
+  return v == 0 ? 0u : static_cast<uint32_t>(32 - __builtin_clz(v));
 }
 
 template <typename Coder>
@@ -392,8 +387,8 @@ uint32_t CodeUint(Coder& coder, Arena& arena, UintModel& model, uint32_t v) {
     StatSiteScope<Coder> site(kSiteUintLength);
     nbits = model.length.CodeValue(coder, nbits);
   }
-  if (nbits == 0) {
-    return 0;
+  if (nbits <= 1) {
+    return nbits;
   }
   StatSiteScope<Coder> site(kSiteUintMantissa);
   // Invalid streams can spell larger lengths; clamp to the modeled uint32

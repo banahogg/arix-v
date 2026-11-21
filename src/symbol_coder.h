@@ -103,9 +103,9 @@ ARIXV_FORCE_INLINE int SymbolCdfLookup(const SymbolCdf& t, uint32_t v, uint16_t 
 #endif
 }
 
-// Moves the CDF toward symbol s at the given shift, then writes `count`
-// (the caller's next warm-up count) to d[0], which the lane arithmetic
-// clobbers.
+// Moves the CDF toward symbol s at the given shift, merging `count` (the
+// caller's next warm-up count) into lane 0 before the single aligned store so
+// back-to-back uses avoid a 16B->2B store-to-load forwarding stall.
 template <int kN>
 ARIXV_FORCE_INLINE void SymbolCdfAdapt(SymbolCdf& t, int s, int rate,
                                        uint16_t count) {
@@ -114,20 +114,29 @@ ARIXV_FORCE_INLINE void SymbolCdfAdapt(SymbolCdf& t, int s, int rate,
   const __m128i shift = _mm_cvtsi32_si128(rate);
   const __m128i top = _mm_set1_epi16(static_cast<short>(K::kTop));
   const __m128i sv = _mm_set1_epi16(static_cast<short>(s));
-  const __m128i lanes[2] = {_mm_setr_epi16(0, 1, 2, 3, 4, 5, 6, 7),
-                            _mm_setr_epi16(8, 9, 10, 11, 12, 13, 14, 15)};
   __m128i* d = reinterpret_cast<__m128i*>(t.d);
   const __m128i* u = reinterpret_cast<const __m128i*>(K::kUniform);
-  for (int k = 0; k < 2; ++k) {
-    const __m128i dv = _mm_load_si128(d + k);
-    const __m128i c = _mm_add_epi16(dv, _mm_load_si128(u + k));
-    const __m128i up = _mm_cmpgt_epi16(lanes[k], sv);
-    const __m128i target = _mm_add_epi16(lanes[k], _mm_and_si128(up, top));
-    const __m128i delta = _mm_sra_epi16(_mm_sub_epi16(target, c), shift);
-    _mm_store_si128(d + k, _mm_add_epi16(dv, delta));
+  const __m128i lanes0 = _mm_setr_epi16(0, 1, 2, 3, 4, 5, 6, 7);
+  const __m128i d0 = _mm_load_si128(d);
+  const __m128i c0 = _mm_add_epi16(d0, _mm_load_si128(u));
+  const __m128i up0 = _mm_cmpgt_epi16(lanes0, sv);
+  const __m128i target0 = _mm_add_epi16(lanes0, _mm_and_si128(up0, top));
+  const __m128i delta0 = _mm_sra_epi16(_mm_sub_epi16(target0, c0), shift);
+  const __m128i out0 = _mm_insert_epi16(_mm_add_epi16(d0, delta0),
+                                        static_cast<int>(count), 0);
+  _mm_store_si128(d, out0);
+  if constexpr (kN > 8) {
+    const __m128i lanes1 = _mm_setr_epi16(8, 9, 10, 11, 12, 13, 14, 15);
+    const __m128i d1 = _mm_load_si128(d + 1);
+    const __m128i c1 = _mm_add_epi16(d1, _mm_load_si128(u + 1));
+    const __m128i up1 = _mm_cmpgt_epi16(lanes1, sv);
+    const __m128i target1 = _mm_add_epi16(lanes1, _mm_and_si128(up1, top));
+    const __m128i delta1 = _mm_sra_epi16(_mm_sub_epi16(target1, c1), shift);
+    _mm_store_si128(d + 1, _mm_add_epi16(d1, delta1));
   }
 #else
-  for (int i = 1; i < 16; ++i) {
+  constexpr int kEnd = kN <= 8 ? 8 : 16;
+  for (int i = 1; i < kEnd; ++i) {
     const uint16_t c = static_cast<uint16_t>(t.d[i] + K::kUniform[i]);
     const uint16_t target =
         static_cast<uint16_t>(i + (i > s ? K::kTop : 0));
@@ -136,8 +145,8 @@ ARIXV_FORCE_INLINE void SymbolCdfAdapt(SymbolCdf& t, int s, int rate,
     const int delta = diff >= 0 ? (diff >> rate) : -((-diff + (1 << rate) - 1) >> rate);
     t.d[i] = static_cast<uint16_t>(t.d[i] + delta);
   }
-#endif
   t.d[0] = count;
+#endif
 }
 
 // Count-warmed adaptation: shift = bitwidth(count + 1) = 1, 2, 2, 3, ...,
@@ -152,6 +161,101 @@ ARIXV_FORCE_INLINE void SymbolCdfUpdate(SymbolCdf& t, int s) {
   const int rate = 32 - __builtin_clz(static_cast<unsigned>(count) + 1u);
   SymbolCdfAdapt<kN>(t, s, rate,
                      static_cast<uint16_t>(count + (count < kSaturation)));
+}
+
+// Fused decode lookup + count-warmed adaptation: reuses the loaded d and d+U
+// vectors, skips d[8..15] when kN <= 8, reads lo/hi directly from t.d before
+// storing (avoiding a stack c[17] array and stack protector), and merges the
+// next warm-up count into lane 0 before the single aligned store.
+template <int kN, int kRateCap>
+ARIXV_FORCE_INLINE int SymbolCdfDecodeAndUpdate(SymbolCdf& t, uint32_t slot,
+                                                uint32_t* out_lo,
+                                                uint32_t* out_f) {
+  static_assert(kRateCap >= 1 && kRateCap <= 14, "bad symbol rate cap");
+  using K = SymbolCdfConst<kN>;
+#if ARIXV_SYMBOL_SSE2
+  constexpr uint16_t kSaturation = static_cast<uint16_t>((1u << kRateCap) - 2u);
+  __m128i* d = reinterpret_cast<__m128i*>(t.d);
+  const __m128i* u = reinterpret_cast<const __m128i*>(K::kUniform);
+  const __m128i lane0 = _mm_setr_epi16(-1, 0, 0, 0, 0, 0, 0, 0);
+  const __m128i d0 = _mm_load_si128(d);
+  const __m128i c0_raw = _mm_add_epi16(d0, _mm_load_si128(u));
+  const __m128i c0 = _mm_andnot_si128(lane0, c0_raw);
+  const __m128i vv = _mm_set1_epi16(static_cast<short>(slot));
+  const __m128i z = _mm_setzero_si128();
+  const __m128i le0 = _mm_cmpeq_epi16(_mm_subs_epu16(c0, vv), z);
+  int s;
+  __m128i d1 = z;
+  __m128i c1 = z;
+  if constexpr (kN <= 8) {
+    const uint32_t mask =
+        static_cast<uint32_t>(_mm_movemask_epi8(_mm_packs_epi16(le0, z)));
+    s = __builtin_ctz(~mask) - 1;
+  } else {
+    d1 = _mm_load_si128(d + 1);
+    c1 = _mm_add_epi16(d1, _mm_load_si128(u + 1));
+    const __m128i le1 = _mm_cmpeq_epi16(_mm_subs_epu16(c1, vv), z);
+    const uint32_t mask =
+        static_cast<uint32_t>(_mm_movemask_epi8(_mm_packs_epi16(le0, le1)));
+    s = __builtin_ctz(~mask) - 1;
+  }
+  const uint32_t lo =
+      s == 0 ? 0u : static_cast<uint16_t>(t.d[s] + K::kUniform[s]);
+  uint32_t hi;
+  if constexpr (kN < 16) {
+    hi = static_cast<uint16_t>(t.d[s + 1] + K::kUniform[s + 1]);
+  } else {
+    hi = s < 15 ? static_cast<uint16_t>(t.d[s + 1] + K::kUniform[s + 1])
+                : kSymbolScale;
+  }
+  *out_lo = lo;
+  *out_f = hi - lo;
+
+  const uint16_t count = static_cast<uint16_t>(_mm_cvtsi128_si32(d0));
+  const int rate = 32 - __builtin_clz(static_cast<unsigned>(count) + 1u);
+  const uint16_t next_count =
+      static_cast<uint16_t>(count + (count < kSaturation));
+  const __m128i shift = _mm_cvtsi32_si128(rate);
+  const __m128i top = _mm_set1_epi16(static_cast<short>(K::kTop));
+  const __m128i sv = _mm_set1_epi16(static_cast<short>(s));
+  const __m128i lanes0 = _mm_setr_epi16(0, 1, 2, 3, 4, 5, 6, 7);
+  const __m128i up0 = _mm_cmpgt_epi16(lanes0, sv);
+  const __m128i target0 = _mm_add_epi16(lanes0, _mm_and_si128(up0, top));
+  const __m128i delta0 = _mm_sra_epi16(_mm_sub_epi16(target0, c0_raw), shift);
+  const __m128i out0 = _mm_insert_epi16(_mm_add_epi16(d0, delta0),
+                                        static_cast<int>(next_count), 0);
+  _mm_store_si128(d, out0);
+  if constexpr (kN > 8) {
+    const __m128i lanes1 = _mm_setr_epi16(8, 9, 10, 11, 12, 13, 14, 15);
+    const __m128i up1 = _mm_cmpgt_epi16(lanes1, sv);
+    const __m128i target1 = _mm_add_epi16(lanes1, _mm_and_si128(up1, top));
+    const __m128i delta1 = _mm_sra_epi16(_mm_sub_epi16(target1, c1), shift);
+    _mm_store_si128(d + 1, _mm_add_epi16(d1, delta1));
+  }
+  return s;
+#else
+  constexpr int kEnd = kN <= 8 ? 8 : 16;
+  int s = 0;
+  uint32_t lo = 0;
+  uint32_t hi = kSymbolScale;
+  for (int i = 1; i < kEnd; ++i) {
+    const uint32_t ci = static_cast<uint16_t>(t.d[i] + K::kUniform[i]);
+    if (ci <= slot) {
+      s = i;
+      lo = ci;
+    } else {
+      hi = ci;
+      break;
+    }
+  }
+  if (s == kEnd - 1 && kN < 16) {
+    hi = static_cast<uint16_t>(t.d[kEnd] + K::kUniform[kEnd]);
+  }
+  *out_lo = lo;
+  *out_f = hi - lo;
+  SymbolCdfUpdate<kN, kRateCap>(t, s);
+  return s;
+#endif
 }
 
 // Steady-rate update without touching the warm-up count (shadow training).
@@ -248,21 +352,21 @@ class RansDecoder {
 
   template <int kN, int kRateCap>
   ARIXV_FORCE_INLINE int DecodeSymbol(SymbolCdf& t) {
-    if (x_ < kRansL) {
-      if (x_ == 0) {
+    uint32_t x = x_;
+    if (x < kRansL) {
+      if (x == 0) {
         InitState();
+        x = x_;
       } else {
-        x_ = (x_ << 16) | ReadWord();
+        x = (x << 16) | ReadWord();
       }
     }
-    uint16_t c[17];
-    const uint32_t slot = x_ & (kSymbolScale - 1u);
-    const int s = SymbolCdfLookup<kN>(t, slot, c);
-    const uint32_t lo = c[s];
-    const uint32_t f = static_cast<uint32_t>(c[s + 1]) - lo;
-    x_ = f * (x_ >> kSymbolScaleBits) + slot - lo;
+    const uint32_t slot = x & (kSymbolScale - 1u);
+    uint32_t lo = 0;
+    uint32_t f = 0;
+    const int s = SymbolCdfDecodeAndUpdate<kN, kRateCap>(t, slot, &lo, &f);
+    x_ = f * (x >> kSymbolScaleBits) + slot - lo;
     last_f_ = f;
-    SymbolCdfUpdate<kN, kRateCap>(t, s);
     return s;
   }
 
