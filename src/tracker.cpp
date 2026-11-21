@@ -222,6 +222,10 @@ void RecencyList::Replace(uint32_t old_id, uint32_t id) {
   if (cap_ <= 0) {
     return;
   }
+  if (size_ > 0 && items_[0] == old_id) {
+    items_[0] = id;
+    return;
+  }
   const uint32_t mask = MatchMask(old_id);
   if (mask == 0) {
     // Insert as a new entry (callers never list id itself already).
@@ -233,10 +237,6 @@ void RecencyList::Replace(uint32_t old_id, uint32_t id) {
     return;
   }
   const int at = __builtin_ctz(mask);
-  if (at == 0) {
-    items_[0] = id;
-    return;
-  }
   ShiftIn(at, id);
 }
 
@@ -475,6 +475,9 @@ Tracker::IdUse Tracker::OnIdUse(uint32_t id, bool touch_recent_ids) {
 // Only looks the type up (never inserts it), so callers' IdInfo references
 // stay valid; a type the tracker has never seen (hostile input) gets no list.
 uint32_t Tracker::ValuesListFor(uint32_t type) {
+  if (type == last_rtype_id_ && last_rtype_values_list_ != 0) {
+    return last_rtype_values_list_;
+  }
   IdInfo* type_info = ids_.FindMutable(type);
   if (type_info == nullptr) {
     return 0;
@@ -483,6 +486,8 @@ uint32_t Tracker::ValuesListFor(uint32_t type) {
     typed_lists_.emplace_back(kRankListCapIds);
     type_info->values_list = static_cast<uint32_t>(typed_lists_.size());
   }
+  last_rtype_id_ = type;
+  last_rtype_values_list_ = type_info->values_list;
   return type_info->values_list;
 }
 
@@ -506,6 +511,10 @@ void Tracker::OnResultTypeUse(uint32_t id) {
   if (info.kind == IdKind::kType) {
     recent_types_.Touch(id);
   }
+  if (info.values_list != 0) {
+    last_rtype_id_ = id;
+    last_rtype_values_list_ = info.values_list;
+  }
 }
 
 // No recency touch: OnInstructionEnd moves the result to the front once the
@@ -524,11 +533,13 @@ void Tracker::OnResultId(uint32_t id) {
   result_runs_.Replace(id - 1, id);
 }
 
-void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
-                               uint16_t inst_index,
-                               uint32_t first_id_operand) {
+uint32_t Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
+                                   uint16_t inst_index,
+                                   uint32_t first_id_operand) {
   const InstructionDesc* desc = cur_desc_;
   const uint32_t opcode = cur_opcode_;
+  const uint16_t flags = desc ? desc->flags : 0u;
+  uint32_t defined_res_list = kUnresolvedList;
 
   if (desc) {
     section_ = std::max(section_, SectionOfOpcode(opcode, desc));
@@ -556,13 +567,23 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
       info.width = 0;
       info.members = {0, 0};
       info.element_type = 0;
-      forward_refs_.Remove(result_id);
+      if (forward_refs_.size() > 0) {
+        forward_refs_.Remove(result_id);
+      }
       uint32_t list = 0;
-      if (HasInstructionFlag(desc, kInstDeclaresType)) {
+      constexpr uint16_t kResultKindFlags =
+          static_cast<uint16_t>(kInstDeclaresType) |
+          static_cast<uint16_t>(kInstVariable) |
+          static_cast<uint16_t>(kInstFunction) |
+          static_cast<uint16_t>(kInstLabel) |
+          static_cast<uint16_t>(kInstExtInstImport);
+      if ((flags & kResultKindFlags) == 0 && desc->result_bucket != 1) {
+        info.kind = IdKind::kValue;
+      } else if ((flags & static_cast<uint16_t>(kInstDeclaresType)) != 0) {
         info.kind = IdKind::kType;
         info.element_type = first_id_operand;
         info.type_class = ToTrackerTypeClass(desc->type_class);
-        if (HasInstructionFlag(desc, kInstTypeWidth)) {
+        if ((flags & static_cast<uint16_t>(kInstTypeWidth)) != 0) {
           info.width = words[desc->aux_word];
           const int wb = ScalarWidthBucket(info.width);
           if (info.type_class == TypeClass::kInt && count >= 4) {
@@ -632,7 +653,7 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
         list = kRecentTypesList;
       } else if (desc->result_bucket == 1) {
         info.kind = IdKind::kConstant;
-        if (HasInstructionFlag(desc, kInstConstantNumber) &&
+        if ((flags & static_cast<uint16_t>(kInstConstantNumber)) != 0 &&
             (count == 4 || (count == 5 && words[4] == 0))) {
           const IdInfo* rtype = Find(words[1]);
           if (rtype && rtype->kind == IdKind::kType &&
@@ -648,50 +669,56 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
             info.width = 0;
           }
         }
-      } else if (HasInstructionFlag(desc, kInstVariable)) {
+      } else if ((flags & static_cast<uint16_t>(kInstVariable)) != 0) {
         info.kind = IdKind::kVariable;
         list = KindListFor(IdKind::kVariable);
-      } else if (HasInstructionFlag(desc, kInstFunction)) {
+      } else if ((flags & static_cast<uint16_t>(kInstFunction)) != 0) {
         info.kind = IdKind::kFunction;
         list = KindListFor(IdKind::kFunction);
-      } else if (HasInstructionFlag(desc, kInstLabel)) {
+      } else if ((flags & static_cast<uint16_t>(kInstLabel)) != 0) {
         info.kind = IdKind::kLabel;
-      } else if (HasInstructionFlag(desc, kInstExtInstImport)) {
+      } else {
         info.kind = IdKind::kExtInstSet;
         info.ext_set = FindExtInstSet(
             ReadString(words, desc->aux_word, count - desc->aux_word));
         list = KindListFor(IdKind::kExtInstSet);
-      } else {
-        info.kind = IdKind::kValue;
       }
       recent_ids_.Touch(result_id);
       if (list == 0 && info.result_type != 0) {
         list = ValuesListFor(info.result_type);
       }
       info.type_list = list;
+      defined_res_list = list;
       if (list != 0 && list != kRecentTypesList) {
         typed_lists_[list - 1].Touch(result_id);
       }
     }
   }
 
-  if (HasInstructionFlag(desc, kInstFunction)) {
-    in_function_ = true;
-    in_block_ = false;
-    current_fn_type_ = (desc && count >= 5) ? words[4] : 0;
-    current_fn_param_index_ = 0;
-  } else if (HasInstructionFlag(desc, kInstFunctionEnd)) {
-    in_function_ = false;
-    in_block_ = false;
-    current_fn_type_ = 0;
-    current_fn_param_index_ = 0;
-  } else if (HasInstructionFlag(desc, kInstLabel)) {
-    in_block_ = true;
-    current_fn_type_ = 0;
-    current_fn_param_index_ = 0;
-  } else if (HasInstructionFlag(desc, kInstTerminator)) {
-    in_block_ = false;
-  } else if (opcode == 55 && current_fn_type_ != 0) {
+  constexpr uint16_t kBlockStateFlags =
+      static_cast<uint16_t>(kInstFunction) |
+      static_cast<uint16_t>(kInstFunctionEnd) |
+      static_cast<uint16_t>(kInstLabel) |
+      static_cast<uint16_t>(kInstTerminator);
+  if ((flags & kBlockStateFlags) != 0) {
+    if ((flags & static_cast<uint16_t>(kInstFunction)) != 0) {
+      in_function_ = true;
+      in_block_ = false;
+      current_fn_type_ = count >= 5 ? words[4] : 0;
+      current_fn_param_index_ = 0;
+    } else if ((flags & static_cast<uint16_t>(kInstFunctionEnd)) != 0) {
+      in_function_ = false;
+      in_block_ = false;
+      current_fn_type_ = 0;
+      current_fn_param_index_ = 0;
+    } else if ((flags & static_cast<uint16_t>(kInstLabel)) != 0) {
+      in_block_ = true;
+      current_fn_type_ = 0;
+      current_fn_param_index_ = 0;
+    } else {
+      in_block_ = false;
+    }
+  } else if (current_fn_type_ != 0 && opcode == 55) {
     ++current_fn_param_index_;
   }
 
@@ -699,6 +726,7 @@ void Tracker::OnInstructionEnd(const uint32_t* words, uint32_t count,
   prev_inst_index_ = inst_index;
   prev_opcode_class_ = desc ? desc->instruction_class : 0xFFu;
   ++instruction_index_;
+  return defined_res_list;
 }
 
 void Tracker::Reset() {
@@ -727,6 +755,8 @@ void Tracker::Reset() {
   vec_types_.clear();
   mat_types_.clear();
   arr_types_.clear();
+  last_rtype_id_ = 0;
+  last_rtype_values_list_ = 0;
   cur_desc_ = nullptr;
   cur_opcode_ = 0;
 }

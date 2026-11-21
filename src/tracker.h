@@ -312,12 +312,18 @@ class Tracker {
   // OnIdUse it leaves recent_ids() alone.
   void OnResultTypeUse(uint32_t id);
   void OnResultId(uint32_t id);
+  // Distinct from 0 (none), 1..N (typed lists), and kRecentTypesList (~0u);
+  // returned by OnInstructionEnd when the instruction did not define a result.
+  static constexpr uint32_t kUnresolvedList = ~uint32_t{1};
+
   // inst_index: the instruction's core-table index (NumCoreInstructions()
   // for an unknown opcode), remembered as prev_instruction_index().
   // first_id_operand: the instruction's first ID operand (after any Result
   // Type / Result ID), or 0; recorded as a type declaration's element type.
-  void OnInstructionEnd(const uint32_t* words, uint32_t count,
-                        uint16_t inst_index, uint32_t first_id_operand);
+  // Returns the defined result's type_list, or kUnresolvedList if no result
+  // was defined (e.g., non-result or grammar-inconsistent instruction).
+  uint32_t OnInstructionEnd(const uint32_t* words, uint32_t count,
+                            uint16_t inst_index, uint32_t first_id_operand);
 
   void Reserve(size_t word_count);
   // Heap bytes held by the ID map (diagnostics).
@@ -420,6 +426,9 @@ class Tracker {
   std::vector<DerivedTypeEntry> vec_types_;
   std::vector<DerivedTypeEntry> mat_types_;
   std::vector<DerivedTypeEntry> arr_types_;
+
+  uint32_t last_rtype_id_ = 0;
+  uint32_t last_rtype_values_list_ = 0;
 
   const InstructionDesc* cur_desc_ = nullptr;
   uint32_t cur_opcode_ = 0;

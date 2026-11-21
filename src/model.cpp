@@ -628,7 +628,7 @@ struct ModelState {
   // Per-instruction ID operand tracking for CodeIdRef.
   // kUnresolvedList is distinct from 0 (none), 1..N (typed lists), and
   // Tracker::kRecentTypesList (~0u).
-  static constexpr uint32_t kUnresolvedList = ~uint32_t{1};
+  static constexpr uint32_t kUnresolvedList = Tracker::kUnresolvedList;
   uint32_t cur_op0_list = 0;
   uint32_t cur_prev_op_list = 0;
   uint32_t cur_prev_res_id = 0;
@@ -1174,13 +1174,14 @@ uint32_t CodeResultId(Bits& bits, ModelState& model,
   // a function body is built), so predict the smallest never-seen ID above
   // the previous result rather than just previous + 1.
   const Tracker& tracker = model.tracker;
+  const uint32_t max_seen = tracker.max_seen_id();
   uint32_t predicted = model.prev_result_id + 1;
   for (int step = 0; step < kResultScanCap; ++step) {
     const uint32_t candidate = model.prev_result_id + 1 + static_cast<uint32_t>(step);
     if (candidate == 0) {
       break;  // wrapped
     }
-    if (tracker.Find(candidate) == nullptr) {
+    if (candidate > max_seen || tracker.Find(candidate) == nullptr) {
       predicted = candidate;
       break;
     }
@@ -2734,6 +2735,7 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
   const size_t body_words = word_count - 5;
   size_t body_pos = 0;
   uint32_t prev_inst_result_id = 0;
+  uint32_t prev_inst_result_list = ModelState::kUnresolvedList;
   WordBuffer<kInlineInstructionWords> inst_words;
   WordBuffer<kInlineOperandWords> coded_words;
   while (body_pos < body_words) {
@@ -2786,8 +2788,9 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
 
     model.tracker.OnInstructionStart(opcode, desc, declared_count);
     model.cur_prev_res_id = model.tracker.in_block() ? prev_inst_result_id : 0u;
-    model.cur_prev_res_list = ModelState::kUnresolvedList;
+    model.cur_prev_res_list = prev_inst_result_list;
     prev_inst_result_id = 0;
+    prev_inst_result_list = ModelState::kUnresolvedList;
     io.EmitBodyWord(initial_word0);
 
     std::array<uint8_t, 4> prev_bytes = {0, 0, 0, 0};
@@ -3095,10 +3098,9 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
       inst_words.data()[1] = type;
       io.PatchBodyWord(result_type_body_index, type);
     }
-    model.tracker.OnInstructionEnd(inst_words.data(),
-                                   static_cast<uint32_t>(inst_words.size()),
-                                   inst_index,
-                                   num_id_operands > 0 ? id_operands[0] : 0);
+    prev_inst_result_list = model.tracker.OnInstructionEnd(
+        inst_words.data(), static_cast<uint32_t>(inst_words.size()), inst_index,
+        num_id_operands > 0 ? id_operands[0] : 0);
     body_pos += 1 + consumed;
   }
 
