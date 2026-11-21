@@ -7,24 +7,29 @@ multi-bit symbols). No corpus-trained tables are shipped; all shipped
 knowledge is derived from the pinned SPIR-V grammars plus
 hand-set scalar constants (`src/tuning.h`).
 
-**Results** (2026-11-18, `scripts/bench/benchmark_spv_compressors.py`,
+**Results** (2026-11-21, `scripts/bench/benchmark_spv_compressors.py`,
 1070-file decode-verified intersection, 20 decode iterations per file, one
 core of a Ryzen 9 5950X; total = Σout/Σin; decode is MiB/s of original SPIR-V
 output):
 
 | tool | mean | median | total | decode |
 |---|---|---|---|---|
-| smol-v | 0.3865 | 0.3831 | 0.3715 | 1236.70 MiB/s |
-| yari-v | 0.3395 | 0.3373 | 0.3367 | 730.57 MiB/s |
-| zstd -19 | 0.3438 | 0.3330 | 0.2756 | 652.23 MiB/s |
-| smol-v + zstd -19 | 0.2647 | 0.2534 | 0.1950 | 622.78 MiB/s |
-| **ARIX-V** | **0.2169** | **0.2073** | **0.1667** | **87.12 MiB/s** |
+| smol-v | 0.3865 | 0.3831 | 0.3715 | 1249.77 MiB/s |
+| yari-v | 0.3395 | 0.3373 | 0.3367 | 731.30 MiB/s |
+| zstd -19 | 0.3438 | 0.3330 | 0.2756 | 619.94 MiB/s |
+| smol-v + zstd -19 | 0.2647 | 0.2534 | 0.1950 | 591.29 MiB/s |
+| **ARIX-V** | **0.1561** | **0.1539** | **0.1249** | **73.88 MiB/s** |
 
-ARIX-V decode was 46 MiB/s on this table in July; the decoder and model-size
-work behind the change (rANS symbol coding, cheaper structural paths, and a
-~66% smaller per-call model footprint, so stateless `Decode` costs almost no
+ARIX-V decode was 46 MiB/s and total ratio 0.1715 on this table in July; the
+decoder and model-size work (rANS symbol coding, cheaper structural paths, and
+a ~66% smaller per-call model footprint so stateless `Decode` costs almost no
 page faults even in short-lived processes) is recorded in
-`docs/development/performance.md`.
+`docs/development/performance.md`, and the subsequent compression-ratio work
+(deferred type-algebra result types, per-type and kind-aware adaptive ID
+recency lists, string match/dictionary/primer modeling, result-ID run cursors,
+grammar-derived cold-start priors, float32/enum-stride literal modeling,
+grammar-implied word-count deferral, and tighter framing) is recorded in
+`docs/development/ratio.md`.
 
 ARIX-V round-trips all 1080 corpus files (including the three big-endian
 modules the other tools reject) and arbitrary non-SPIR-V bytes (byte-fallback
