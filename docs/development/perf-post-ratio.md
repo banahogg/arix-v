@@ -232,10 +232,20 @@ Tracked here for evaluation **after** byte-identical wins are exhausted, or if
 we want to push decode speed further at a small ratio cost. Each changes the
 wire format or ratio and should be tested on its own branch/experiment.
 
-- [ ] **T1. Skip `recent_ids_.Touch(result_id)` when `typed_lists_` already tracks it**
+- [x] **T1. Skip `recent_ids_.Touch(result_id)` when `typed_lists_` already tracks it** *(tested & skipped on `perf/post-ratio-part-b`)*
   - Rationale: saves one full `RecencyList::Touch` per value-producing
     instruction; typed-list hits already dominate ID references, so the ratio
     penalty should be small.
+  - Empirical finding (tested against `main` @ `e7afd7c`):
+    - Ratio: `759,260 B → 766,246 B` (**+6,986 B = +0.92% larger**, `0.12522 → 0.12638`;
+      train `+3,077 B`, holdout `+3,909 B`). First-use / typed-list-miss escapes
+      (e.g. `OpDecorate`, `OpName`, new opcode slots) fall through to `id_escape`
+      (`CodeUint`) when newly defined results aren't in `recent_ids_`.
+    - Speed: stateless `Ir/pass` `318.28M → 313.31M` (−1.56%), but extra
+      `CodeUint` escape work ate most of the gain: `arixv_decode_bench --iters=10`
+      **+0.29%** (`81.02 → 81.26 MiB/s`, 9/12 faster), `arixv_bench` encode
+      **+0.19%** (3/6) / decode **+0.51%** (`84.38 → 84.78 MiB/s`, 6/6 faster).
+    - Conclusion: poor tradeoff (+0.92% size for +0.3–0.5% speed). Reverted cleanly.
 - [ ] **T2. Higher order-1 opcode promotion threshold (`kOpcodeOrder1MinCount = 8` vs `4`)**
   - Rationale: fewer lazily-allocated order-1 opcode contexts → smaller arena
     footprint, fewer D1 misses and page faults, tiny ratio cost.
