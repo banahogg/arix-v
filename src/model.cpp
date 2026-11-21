@@ -2611,8 +2611,7 @@ ARIXV_NOINLINE bool ValidateExtInstConsistent(const InstructionDesc* desc,
       count_hint > remaining_body) {
     return false;
   }
-  const Tracker::IdInfo* info = tracker.Find(inst_words[3]);
-  const ExtInstSetDesc* ext_set = info ? info->ext_set : nullptr;
+  const ExtInstSetDesc* ext_set = tracker.ExtInstSetOf(inst_words[3]);
   if (!ext_set) {
     return true;
   }
