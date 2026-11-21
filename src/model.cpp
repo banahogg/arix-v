@@ -195,11 +195,12 @@ struct OpcodeTree {
       }
 #endif
       StatSiteScope<Coder> site(kSiteBitTree);
-      const uint32_t top = coder.template CodeSymbol<4, kSymbolRateCap>(
+      auto sym = coder.BeginSymbols();
+      const uint32_t top = sym.template First<4, kSymbolRateCap>(
           root, (value >> 8) & 3u);
-      const uint32_t m = coder.template CodeSymbol<16, kSymbolRateCap>(
+      const uint32_t m = sym.template Next<16, kSymbolRateCap>(
           mid[top], (value >> 4) & 15u);
-      const uint32_t low = coder.template CodeSymbol<16, kSymbolRateCap>(
+      const uint32_t low = sym.template Next<16, kSymbolRateCap>(
           Leaf(arena, top, m, prior), value & 15u);
       return Coder::kEncoding ? value : ((top << 8) | (m << 4) | low);
     }

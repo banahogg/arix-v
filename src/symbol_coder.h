@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "platform.h"
@@ -351,10 +352,11 @@ class RansDecoder {
       : begin_(data), end_(data + size), p_(data + size) {}
 
   template <int kN, int kRateCap>
-  ARIXV_FORCE_INLINE int DecodeSymbol(SymbolCdf& t) {
-    uint32_t x = x_;
+  ARIXV_FORCE_INLINE int DecodeFirst(SymbolCdf& t, uint32_t& x,
+                                     uint32_t& last_f) {
+    x = x_;
     if (x < kRansL) {
-      if (x == 0) {
+      if (__builtin_expect(x == 0, 0)) {
         InitState();
         x = x_;
       } else {
@@ -365,8 +367,40 @@ class RansDecoder {
     uint32_t lo = 0;
     uint32_t f = 0;
     const int s = SymbolCdfDecodeAndUpdate<kN, kRateCap>(t, slot, &lo, &f);
-    x_ = f * (x >> kSymbolScaleBits) + slot - lo;
-    last_f_ = f;
+    x = f * (x >> kSymbolScaleBits) + slot - lo;
+    last_f = f;
+    return s;
+  }
+
+  // Subsequent symbol within the same multi-chunk walk: x is already in a
+  // local register and > 0 unless exhausted_ (InitState pins p_ = begin_ on
+  // failure, so ReadWord returns 0 and keeps x == 0 and exhausted_ == true).
+  template <int kN, int kRateCap>
+  ARIXV_FORCE_INLINE int DecodeNext(SymbolCdf& t, uint32_t& x,
+                                    uint32_t& last_f) {
+    if (x < kRansL) {
+      x = (x << 16) | ReadWord();
+    }
+    const uint32_t slot = x & (kSymbolScale - 1u);
+    uint32_t lo = 0;
+    uint32_t f = 0;
+    const int s = SymbolCdfDecodeAndUpdate<kN, kRateCap>(t, slot, &lo, &f);
+    x = f * (x >> kSymbolScaleBits) + slot - lo;
+    last_f = f;
+    return s;
+  }
+
+  ARIXV_FORCE_INLINE void Commit(uint32_t x, uint32_t last_f) {
+    x_ = x;
+    last_f_ = last_f;
+  }
+
+  template <int kN, int kRateCap>
+  ARIXV_FORCE_INLINE int DecodeSymbol(SymbolCdf& t) {
+    uint32_t x = 0;
+    uint32_t last_f = 0;
+    const int s = DecodeFirst<kN, kRateCap>(t, x, last_f);
+    Commit(x, last_f);
     return s;
   }
 
@@ -380,6 +414,7 @@ class RansDecoder {
   ARIXV_NOINLINE void InitState() {
     if (exhausted_ || p_ - begin_ < 3) {
       exhausted_ = true;
+      p_ = begin_;
       return;
     }
     const uint8_t top = *--p_;
@@ -393,6 +428,7 @@ class RansDecoder {
     }
     if (p_ - begin_ < 3) {
       exhausted_ = true;
+      p_ = begin_;
       return;
     }
     p_ -= 3;
@@ -402,6 +438,7 @@ class RansDecoder {
                        (static_cast<uint32_t>(top & 0x7Fu) << 24);
     if (y < (1u << 23) || y >= ((kRansL << 16) - kRansL)) {
       exhausted_ = true;
+      p_ = begin_;
       return;
     }
     x_ = y + kRansL;
@@ -413,7 +450,14 @@ class RansDecoder {
       return 0;
     }
     p_ -= 2;
+#if (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) || \
+    defined(_WIN32)
+    uint16_t w;
+    std::memcpy(&w, p_, sizeof(w));
+    return w;
+#else
     return static_cast<uint32_t>(p_[0]) | (static_cast<uint32_t>(p_[1]) << 8);
+#endif
   }
 
   const uint8_t* begin_;

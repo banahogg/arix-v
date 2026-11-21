@@ -128,6 +128,19 @@ class BitEncoder {
     return s;
   }
 
+  struct SymbolSession {
+    BitEncoder& coder;
+    template <int kN, int kRateCap>
+    ARIXV_FORCE_INLINE uint32_t First(SymbolCdf& t, uint32_t s) {
+      return coder.template CodeSymbol<kN, kRateCap>(t, s);
+    }
+    template <int kN, int kRateCap>
+    ARIXV_FORCE_INLINE uint32_t Next(SymbolCdf& t, uint32_t s) {
+      return coder.template CodeSymbol<kN, kRateCap>(t, s);
+    }
+  };
+  ARIXV_FORCE_INLINE SymbolSession BeginSymbols() { return {*this}; }
+
   // Stats instrumentation (ARIXV_STATS): while set, the entropy cost of
   // every decision is accumulated into *sink. Encoder-only; the decoder's
   // counterpart is a no-op so shared model code can call it unconditionally.
@@ -173,6 +186,28 @@ class BitDecoder {
   template <int kN, int kRateCap>
   ARIXV_FORCE_INLINE uint32_t CodeSymbol(SymbolCdf& t, uint32_t /*s*/) {
     return static_cast<uint32_t>(rans_.template DecodeSymbol<kN, kRateCap>(t));
+  }
+
+  struct SymbolSession {
+    RansDecoder& rans;
+    uint32_t x = 0;
+    uint32_t last_f = 0;
+    ARIXV_FORCE_INLINE explicit SymbolSession(RansDecoder& r) : rans(r) {}
+    ARIXV_FORCE_INLINE ~SymbolSession() { rans.Commit(x, last_f); }
+
+    template <int kN, int kRateCap>
+    ARIXV_FORCE_INLINE uint32_t First(SymbolCdf& t, uint32_t /*s*/) {
+      return static_cast<uint32_t>(
+          rans.template DecodeFirst<kN, kRateCap>(t, x, last_f));
+    }
+    template <int kN, int kRateCap>
+    ARIXV_FORCE_INLINE uint32_t Next(SymbolCdf& t, uint32_t /*s*/) {
+      return static_cast<uint32_t>(
+          rans.template DecodeNext<kN, kRateCap>(t, x, last_f));
+    }
+  };
+  ARIXV_FORCE_INLINE SymbolSession BeginSymbols() {
+    return SymbolSession(rans_);
   }
 
   // Either stream ran out (decoders stop early on this). Only the forward
@@ -225,7 +260,8 @@ struct BitTree {
       }
 #endif
       StatSiteScope<Coder> site(kSiteBitTree);
-      const uint32_t out = CodeFrom<0>(coder, value, 0, 0);
+      auto sym = coder.BeginSymbols();
+      const uint32_t out = CodeFrom<0, Coder::kEncoding>(sym, value, 0, 0);
       return Coder::kEncoding ? value : out;
     }
   }
@@ -234,19 +270,23 @@ struct BitTree {
   template <int kPrefix>
   static constexpr int Chunk() { return kPrefix == 0 ? kFirstChunk : 4; }
 
-  template <int kPrefix, typename Coder>
-  ARIXV_FORCE_INLINE uint32_t CodeFrom(Coder& coder, uint32_t value,
+  template <int kPrefix, bool kEncoding, typename Session>
+  ARIXV_FORCE_INLINE uint32_t CodeFrom(Session& sym, uint32_t value,
                                        uint32_t prefix_value, uint32_t base) {
     constexpr int kChunk = Chunk<kPrefix>();
     constexpr int kShift = kBits - kPrefix - kChunk;
     const uint32_t want =
-        Coder::kEncoding ? (value >> kShift) & ((1u << kChunk) - 1u) : 0u;
-    const uint32_t s = coder.template CodeSymbol<1 << kChunk, kRateCap>(
-        tables[base + prefix_value], want);
+        kEncoding ? (value >> kShift) & ((1u << kChunk) - 1u) : 0u;
+    const uint32_t s =
+        kPrefix == 0
+            ? sym.template First<1 << kChunk, kRateCap>(
+                  tables[base + prefix_value], want)
+            : sym.template Next<1 << kChunk, kRateCap>(
+                  tables[base + prefix_value], want);
     const uint32_t next = (prefix_value << kChunk) | s;
     if constexpr (kPrefix + kChunk < kBits) {
-      return CodeFrom<kPrefix + kChunk>(coder, value, next,
-                                        base + (1u << kPrefix));
+      return CodeFrom<kPrefix + kChunk, kEncoding>(sym, value, next,
+                                                   base + (1u << kPrefix));
     } else {
       return next;
     }
@@ -463,13 +503,14 @@ struct LazyLeafTree8 {
       }
 #endif
       StatSiteScope<Coder> site(kSiteBitTree);
-      const uint32_t high = coder.template CodeSymbol<16, kRateCap>(
+      auto sym = coder.BeginSymbols();
+      const uint32_t high = sym.template First<16, kRateCap>(
           root, (value >> 4) & 15u);
       ArenaPtr<SymbolCdf>& low_table = leaf[high];
       if (!low_table) {
         MakeLeaf(arena, low_table, high, init_leaf);
       }
-      const uint32_t low = coder.template CodeSymbol<16, kRateCap>(
+      const uint32_t low = sym.template Next<16, kRateCap>(
           *low_table, value & 15u);
       return Coder::kEncoding ? value : ((high << 4) | low);
     }
