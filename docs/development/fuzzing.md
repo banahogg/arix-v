@@ -27,7 +27,31 @@ scripts/fuzz/overnight.sh
 The campaign requires AFL++, Clang, Valgrind, multilib GCC/G++, and optionally
 SPIRV-Tools for valid-module mutation. Results live in ignored `fuzz-out/`.
 Use `scripts/fuzz/triage.sh` for a report and `scripts/fuzz/stop.sh` to stop
-the launched jobs.
+the launched jobs. For a time-boxed run, chain the stop and triage after a
+sleep, e.g.
+`scripts/fuzz/overnight.sh && nohup sh -c 'sleep 2h; scripts/fuzz/stop.sh; scripts/fuzz/triage.sh' >/dev/null 2>&1 &`.
+
+### spirv-fuzz
+
+The generator loop uses `spirv-fuzz` when it is on `PATH`, and otherwise only
+`spirv-opt` pass pipelines. Distribution `spirv-tools` packages (Ubuntu
+included) build without it, so build it from source. Upstream `spirv-fuzz`
+validates every input as universal SPIR-V 1.3, which rejects the corpus's
+SPIR-V 1.4–1.6 modules (about a third of it).
+`scripts/fuzz/spirv-fuzz-target-env.patch` makes it use each input module's
+own version instead:
+
+```bash
+git clone https://github.com/KhronosGroup/SPIRV-Tools.git ~/src/spirv-tools
+cd ~/src/spirv-tools && python3 utils/git-sync-deps
+git apply <arix-v checkout>/scripts/fuzz/spirv-fuzz-target-env.patch
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DSPIRV_BUILD_FUZZER=ON -DSPIRV_SKIP_TESTS=ON
+ninja -C build spirv-fuzz && cp build/tools/spirv-fuzz ~/.local/bin/
+```
+
+`spirv-fuzz` occasionally crashes on a corpus module (an upstream bug); the
+loop then falls back to `spirv-opt` for that iteration.
 
 Some sanitizer environments need custom process wrapping. For example,
 `RUN_WRAP="setarch $(uname -m) -R" scripts/fuzz/overnight.sh` applies a wrapper

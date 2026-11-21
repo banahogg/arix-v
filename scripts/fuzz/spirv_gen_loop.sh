@@ -4,9 +4,11 @@
 # Random-byte fuzzing mostly exercises the byte-fallback model; this loop
 # targets the grammar model by mutating real corpus modules while keeping
 # them valid SPIR-V: spirv-fuzz if available, otherwise random spirv-opt
-# pass pipelines. Every mutant is round-trip checked with an ASan/UBSan CLI
-# build, and also dropped into a foreign-sync directory that the AFL++ main
-# instance imports as extra seeds.
+# pass pipelines (also the fallback whenever spirv-fuzz yields no mutant).
+# Upstream spirv-fuzz rejects SPIR-V 1.4+ input; see
+# docs/development/fuzzing.md for the local patch. Every mutant is
+# round-trip checked with an ASan/UBSan CLI build, and also dropped into a
+# foreign-sync directory that the AFL++ main instance imports as extra seeds.
 #
 # Usage: spirv_gen_loop.sh <worker-id> <corpus-dir> <cli-binary> <out-dir>
 #   out-dir gets queue/ (AFL -F sync), failures/, and gen.log.
@@ -54,6 +56,7 @@ opt_passes=(
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+donors="$tmp/donors.txt"
 
 iter=0
 while :; do
@@ -63,9 +66,18 @@ while :; do
   rm -f "$mutant"
 
   if [ "$have_spirv_fuzz" -eq 1 ] && [ $((RANDOM % 2)) -eq 0 ]; then
-    timeout 30 spirv-fuzz "$src" -o "$mutant" --seed="$seed" \
-      >>"$log" 2>&1
-  else
+    # spirv-fuzz refuses to fuzz without a donor list; give it a few random
+    # corpus modules to splice functions from.
+    : >"$donors"
+    for _ in 1 2 3 4; do
+      printf '%s\n' "${corpus[RANDOM % ${#corpus[@]}]}" >>"$donors"
+    done
+    timeout 30 spirv-fuzz "$src" -o "$mutant" --donors="$donors" \
+      --seed="$seed" >>"$log" 2>&1
+  fi
+  # spirv-opt path, also taken when spirv-fuzz rejected the input.
+  if [ ! -s "$mutant" ]; then
+    rm -f "$mutant"
     picks=()
     for _ in $(seq $((1 + RANDOM % 4))); do
       picks+=("${opt_passes[RANDOM % ${#opt_passes[@]}]}")

@@ -1,0 +1,40 @@
+# Local SPIRV-Tools patch: spirv-fuzz validates and fuzzes against the input
+# module's SPIR-V version instead of a hardcoded universal 1.3 (which rejects
+# 1.4+ modules). Apply with: git -C <SPIRV-Tools> apply <this file>
+diff --git a/tools/fuzz/fuzz.cpp b/tools/fuzz/fuzz.cpp
+index ddf9c419..19460e0b 100644
+--- a/tools/fuzz/fuzz.cpp
++++ b/tools/fuzz/fuzz.cpp
+@@ -715,6 +715,23 @@ int main(int argc, const char** argv) {
+     return 1;
+   }
+ 
++  // Validate and fuzz against the input module's own SPIR-V version instead of
++  // always using kDefaultEnvironment (1.3), which rejects 1.4+ modules as
++  // invalid. Unrecognized or byte-swapped headers keep the default.
++  spv_target_env target_env = kDefaultEnvironment;
++  if (binary_in.size() >= 2 && binary_in[0] == 0x07230203u) {
++    switch (binary_in[1]) {
++      case 0x00010000u: target_env = SPV_ENV_UNIVERSAL_1_0; break;
++      case 0x00010100u: target_env = SPV_ENV_UNIVERSAL_1_1; break;
++      case 0x00010200u: target_env = SPV_ENV_UNIVERSAL_1_2; break;
++      case 0x00010300u: target_env = SPV_ENV_UNIVERSAL_1_3; break;
++      case 0x00010400u: target_env = SPV_ENV_UNIVERSAL_1_4; break;
++      case 0x00010500u: target_env = SPV_ENV_UNIVERSAL_1_5; break;
++      case 0x00010600u: target_env = SPV_ENV_UNIVERSAL_1_6; break;
++      default: break;
++    }
++  }
++
+   spvtools::fuzz::protobufs::FactSequence initial_facts;
+ 
+   // If not found, dot_pos will be std::string::npos, which can be used in
+@@ -738,8 +755,6 @@ int main(int argc, const char** argv) {
+   std::vector<uint32_t> binary_out;
+   spvtools::fuzz::protobufs::TransformationSequence transformations_applied;
+ 
+-  spv_target_env target_env = kDefaultEnvironment;
+-
+   switch (status.action) {
+     case FuzzActions::FORCE_RENDER_RED:
+       if (!spvtools::fuzz::ForceRenderRed(
