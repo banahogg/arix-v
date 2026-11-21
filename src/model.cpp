@@ -3248,8 +3248,11 @@ void RecordModelMemory(const ModelState& m) {
   add("strings history", VecBytes(m.strings->history), true);
   add("operand_bytes ByteModels", m.operand_bytes ? sizeof(*m.operand_bytes) : 0,
       true);
-  add("tracker ID map (stamps touched)", m.tracker.IdMapBytes(), false);
-  add("tracker ID map stamps", m.tracker.IdMapBytes() / (2 * 4 + sizeof(Tracker::IdInfo)) * 4, true);
+  add("tracker ID map (keys touched)", m.tracker.IdMapBytes(), false);
+  add("tracker ID map keys",
+      m.tracker.IdMapBytes() / (sizeof(uint32_t) + sizeof(Tracker::IdInfo)) *
+          sizeof(uint32_t),
+      true);
   size_t strings = VecBytes(m.recent_strings);
   for (const std::string& str : m.recent_strings) strings += str.capacity() > 15 ? str.capacity() + 1 : 0;
   add("recent_strings", strings, true);

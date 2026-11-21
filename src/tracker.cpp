@@ -75,13 +75,16 @@ const Tracker::IdInfo* Tracker::IdMap::Find(uint32_t id) const {
     return nullptr;
   }
   size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
-  while (slot_gen_[i] == generation_) {
-    if (keys_[i] == id) {
+  for (;;) {
+    const uint32_t k = keys_[i];
+    if (k == id) {
       return &values_[i];
+    }
+    if (k == 0) {
+      return nullptr;
     }
     i = (i + 1) & mask_;
   }
-  return nullptr;
 }
 
 Tracker::IdInfo& Tracker::IdMap::Ensure(uint32_t id) {
@@ -96,35 +99,32 @@ Tracker::IdInfo& Tracker::IdMap::Ensure(uint32_t id) {
     Rehash(kIdMapMinSlots);
   }
   size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
-  while (slot_gen_[i] == generation_) {
-    if (keys_[i] == id) {
+  for (;;) {
+    const uint32_t k = keys_[i];
+    if (k == id) {
       return values_[i];
+    }
+    if (k == 0) {
+      break;
     }
     i = (i + 1) & mask_;
   }
   if ((size_ + 1) * 10 >= capacity_ * 7) {
     Rehash(capacity_ * 2);
     i = static_cast<size_t>(id * kIdHashMul) & mask_;
-    while (slot_gen_[i] == generation_) {
+    while (keys_[i] != 0) {
       i = (i + 1) & mask_;
     }
   }
   keys_[i] = id;
-  slot_gen_[i] = generation_;
   values_[i] = IdInfo{};
   ++size_;
   return values_[i];
 }
 
 void Tracker::IdMap::Clear() {
-  // Bump the generation so every slot's stamp no longer matches: the whole map
-  // reads as empty without touching the key array. Only when the 32-bit
-  // generation wraps back to 0 (after ~4 billion modules through one map) do we
-  // pay a one-time bulk reset to re-establish the "0 => empty" invariant.
-  ++generation_;
-  if (generation_ == 0) {
-    std::fill(slot_gen_.get(), slot_gen_.get() + capacity_, 0u);
-    generation_ = 1;
+  if (size_ > 0 && capacity_ > 0) {
+    std::fill(keys_.get(), keys_.get() + capacity_, 0u);
   }
   size_ = 0;
   has_zero_ = false;
@@ -143,28 +143,23 @@ void Tracker::IdMap::Reserve(size_t expected_ids) {
 void Tracker::IdMap::Rehash(size_t slot_count) {
   const std::unique_ptr<uint32_t[]> old_keys = std::move(keys_);
   const std::unique_ptr<IdInfo[]> old_values = std::move(values_);
-  const std::unique_ptr<uint32_t[]> old_gen = std::move(slot_gen_);
   const size_t old_capacity = capacity_;
-  // Keys and values stay uninitialized (written when a slot is claimed);
-  // only the stamps are zeroed. Fresh stamps are 0 and occupied slots below
-  // are stamped with generation_, which is never 0 during use (Clear() skips
-  // 0), so nothing else in the new array reads as occupied.
-  keys_.reset(new uint32_t[slot_count]);
+  // Only keys_ is zero-initialized (0 => empty); values_ stays uninitialized
+  // until a slot is claimed.
+  keys_.reset(new uint32_t[slot_count]());
   values_.reset(new IdInfo[slot_count]);
-  slot_gen_.reset(new uint32_t[slot_count]());
   capacity_ = slot_count;
   mask_ = slot_count - 1;
   for (size_t from = 0; from < old_capacity; ++from) {
-    if (old_gen[from] != generation_) {
-      continue;  // slot was empty in the current generation
-    }
     const uint32_t id = old_keys[from];
+    if (id == 0) {
+      continue;
+    }
     size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
-    while (slot_gen_[i] == generation_) {
+    while (keys_[i] != 0) {
       i = (i + 1) & mask_;
     }
     keys_[i] = id;
-    slot_gen_[i] = generation_;
     values_[i] = old_values[from];
   }
 }

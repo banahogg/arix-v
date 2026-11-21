@@ -331,13 +331,11 @@ class Tracker {
   void Reset();
 
  private:
-  // Open-addressing hash map from ID to IdInfo. Linear probing over
-  // power-of-two key/value arrays; a slot is occupied iff its generation
-  // stamp equals the map's current generation, and ID 0 (invalid SPIR-V, but
-  // reachable from corrupt input) gets a dedicated out-of-table slot. Grows by
-  // doubling; Clear() keeps capacity and, instead of zeroing the whole key
-  // array, just bumps the generation so all slots read as empty in O(1). The
-  // stamp array is only bulk-reset on the (practically never) generation wrap.
+  // Open-addressed linear-probing table for sparse ID metadata. Uses
+  // power-of-two key/value arrays; keys_[i] == 0 marks an empty slot, and ID 0
+  // (invalid SPIR-V, but reachable from corrupt input) gets a dedicated
+  // out-of-table slot. Grows by doubling; values_ stays uninitialized until a
+  // slot is claimed.
   class IdMap {
    public:
     const IdInfo* Find(uint32_t id) const;
@@ -346,7 +344,7 @@ class Tracker {
     }
     IdInfo& Ensure(uint32_t id);
     size_t Bytes() const {
-      return capacity_ * (2 * sizeof(uint32_t) + sizeof(IdInfo));
+      return capacity_ * (sizeof(uint32_t) + sizeof(IdInfo));
     }
     void Clear();
     // Prepare for roughly `expected_ids` distinct IDs. The count derives from
@@ -358,15 +356,13 @@ class Tracker {
    private:
     void Rehash(size_t slot_count);
 
-    // Parallel arrays of capacity_ (a power of two) slots. Only slot_gen_ is
-    // initialized: a slot's key and value are written when it is claimed,
-    // and occupancy is decided by the stamp alone.
+    // Parallel arrays of capacity_ (a power of two) slots. Only keys_ is
+    // zero-initialized: keys_[i] == 0 means empty, and values_[i] is written
+    // when a slot is claimed.
     std::unique_ptr<uint32_t[]> keys_;
     std::unique_ptr<IdInfo[]> values_;
-    std::unique_ptr<uint32_t[]> slot_gen_;  // == generation_ if occupied
     size_t capacity_ = 0;
-    uint32_t generation_ = 0;         // bumped by Clear(); 0 => all slots empty
-    size_t size_ = 0;                 // occupied slots in the current generation
+    size_t size_ = 0;                 // occupied non-zero slots
     size_t mask_ = 0;                 // capacity_ - 1 once allocated
     bool has_zero_ = false;
     IdInfo zero_info_{};
