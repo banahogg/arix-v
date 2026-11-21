@@ -2810,6 +2810,7 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
   uint32_t prev_inst_result_list = ModelState::kUnresolvedList;
   WordBuffer<kInlineInstructionWords> inst_words;
   WordBuffer<kInlineOperandWords> coded_words;
+  OperandCursor cursor;
   while (body_pos < body_words) {
     // word_count comes from the untrusted header. Once the coded stream is
     // exhausted, every further word is decoded from past-the-end zero bytes;
@@ -2866,7 +2867,6 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
     io.EmitBodyWord(initial_word0);
 
     std::array<uint8_t, 4> prev_bytes = {0, 0, 0, 0};
-    OperandCursor cursor;
     // Fixed layouts have only required, one-word operands and no enumerant
     // parameters (including optional-tail instructions whose present prefix is
     // fixed-one-word). Their slot list therefore describes every decoded field
@@ -2910,7 +2910,6 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
         field = {OperandCursor::FieldType::kOperand, slot.kind, kind.category,
                  static_cast<uint8_t>(consumed < 15 ? consumed : 15), false,
                  false, remaining};
-        cursor_field = field;
       } else {
         cursor_field = cursor.Next();
         field = cursor_field;
@@ -2925,13 +2924,11 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
       }
 
       const uint32_t hint0 = io.BodyWord(body_pos + 1 + consumed);
-      // Nearly every operand category produces one word.  On decode, avoid
-      // routing those words through coded_words only to copy them immediately
-      // to inst_words and the output.  Multiword fields (notably strings and
-      // context-dependent numbers) retain the staging buffer below.
+      // Nearly every operand category produces one word.  Avoid routing those
+      // words through coded_words; multiword fields (strings and wide
+      // context-dependent numbers) clear and populate coded_words directly.
       uint32_t direct_word = 0;
       bool has_direct_word = false;
-      coded_words.clear();
       SingleWordStager<Bits> stage_single_word(coded_words, direct_word,
                                                 has_direct_word);
       uint32_t consume_span = 1;
@@ -3041,6 +3038,7 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
                   bits, model, current_result_type, hint0));
             } else if (actual_span >= 2 &&
                 model.tracker.TypeWidth(current_result_type) > 32) {
+              coded_words.clear();
               const uint32_t low = CodeContextNumberRaw(bits, model, hint0);
               coded_words.push_back(low);
               const uint32_t high_hint =
@@ -3056,6 +3054,7 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
                     CodeContextNumberRaw(bits, model, high_hint));
               }
             } else {
+              coded_words.clear();
               for (uint32_t i = 0; i < actual_span; ++i) {
                 coded_words.push_back(CodeContextNumberRaw(
                     bits, model,
