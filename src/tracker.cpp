@@ -195,15 +195,15 @@ void RecencyList::Touch(uint32_t id) {
   if (cap_ <= 0) {
     return;
   }
+  if (size_ > 0 && items_[0] == id) {
+    return;
+  }
   const uint32_t mask = MatchMask(id);
   // `last` is the slot that the move-to-front overwrites: the touched entry
   // when present, else the first free slot (or the oldest entry when full).
   int last;
   if (mask != 0) {
     last = __builtin_ctz(mask);
-    if (last == 0) {
-      return;
-    }
   } else {
     last = size_ < cap_ ? size_ : cap_ - 1;
     if (size_ < cap_) {
