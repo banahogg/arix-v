@@ -410,6 +410,42 @@ struct InstContext {
   InstGroup group;
 };
 
+// Reverses the low 23 bits (IEEE-754 float32 mantissa) so the most-significant
+// mantissa bits — the ones nonzero in simple fractions — sit in the low bit
+// positions where UintModel codes small values.
+inline uint32_t ReverseBits23(uint32_t v) {
+  v = ((v & 0x55555555u) << 1) | ((v >> 1) & 0x55555555u);
+  v = ((v & 0x33333333u) << 2) | ((v >> 2) & 0x33333333u);
+  v = ((v & 0x0f0f0f0fu) << 4) | ((v >> 4) & 0x0f0f0f0fu);
+  v = ((v & 0x00ff00ffu) << 8) | ((v >> 8) & 0x00ff00ffu);
+  v = (v << 16) | (v >> 16);
+  return v >> 9;
+}
+
+// Per-(instruction, slot, preceding-value-enum) literal history for stride
+// prediction (e.g. OpDecorate/OpMemberDecorate Offset, Location, Binding).
+// Direct-mapped and fixed-size so hostile input cannot grow memory.
+struct EnumLiteralCache {
+  static constexpr uint32_t kBits = 5;
+  static constexpr size_t kSize = size_t{1} << kBits;
+  struct Entry {
+    uint64_t key;  // bit 63 set when occupied; 0 = empty
+    uint32_t last;
+    uint32_t stride;
+  };
+  Entry entries[kSize];
+  Prob stride_match[9];  // indexed by Slot8(slot)
+};
+
+// Per-type last integer constant value, for delta coding of 1-word integer
+// LiteralContextDependentNumber operands.
+struct IntConstCache {
+  static constexpr size_t kSize = 8;
+  uint32_t type_id[kSize];
+  uint32_t last[kSize];
+  uint32_t next_evict;
+};
+
 // Literal-string model, all learned per module from grammar-derived starts:
 // - a whole-string dictionary of grammar names (extensions, ext-inst sets);
 // - an order-2 match model over every string seen so far, primed with the
@@ -617,7 +653,15 @@ struct ModelState {
   std::vector<std::unique_ptr<BitEnumModel>> bit_enums;
 
   std::vector<ArenaPtr<UintModel>> integer_values;
-  UintModel context_number;
+  ArenaPtr<EnumLiteralCache> enum_literals;
+  ArenaPtr<UintModel> context_number;
+  ArenaPtr<UintModel> context_int;
+  ArenaPtr<IntConstCache> int_const_cache;
+  Prob float_zero;
+  Prob float_sign;
+  Prob float_mant_zero;
+  ArenaPtr<UintModel> float_exp;
+  ArenaPtr<UintModel> float_mant;
   Prob context_high_signext;
   ArenaPtr<UintModel> spec_constant_op;  // rare: 16/1080 files
 
@@ -1361,18 +1405,23 @@ uint32_t CodeBitEnum(Bits& bits, ModelState& model,
 }
 
 template <class Bits>
-uint32_t CodeLiteralInteger(Bits& bits, ModelState& model,
-                            const InstructionDesc* desc,
-                            const OperandCursor::Field& field,
-                            uint16_t inst_index, uint32_t hint) {
-  InstGroup& group = model.inst_group(inst_index);
-  const size_t key = Slot16(field.slot);
-  if (group.last_literal_valid[key] == 0) {
-    group.last_literal[key] = 0;
-    group.last_literal_valid[key] = 1;
-  }
-  const uint32_t base = group.last_literal[key];
+ARIXV_NOINLINE uint32_t CodeLiteralInteger(Bits& bits, ModelState& model,
+                                           const InstructionDesc* desc,
+                                           const OperandCursor::Field& field,
+                                           uint16_t inst_index,
+                                           bool has_last_enum,
+                                           uint32_t last_enum, uint32_t hint) {
   if constexpr (Bits::kRawResidual) {
+    (void)desc;
+    (void)has_last_enum;
+    (void)last_enum;
+    InstGroup& group = model.inst_group(inst_index);
+    const size_t key = Slot16(field.slot);
+    if (group.last_literal_valid[key] == 0) {
+      group.last_literal[key] = 0;
+      group.last_literal_valid[key] = 1;
+    }
+    const uint32_t base = group.last_literal[key];
     const uint32_t delta = Bits::kEncoding ? ZigZag32(hint - base) : 0;
     const uint32_t coded = bits.CodeUint32(delta);
     const uint32_t value = Bits::kEncoding ? hint : base + UnZigZag32(coded);
@@ -1380,16 +1429,114 @@ uint32_t CodeLiteralInteger(Bits& bits, ModelState& model,
     return Bits::kEncoding ? hint : value;
   }
   const size_t cls = ClassBucket(desc);
+  const uint32_t slot8 = Slot8(field.slot);
+  if (has_last_enum) {
+    EnumLiteralCache& cache = EnsureContext(model.arena, model.enum_literals);
+    const uint64_t cache_key =
+        (uint64_t{1} << 63) | (static_cast<uint64_t>(inst_index) << 36) |
+        (static_cast<uint64_t>(Slot16(field.slot)) << 32) | last_enum;
+    const uint32_t mix =
+        static_cast<uint32_t>(cache_key ^ (cache_key >> 32)) * 0x9E3779B1u;
+    EnumLiteralCache::Entry& entry =
+        cache.entries[mix >> (32 - EnumLiteralCache::kBits)];
+    const bool hit = entry.key == cache_key;
+    const uint32_t prev = hit ? entry.last : 0u;
+    const uint32_t stride = hit ? entry.stride : 0u;
+    const uint32_t pred = prev + stride;
+    uint32_t value = pred;
+    if (!bits.CodeBit(cache.stride_match[slot8],
+                      Bits::kEncoding && hint == pred)) {
+      UintModel& ctx =
+          EnsureContext(model.arena, model.integer_values[cls * 9 + slot8]);
+      value = CodeDelta(bits, model.arena, ctx, hint, prev);
+    }
+    entry.key = cache_key;
+    entry.stride = value - prev;
+    entry.last = value;
+    return Bits::kEncoding ? hint : value;
+  }
+  InstGroup& group = model.inst_group(inst_index);
+  const size_t key = Slot16(field.slot);
+  if (group.last_literal_valid[key] == 0) {
+    group.last_literal[key] = 0;
+    group.last_literal_valid[key] = 1;
+  }
+  const uint32_t base = group.last_literal[key];
   UintModel& ctx =
-      EnsureContext(model.arena, model.integer_values[cls * 9 + Slot8(field.slot)]);
+      EnsureContext(model.arena, model.integer_values[cls * 9 + slot8]);
   const uint32_t value = CodeDelta(bits, model.arena, ctx, hint, base);
   group.last_literal[key] = value;
   return Bits::kEncoding ? hint : value;
 }
 
 template <class Bits>
-uint32_t CodeContextNumber(Bits& bits, ModelState& model, uint32_t hint) {
-  return CodeUint(bits, model.arena, model.context_number, hint);
+uint32_t CodeContextNumberRaw(Bits& bits, ModelState& model, uint32_t hint) {
+  if constexpr (Bits::kRawResidual) {
+    (void)model;
+    return bits.CodeUint32(hint);
+  }
+  return CodeUint(bits, model.arena,
+                  EnsureUint(model.arena, model.context_number), hint);
+}
+
+template <class Bits>
+ARIXV_NOINLINE uint32_t CodeContextNumber(Bits& bits, ModelState& model,
+                                          uint32_t current_result_type,
+                                          uint32_t hint) {
+  if constexpr (Bits::kRawResidual) {
+    (void)model;
+    (void)current_result_type;
+    return bits.CodeUint32(hint);
+  }
+  const Tracker::IdInfo* type_info =
+      current_result_type != 0 ? model.tracker.Find(current_result_type)
+                               : nullptr;
+  if (type_info != nullptr) {
+    if (type_info->type_class == Tracker::TypeClass::kFloat &&
+        type_info->width == 32) {
+      if (bits.CodeBit(model.float_zero, Bits::kEncoding && hint == 0u)) {
+        return 0u;
+      }
+      const bool neg =
+          bits.CodeBit(model.float_sign, Bits::kEncoding && (hint >> 31) != 0);
+      const uint32_t exp =
+          CodeDelta(bits, model.arena, EnsureUint(model.arena, model.float_exp),
+                    (hint >> 23) & 0xffu, 127u) &
+          0xffu;
+      const uint32_t rmant_hint = Bits::kEncoding ? ReverseBits23(hint) : 0u;
+      const bool mant_zero = bits.CodeBit(model.float_mant_zero,
+                                          Bits::kEncoding && rmant_hint == 0u);
+      const uint32_t rmant =
+          mant_zero ? 0u
+                    : CodeUint(bits, model.arena,
+                               EnsureUint(model.arena, model.float_mant),
+                               rmant_hint);
+      const uint32_t value =
+          (neg ? 0x80000000u : 0u) | (exp << 23) | ReverseBits23(rmant);
+      return Bits::kEncoding ? hint : value;
+    }
+    if (type_info->type_class == Tracker::TypeClass::kInt) {
+      IntConstCache& cache = EnsureContext(model.arena, model.int_const_cache);
+      size_t slot = IntConstCache::kSize;
+      for (size_t i = 0; i < IntConstCache::kSize; ++i) {
+        if (cache.type_id[i] == current_result_type) {
+          slot = i;
+          break;
+        }
+      }
+      const uint32_t base = slot < IntConstCache::kSize ? cache.last[slot] : 0u;
+      const uint32_t value = CodeDelta(
+          bits, model.arena, EnsureUint(model.arena, model.context_int), hint,
+          base);
+      if (slot == IntConstCache::kSize) {
+        slot = cache.next_evict++ & (IntConstCache::kSize - 1);
+        cache.type_id[slot] = current_result_type;
+      }
+      cache.last[slot] = value;
+      return Bits::kEncoding ? hint : value;
+    }
+  }
+  return CodeContextNumberRaw(bits, model, hint);
 }
 
 template <class Bits>
@@ -1913,6 +2060,8 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
     uint32_t consumed = 0;
     uint32_t current_result_type = 0;
     const ExtInstSetDesc* current_ext_set = nullptr;
+    bool has_last_enum = false;
+    uint32_t last_enum = 0;
     // Result Type is coded after the operands unless operand parsing depends
     // on it (context-dependent literal widths).
     const bool defer_result_type = desc != nullptr && !opaque &&
@@ -1999,10 +2148,14 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
             }
             break;
           }
-          case OperandCategory::kValueEnum:
+          case OperandCategory::kValueEnum: {
             stat(kStatValueEnum);
-            stage_single_word(CodeValueEnum(bits, model, field, hint0));
+            const uint32_t word = CodeValueEnum(bits, model, field, hint0);
+            stage_single_word(word);
+            has_last_enum = true;
+            last_enum = word;
             break;
+          }
           case OperandCategory::kBitEnum:
             stat(kStatBitEnum);
             stage_single_word(CodeBitEnum(bits, model, field, hint0));
@@ -2010,7 +2163,8 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
           case OperandCategory::kLiteralInteger:
             stat(kStatLitInt);
             stage_single_word(CodeLiteralInteger(bits, model, desc, field,
-                                                 inst_index, hint0));
+                                                 inst_index, has_last_enum,
+                                                 last_enum, hint0));
             break;
           case OperandCategory::kLiteralContextDependentNumber: {
             stat(kStatLitCdn);
@@ -2021,10 +2175,11 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
                              remaining);
             const uint32_t actual_span = std::min(consume_span, remaining);
             if (actual_span == 1) {
-              stage_single_word(CodeContextNumber(bits, model, hint0));
+              stage_single_word(CodeContextNumber(
+                  bits, model, current_result_type, hint0));
             } else if (actual_span >= 2 &&
                 model.tracker.TypeWidth(current_result_type) > 32) {
-              const uint32_t low = CodeContextNumber(bits, model, hint0);
+              const uint32_t low = CodeContextNumberRaw(bits, model, hint0);
               coded_words.push_back(low);
               const uint32_t high_hint =
                   Bits::kEncoding ? io.BodyWord(body_pos + 1 + consumed + 1)
@@ -2036,11 +2191,11 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
                 coded_words.push_back(signext);
               } else {
                 coded_words.push_back(
-                    CodeContextNumber(bits, model, high_hint));
+                    CodeContextNumberRaw(bits, model, high_hint));
               }
             } else {
               for (uint32_t i = 0; i < actual_span; ++i) {
-                coded_words.push_back(CodeContextNumber(
+                coded_words.push_back(CodeContextNumberRaw(
                     bits, model,
                     Bits::kEncoding ? io.BodyWord(body_pos + 1 + consumed + i)
                                     : 0));

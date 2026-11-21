@@ -435,3 +435,82 @@ IDs (−1.6% more on top, but about 6% slower in its prototype: a speed/ratio
 branch); copying a repeated `OpPhi` parent-label column (small ceiling,
 ~1K label operands); predicting an operand's offset from the latest
 result ID (train-only so far, overlaps the history).
+
+### 9. Literal modeling: float32 split, per-type int deltas, enum-keyed strides (2026-11-20)
+
+**Train-only analysis** (`literal_int` 18.8 KB + `literal_cdn` 16.9 KB on
+train; 73.1 KB full corpus, untouched since `main`). Two independent sources
+of waste stood out:
+- `literal_cdn` (`OpConstant` / `OpSpecConstant`): 32-bit floats accounted
+  for 73% of `literal_cdn` bytes (25.0 bits/float) because raw `uint32_t`
+  coding sees IEEE-754 exponent bits in bits 23–30 and high mantissa bits in
+  bits 20–22 as huge 30-bit integers. 35.6% of train float32s have zero
+  mantissa and 51.7% have ≤ 4 nonzero top mantissa bits. Integer constants
+  were coded as raw `uint32_t` without delta prediction, losing small
+  step sequences per integer type.
+- `literal_int`: half the bytes came from `OpDecorate` / `OpMemberDecorate`
+  (`Offset`, `Location`, `Binding`, `DescriptorSet`, `ArrayStride`,
+  `MatrixStride`), which all collided in `InstGroup::last_literal[slot]`.
+  Other instructions with enum-preceded literals (`OpExecutionMode`,
+  `OpTypeImage`, `OpSource`) share the same grammar pattern.
+
+**Implementation** (all learned per module; no shipped knowledge, no
+hardcoded opcodes):
+- **Float32 constants** (`actual_span == 1`, `TypeClass::kFloat`, width 32):
+  zero flag (`hint == 0`, preserving `-0.0f` on the nonzero path), sign bit,
+  8-bit exponent coded as a zigzag delta from 127 (`float_exp`), zero-mantissa
+  flag, and the 23-bit mantissa bit-reversed (`ReverseBits23`) into a shared
+  `UintModel` (`float_mant`) so leading mantissa bits code as small integers.
+  The 1 + 8 + 23 split is a lossless bijection over all `uint32_t` (including
+  NaNs, subnormals, `-0.0f`, and hostile inputs). `float16` is left on the
+  generic path because non-canonical SPIR-V can carry nonzero upper 16 bits
+  (and splitting it was worth only ~24 B on train).
+- **Integer constants** (`actual_span == 1`, `TypeClass::kInt`): delta from
+  the last value of the same `result_type` ID via a lazily allocated 8-entry
+  `IntConstCache` and a shared `UintModel` (`context_int`).
+- **Enum-preceded literal integers**: `CodeModule` tracks the most recent
+  `OperandCategory::kValueEnum` word within each instruction. When present,
+  `CodeLiteralInteger` looks up `(inst_index, slot, last_enum)` in a lazily
+  allocated 32-entry direct-mapped `EnumLiteralCache` (`{key, last, stride}`),
+  codes a per-slot stride-match flag (`value == prev + stride`), and on a miss
+  falls back to `CodeDelta` with the existing shared `integer_values` model.
+  Rejected on train: recency-16 list for constants, stride flag on all
+  literals (worse than enum-preceded only), per-`(opcode, slot, enum)`
+  `UintModel`s (cold-start regression on small modules), and 64-entry
+  `EnumLiteralCache` (byte-identical to 32 entries on train).
+- `context_number` is now a lazy `ArenaPtr<UintModel>` instead of an inline
+  `ModelState` member. `CodeLiteralInteger` and `CodeContextNumber` are
+  marked `ARIXV_NOINLINE` (like `CodeString`) to keep `CodeModule`'s hot loop
+  compact.
+
+| | corpus bytes | Δ vs item 16 | train total | holdout total | decode Ir | wall |
+|---|---|---|---|---|---|---|
+| item 16 (`7f24981`) | 873,594 | — | 0.13895 | 0.14929 | 323.4M | 76.58 MiB/s |
+| **landed: item 9** | **859,850** | **−1.57%** | 0.13675 (−1.58%) | 0.14695 (−1.56%) | **323.3M (−0.05%)** | 76.52 MiB/s (−0.08%) |
+
+Train and holdout match almost identically. Mean ratio: train 0.18365 →
+0.18041 (−1.76%), holdout 0.18310 → 0.17980 (−1.80%). Median ratio: train
+0.18013 → 0.17737 (−1.53%), holdout 0.17865 → 0.17493 (−2.08%). Field entropy:
+`literal_int` 40.2 → 35.9 KB (−10.8%), `literal_cdn` 32.9 → 23.6 KB (−28.3%),
+combined 73.1 → 59.4 KB (−18.7%). The 19-instruction golden vector shrinks
+73 → 68 bytes.
+
+**Speed, memory, size.** Without `ARIXV_NOINLINE` on `CodeLiteralInteger` and
+`CodeContextNumber`, decode Ir rose to 327.9M (+1.37%) from `CodeModule`
+inlining bloat; outlining both drops Ir to 323.3M (−0.05% vs baseline, driven
+by fewer `CodeUint` calls on floats and stride-matched decorations). Wall
+time (load ~0.5, `taskset -c 4`, `arixv_decode_bench --iters=10` on all 1080
+files, 12 interleaved rounds): median 76.58 → 76.52 MiB/s, median paired
+−0.08% (−1.76% to +0.42%). Memory (`memory_breakdown`): heap per decode
+184.1 → 185.2 KB (+1.0 KB, +0.56%); bytes touched +484 B (`ModelState` inline
+−176 B from lazy `context_number`, `UintLongRows` −176 B, plus lazy
+`EnumLiteralCache` 532 B and literal `UintModel`s); batched minor page faults
+0.87 → 0.90 (within ±0.05 run noise). Library objects (−O2, text+data):
+305.2 → 310.3 KB (+5.0 KB, all in `model.o`).
+
+Checks: `make all`, `make test` (golden vector regenerated, new literal
+round-trip tests in `model_test`), `make asan`, 3000-iteration fuzz, valgrind
+memcheck with full leak checking (40 corpus decodes, `arixv_test`, 180
+mutated/truncated/overwritten blobs), scalar/SIMD cross-check on 108 files,
+all 1080 corpus files round-trip (default and `--force-coded`).
+

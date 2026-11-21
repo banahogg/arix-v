@@ -403,6 +403,66 @@ void MutatedCorpusRoundTrips() {
   }
 }
 
+void LiteralModelingModules() {
+  // Float32 constants covering all bit-pattern classes (+0, -0, normal powers,
+  // fractional mantissas, subnormals, infinities, quiet/signaling NaNs,
+  // all-ones), plus non-canonical float16 upper bits and 64-bit float64.
+  {
+    std::vector<uint32_t> body = {
+        Op(22, 3), 1, 32,  // %1 = OpTypeFloat 32
+        Op(22, 3), 2, 16,  // %2 = OpTypeFloat 16
+        Op(22, 3), 3, 64,  // %3 = OpTypeFloat 64
+    };
+    const uint32_t f32_bits[] = {
+        0x00000000u, 0x80000000u, 0x3f800000u, 0xbf800000u, 0x3f000000u,
+        0x3ec00000u, 0x00000001u, 0x007fffffu, 0x80000001u, 0x7f800000u,
+        0xff800000u, 0x7f800001u, 0x7fc00000u, 0xffffffffu, 0x3eaaaaabu,
+    };
+    uint32_t id = 4;
+    for (uint32_t bits : f32_bits) {
+      body.insert(body.end(), {Op(43, 4), 1, id++, bits});  // OpConstant
+    }
+    body.insert(body.end(), {Op(50, 4), 1, id++, 0x40490fdbu});  // OpSpecConstant
+    // float16 with nonzero high 16 bits must survive bit-identically.
+    body.insert(body.end(), {Op(43, 4), 2, id++, 0xdead3c00u});
+    // float64 2-word constant.
+    body.insert(body.end(), {Op(43, 5), 3, id++, 0x54442d18u, 0x400921fbu});
+    RoundTrip(Module(body, 0x00010300u, 0, id), true, arixv::kModeSpirv);
+  }
+  // Multi-type integer constants exceeding IntConstCache::kSize (8) plus
+  // wrapping deltas.
+  {
+    std::vector<uint32_t> body;
+    uint32_t id = 1;
+    for (uint32_t t = 0; t < 12; ++t) {
+      body.insert(body.end(), {Op(21, 4), id++, 32, t & 1u});
+    }
+    for (uint32_t round = 0; round < 3; ++round) {
+      for (uint32_t t = 1; t <= 12; ++t) {
+        const uint32_t val =
+            (round == 2 && (t & 1u)) ? (0xffffffffu - t) : (t * 100u + round);
+        body.insert(body.end(), {Op(43, 4), t, id++, val});
+      }
+    }
+    RoundTrip(Module(body, 0x00010300u, 0, id), true, arixv::kModeSpirv);
+  }
+  // Enum-conditioned literal strides across OpDecorate / OpMemberDecorate,
+  // including >32 distinct decoration enums to exercise cache collisions.
+  {
+    std::vector<uint32_t> body;
+    for (uint32_t i = 0; i < 6; ++i) {
+      body.insert(body.end(), {Op(71, 4), 10 + i, 30, i});       // Location
+      body.insert(body.end(), {Op(71, 4), 20 + i, 33, i * 2});   // Binding
+      body.insert(body.end(), {Op(71, 4), 20 + i, 34, 0});       // DescriptorSet
+      body.insert(body.end(), {Op(72, 5), 1, i, 35, i * 16});    // Member Offset
+    }
+    for (uint32_t e = 0; e < 40; ++e) {
+      body.insert(body.end(), {Op(71, 4), 50, e, e * 3});
+    }
+    RoundTrip(Module(body, 0x00010300u, 0, 60), true, arixv::kModeSpirv);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -411,6 +471,7 @@ int main() {
   RawResidualValidation();
   M3FieldModules();
   M4aModules();
+  LiteralModelingModules();
   MutatedCorpusRoundTrips();
   return 0;
 }
