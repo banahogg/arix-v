@@ -4,6 +4,16 @@ The coverage-guided and long-running fuzzing workflow is development-only. It
 is intentionally separate from `make test`, which runs a deterministic smoke
 fuzzer without external tooling or a downloaded corpus.
 
+For a quick coverage-guided check, run `make fuzz-smoke`. It needs
+`clang++` and the corpus. It runs the libFuzzer round-trip and decode harnesses
+(`tools/fuzz/*_cov.cpp`) under ASan/UBSan for `FUZZ_SMOKE_SECONDS` (default
+120) each, on `FUZZ_SMOKE_JOBS` processes (default `nproc`). It is
+recommended after major model or tracker changes and before pushing. Its
+working corpora persist in `build/fuzz-smoke/` between runs. It seeds from the
+whole corpus rather than the size-capped overnight seeds: with the <33 KiB cap
+it missed a known encoder crash in 120 s, while with full seeds it found the
+crash in 42–75 s on 32 cores. `FUZZ_SMOKE_SEED_KB` restores a cap.
+
 To run the overnight campaign, first generate the optional corpus, then run:
 
 ```bash

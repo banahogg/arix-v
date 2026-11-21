@@ -28,7 +28,7 @@ GRAMMAR_TABLES_TEST_SRCS := tests/grammar_tables_test.cpp src/grammar_tables.cpp
 FUZZ_CORPUS := $(wordlist 1,20,$(sort $(wildcard corpus/spv/*.spv)))
 GRAMMAR_JSON_DIR := grammar-deps/spirv-headers/include/spirv/unified1
 
-.PHONY: all test asan check-generated clean
+.PHONY: all test asan fuzz-smoke check-generated clean
 
 all: $(BUILD_DIR)/arixv $(BUILD_DIR)/arixv_bench $(BUILD_DIR)/arixv_decode_bench $(BUILD_DIR)/fuzz_roundtrip
 
@@ -115,6 +115,23 @@ asan: $(BUILD_DIR)/range_coder_test_asan $(BUILD_DIR)/arixv_test_asan $(BUILD_DI
 	$(ASAN_ENV) $(ASAN_RUN) $(BUILD_DIR)/model_test_asan
 	$(ASAN_ENV) $(ASAN_RUN) $(BUILD_DIR)/operand_cursor_test_asan
 	$(ASAN_ENV) $(ASAN_RUN) $(BUILD_DIR)/grammar_tables_test_asan
+
+# Coverage-guided libFuzzer harnesses (clang only), ASan+UBSan with UB fatal.
+LF_CXX ?= clang++
+LF_CXXFLAGS := -O1 -g -std=c++17 -fno-crash-diagnostics \
+	-fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined
+
+$(BUILD_DIR)/fuzz_roundtrip_lf: tools/fuzz/fuzz_roundtrip_cov.cpp $(LIB_SRCS) $(LIB_HDRS) | $(BUILD_DIR)
+	$(LF_CXX) $(CPPFLAGS) $(LF_CXXFLAGS) tools/fuzz/fuzz_roundtrip_cov.cpp $(LIB_SRCS) -o $@
+
+$(BUILD_DIR)/fuzz_decode_lf: tools/fuzz/fuzz_decode_cov.cpp $(LIB_SRCS) $(LIB_HDRS) | $(BUILD_DIR)
+	$(LF_CXX) $(CPPFLAGS) $(LF_CXXFLAGS) tools/fuzz/fuzz_decode_cov.cpp $(LIB_SRCS) -o $@
+
+# A few minutes of coverage-guided fuzzing (docs/development/fuzzing.md).
+# FUZZ_SMOKE_SECONDS (per harness, default 120) and FUZZ_SMOKE_JOBS (default
+# nproc) tune it; ASAN_RUN is passed through as the process wrapper.
+fuzz-smoke: $(BUILD_DIR)/fuzz_roundtrip_lf $(BUILD_DIR)/fuzz_decode_lf $(BUILD_DIR)/arixv
+	BUILD_DIR=$(BUILD_DIR) RUN_WRAP='$(ASAN_RUN)' scripts/fuzz/smoke.sh
 
 clean:
 	rm -rf $(BUILD_DIR)

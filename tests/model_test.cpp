@@ -1604,6 +1604,27 @@ void DeferredWordCountModules() {
       (void)arixv::Decode(mutated.data(), mutated.size(), out);
     }
   }
+
+  // Regression: OpExtInst whose set operand names a struct / function type
+  // rather than an OpExtInstImport. IdInfo::ext_set shares a union with the
+  // type's members{offset, count}, so the encoder's deferred word-count check
+  // must go through the kind-checked ExtInstSetOf; reading ext_set directly
+  // dereferenced {offset, count} as a pointer and crashed (fuzz-found).
+  {
+    std::vector<uint32_t> body = {
+        Op(22, 3), 1, 32,                 // %1 = OpTypeFloat 32
+        Op(30, 4), 2, 1, 1,               // %2 = OpTypeStruct %1 %1
+        Op(30, 3), 3, 1,                  // %3 = OpTypeStruct %1 (offset != 0)
+        Op(33, 4), 4, 1, 1,               // %4 = OpTypeFunction %1 %1
+        Op(12, 6), 1, 10, 2, 4, 1,        // OpExtInst set=%2 (struct)
+        Op(12, 6), 1, 11, 3, 4, 1,        // OpExtInst set=%3 (struct)
+        Op(12, 6), 1, 12, 4, 4, 1,        // OpExtInst set=%4 (fn type)
+        Op(12, 5), 1, 13, 3, 0x7fffu,     // no operands, unknown ext opcode
+        Op(12, 8), 1, 14, 2, 4, 1, 1, 1,  // extra operands
+    };
+    RoundTrip(Module(body, 0x00010300u, 0, 20), false);
+    RoundTrip(Module(body, 0x00010300u, 0, 20), true, arixv::kModeSpirv);
+  }
 }
 
 
