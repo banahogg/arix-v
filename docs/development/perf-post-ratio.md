@@ -239,11 +239,45 @@ wire format or ratio and should be tested on its own branch/experiment.
 - [ ] **T2. Higher order-1 opcode promotion threshold (`kOpcodeOrder1MinCount = 8` vs `4`)**
   - Rationale: fewer lazily-allocated order-1 opcode contexts → smaller arena
     footprint, fewer D1 misses and page faults, tiny ratio cost.
-- [ ] **T3. Compact / flat `IdMap` packing or smaller per-ID metadata**
+- [x] **T3. Compact / flat `IdMap` packing or smaller per-ID metadata** *(tested & skipped on `perf/post-ratio-part-b`)*
   - Rationale: `Tracker::Ensure` is **18.4% of all L1d misses**; shrinking
     `IdInfo` or separating cold type-algebra fields from hot lookup fields
     (`result_type`, `type_list`, `values_list`) could cut D1 misses (potentially
     byte-identical if purely structural layout!).
+  - Empirical finding (8 byte-identical variants tested against `main` @ `e7afd7c`,
+    all verified `759,260 B` / checksum `35796698800`):
+    1. **Hybrid flat direct-index (`word_count/3`) + bitset + lazy sparse hash overflow:**
+       `Ir 314.77M` (−1.10%), `D1mr −21.3%`, yet **−3.93% wall decode** (0/12) and
+       `+35.5%` minor page faults (`8,188 → 11,097`). Corpus has 95 sparse shaders
+       (32% of words, `bound` up to `235,827`) where `id < flat_cap_` mispredicts
+       ~50/50 and pays overflow calls + dual allocation.
+    2. **16B AoS `IdInfo` + 24B `IdCold` side vector:** heap `−9.2 KB/decode`,
+       minor page faults `−25.1%`, `DLmw −19.5%`, yet `Ir +3.60M` and **−0.98% wall**
+       (0/12) due to `IdCold` chases (`OnResultTypeUse`) and 4× larger `Rehash` zeroing.
+    3. **SoA `4B keys_` + `16B IdInfo` + 24B `IdCold`:** `Ir +1.94M`, **−2.31% wall**
+       (0/12); worse than 16B AoS despite fewer Ir.
+    4. **32B AoS `IdInfo` (`result_type`/`element_type` union, `calloc`, zero `IdCold`):**
+       heap `−20.7 KB/decode`, `Ensure −2.21M Ir / −229K D1mw`, `Bcm −73.8K`, yet
+       `+10.33M Ir` in `memset` (`calloc` zeroing 18.3 KB/decode) → **−0.68% wall** (1/12).
+    5. **32B AoS `IdInfo` + inline 1-bit occupancy bitset (uninitialized `slots_`):**
+       eliminated `memset` (`Ir 321.66M`, minor PFs `−14.1%`), but the extra bitset
+       load + branch per probe regressed **−3.03% wall** (0/12).
+    6. **16B `IdInfo` (no `IdCold`: 4B `width`/`members`/`ext_set_idx` union + 4B
+       `result_type`/`element_type` union + `uint16_t` `values_list`/`type_list`) +
+       single-allocation SoA (`4B keys_` + uninitialized `16B values_`):**
+       cut `IdMap` heap **−44.4%** (`20,544 → 11,413 B`, total `−9.1 KB/decode`),
+       minor PFs **−24.4%** (`8,188 → 6,194`), `Ir 318.28M → 317.91M` (−0.37M),
+       `D1mr −4.64%`, `D1mw −4.88%`, `DLmw −10.06%`, `Bcm −0.86%`, yet wall decode
+       was flat (**−0.19%**, 4/12; outlining cold decls hit −3.54% decode / −0.68%
+       `arixv_bench`; 2-alloc 16B SoA hit −1.90% decode / −1.34% `arixv_bench`).
+    7. **Single-allocation SoA on unchanged 32B `IdInfo`:** `Ir 317.62M` (−0.66M),
+       wall **−0.37%** (5/12) / `arixv_bench` decode **−0.94%** (0/6).
+    8. **`kIdMapMinSlots = 128` (vs `256`):** heap `−1.9 KB/decode`, `Ir 318.19M`,
+       wall **+0.01%** (6/12).
+  - Conclusion: because the entire per-decode working set (~97 KB) already fits
+    5× inside Zen 3's 512 KB L2 cache, `IdMap` L1d misses are hidden by OoO
+    execution; the baseline SoA (`4B keys_` = 16 keys/line, only ~2.3 KB zeroed,
+    uninitialized `32B values_`) is already wall-clock optimal. Reverted cleanly.
 - [ ] **T4. Existing tradeoff branches (from prior work, re-evaluate on `59f55f3` if needed):**
   - `size/tradeoff-no-order1-opcode` (was corpus +1.07%, Ir −4.0%, ~18 KB less touched)
   - `size/tradeoff-eight-operand-slots` (was corpus +8 B, ~3 KB less touched)
