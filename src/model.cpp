@@ -31,7 +31,7 @@ namespace {
 
 constexpr uint32_t kSpirvMagic = 0x07230203u;
 constexpr uint32_t kSpirvMagicSwapped = 0x03022307u;
-constexpr uint32_t kOpcodeOrder1MinCount = 64;
+constexpr uint32_t kOpcodeOrder1MinCount = 4;
 constexpr size_t kInlineInstructionWords = 256;
 constexpr size_t kInlineOperandWords = 8;
 
@@ -202,13 +202,15 @@ struct OpcodeTree {
     }
   }
 
-  // Steady-rate shadow update along value's path, as BitTree<10>::Train.
-  void Train(Arena& arena, uint32_t value) {
+  // Fast-shadow update along value's path, matching CodeValue's warm-up
+  // schedule so the order-1 tree adapts quickly during shadow training and
+  // continues its warm-up count seamlessly when promoted.
+  void Train(Arena& arena, uint32_t value, const uint16_t* prior = nullptr) {
     const uint32_t top = (value >> 8) & 3u;
     const uint32_t m = (value >> 4) & 15u;
-    SymbolCdfTrain<4, kSymbolRateCap>(root, static_cast<int>(top));
-    SymbolCdfTrain<16, kSymbolRateCap>(mid[top], static_cast<int>(m));
-    SymbolCdfTrain<16, kSymbolRateCap>(Leaf(arena, top, m, nullptr),
+    SymbolCdfUpdate<4, kSymbolRateCap>(root, static_cast<int>(top));
+    SymbolCdfUpdate<16, kSymbolRateCap>(mid[top], static_cast<int>(m));
+    SymbolCdfUpdate<16, kSymbolRateCap>(Leaf(arena, top, m, prior),
                                        static_cast<int>(value & 15u));
   }
 
@@ -1831,24 +1833,15 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
       *inst_index_out = inst_index;
       return opcode;
     }
-    const uint8_t prev_class =
-        prev_known ? model.tracker.prev_opcode_class()
-                   : NumInstructionClasses();
-    const size_t tree_ctx =
-        static_cast<size_t>(section) *
-            (static_cast<size_t>(NumInstructionClasses()) + 1) +
-        prev_class;
     const uint16_t* prior =
         GetOpcodeSectionPrior(static_cast<uint8_t>(section));
-    ArenaPtr<OpcodeTree>& tree_slot = model.opcode_index_trees[tree_ctx];
-    if (!tree_slot) {
-      tree_slot.Make(model.arena);
-      tree_slot->SetPrior(prior);
-    }
-    OpcodeTree& tree = *tree_slot;
     const uint16_t prev_key = PreviousOpcodeKey(model.tracker);
-    OpcodeCtx& order1 =
-        EnsureContext(model.arena, model.opcode_contexts[prev_key]);
+    ArenaPtr<OpcodeCtx>& order1_slot = model.opcode_contexts[prev_key];
+    if (!order1_slot) {
+      order1_slot.Make(model.arena);
+      order1_slot->tree.SetPrior(prior);
+    }
+    OpcodeCtx& order1 = *order1_slot;
     uint32_t index = 0;
     if (Bits::kEncoding) {
       const int found = FindInstructionIndex(hint);
@@ -1856,13 +1849,23 @@ uint16_t CodeOpcode(ModelState& model, Bits& bits, uint16_t hint,
       index = static_cast<uint32_t>(found);
     }
     if (order1.count < kOpcodeOrder1MinCount) {
-      index = tree.CodeValue(bits, model.arena, index, prior);
-      order1.tree.Train(model.arena, index);
-    } else {
-      index = order1.tree.CodeValue(bits, model.arena, index);
-    }
-    if (order1.count != 0xffffffffu) {
+      const uint8_t prev_class =
+          prev_known ? model.tracker.prev_opcode_class()
+                     : NumInstructionClasses();
+      const size_t tree_ctx =
+          static_cast<size_t>(section) *
+              (static_cast<size_t>(NumInstructionClasses()) + 1) +
+          prev_class;
+      ArenaPtr<OpcodeTree>& tree_slot = model.opcode_index_trees[tree_ctx];
+      if (!tree_slot) {
+        tree_slot.Make(model.arena);
+        tree_slot->SetPrior(prior);
+      }
+      index = tree_slot->CodeValue(bits, model.arena, index, prior);
+      order1.tree.Train(model.arena, index, prior);
       ++order1.count;
+    } else {
+      index = order1.tree.CodeValue(bits, model.arena, index, prior);
     }
     if (index >= NumCoreInstructions()) {
       index = NumCoreInstructions() - 1;

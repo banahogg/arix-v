@@ -463,6 +463,55 @@ void LiteralModelingModules() {
   }
 }
 
+void Order1OpcodePromotionModules() {
+  // Exercises order-1 opcode shadow training -> promotion (past
+  // kOpcodeOrder1MinCount = 4), lazy leaf-group creation both before and after
+  // promotion, and the same prev_key (OpVariable, OpNop) crossing module
+  // sections so current-section leaf priors are tested on encode and decode.
+  std::vector<uint32_t> body = {
+      Op(17, 2), 1,         // OpCapability Shader
+      Op(0, 1),             // OpNop
+      Op(14, 3), 0, 1,      // OpMemoryModel Logical GLSL450
+      Op(19, 2), 1,         // %1 = OpTypeVoid
+      Op(33, 3), 2, 1,      // %2 = OpTypeFunction %1
+      Op(21, 4), 3, 32, 0,  // %3 = OpTypeInt 32 0
+      Op(32, 4), 4, 7, 3,   // %4 = OpTypePointer Function %3
+      Op(32, 4), 5, 6, 3,   // %5 = OpTypePointer Private %3
+  };
+  uint32_t id = 6;
+  // Promote OpVariable in kTypesConstantsVars (> 4 consecutive occurrences).
+  const uint32_t first_var = id;
+  for (int i = 0; i < 6; ++i) {
+    body.insert(body.end(), {Op(59, 4), 5, id++, 6});  // OpVariable Private
+  }
+  // OpNop chain crossing into kFunctionBodies.
+  for (int i = 0; i < 6; ++i) {
+    body.push_back(Op(0, 1));  // OpNop
+  }
+  body.insert(body.end(), {
+      Op(54, 5), 1, id++, 0, 2,  // OpFunction
+      Op(248, 2), id++,          // OpLabel
+  });
+  // Same prev_key (OpVariable) now in kFunctionBodies, followed by body ops
+  // that open new leaf groups under the promoted order-1 tree.
+  const uint32_t local_var = id;
+  for (int i = 0; i < 3; ++i) {
+    body.insert(body.end(), {Op(59, 4), 4, id++, 7});  // OpVariable Function
+  }
+  // Repeated OpLoad -> OpIAdd -> OpStore sequence crossing promotion threshold.
+  for (int i = 0; i < 10; ++i) {
+    const uint32_t loaded = id++;
+    const uint32_t added = id++;
+    body.insert(body.end(), {Op(61, 4), 3, loaded, first_var});         // OpLoad
+    body.insert(body.end(), {Op(128, 5), 3, added, loaded, loaded});    // OpIAdd
+    body.insert(body.end(), {Op(62, 3), local_var, added});             // OpStore
+  }
+  body.push_back(Op(0, 1));    // OpNop in kFunctionBodies -> OpReturn
+  body.push_back(Op(253, 1));  // OpReturn
+  body.push_back(Op(56, 1));   // OpFunctionEnd
+  RoundTrip(Module(body, 0x00010300u, 0, id), true, arixv::kModeSpirv);
+}
+
 }  // namespace
 
 int main() {
@@ -472,6 +521,7 @@ int main() {
   M3FieldModules();
   M4aModules();
   LiteralModelingModules();
+  Order1OpcodePromotionModules();
   MutatedCorpusRoundTrips();
   return 0;
 }

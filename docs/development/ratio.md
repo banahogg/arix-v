@@ -514,3 +514,57 @@ memcheck with full leak checking (40 corpus decodes, `arixv_test`, 180
 mutated/truncated/overwritten blobs), scalar/SIMD cross-check on 108 files,
 all 1080 corpus files round-trip (default and `--force-coded`).
 
+### 8. Order-1 opcode fast-shadow training and section-prior seeding (2026-11-20)
+
+**Train-only analysis** (`opcode` 141.1 KB full corpus). Two findings:
+- With `kOpcodeOrder1MinCount = 64` and steady-rate `SymbolCdfTrain`, 67.6%
+  of instructions (83% of opcode bytes) never promoted out of order-0, and
+  promoted order-1 trees started from uniform CDFs instead of section priors.
+- Adding order-2 opcode contexts (`o2 >= 8`) on top of fast-shadow order-1
+  only saved another −0.20% on train while multiplying trees 2.4× (+30–40 KB
+  per decode) and shadow updates 3×, so order-2 was dropped and only the
+  order-1 improvement (8A) was implemented.
+
+**Implementation** (all in `src/model.cpp`, zero extra fields in `OpcodeCtx`
+or `OpcodeTree`):
+- `kOpcodeOrder1MinCount` lowered `64 → 4` (train optimum over
+  `{0, 1, 2, 3, 4, 6, 8, 16, 64}`).
+- `OpcodeTree::Train` uses `SymbolCdfUpdate` instead of steady-rate
+  `SymbolCdfTrain` so shadow training follows `CodeValue`'s warm-up schedule
+  and continues its warm-up count seamlessly when promoted.
+- `CodeOpcode` seeds each newly created `OpcodeCtx::tree` with
+  `GetOpcodeSectionPrior(section)` via `SetPrior(prior)` and passes the
+  current section's `prior` to `Train` and `CodeValue` for lazy leaf groups
+  (measured slightly better on train than storing a creation-time section
+  byte, and −1,262 B better than uniform order-1 starts).
+- Once `order1.count >= kOpcodeOrder1MinCount`, `CodeOpcode` skips the
+  order-0 `opcode_index_trees` lookup/allocation and count write.
+
+| | corpus bytes | Δ vs item 9 | train total | holdout total | decode Ir | wall |
+|---|---|---|---|---|---|---|
+| item 9 (`5915201`) | 859,850 | — | 0.13675 | 0.14695 | 323.3M | 76.47 MiB/s |
+| **landed: item 8A** | **852,694** | **−0.83%** | 0.13549 (−0.92%) | 0.14585 (−0.75%) | **320.1M (−0.98%)** | 75.97 MiB/s (−0.65%) |
+
+Mean ratio: train 0.18041 → 0.17981 (−0.33%), holdout 0.17980 → 0.17920
+(−0.33%). Median ratio: train 0.17737 → 0.17647 (−0.51%), holdout 0.17493 →
+0.17421 (−0.41%). `opcode` entropy 141.1 → 134.0 KB (−5.0%). Both golden
+vectors in `tests/arixv_test.cpp` remain byte-identical (all 19 instructions
+in `GoldenSpirvModuleEncoding` have distinct opcodes, so none promote).
+
+**Speed, memory, size.** Decode Ir drops 323.3M → 320.1M (−0.98%, from fewer
+shadow `Train` calls and skipping order-0 lookups once promoted). Wall time
+(load ~0.4, `taskset -c 4`, `arixv_decode_bench --iters=10` on all 1080
+files, 12 interleaved rounds): median 76.47 → 75.97 MiB/s, median paired
+−0.65% (−2.92% to +2.31%) — promoting earlier spreads opcode lookups across
+more per-opcode trees in the arena, trading a little cache locality for the
+fewer instructions. Memory (`memory_breakdown`): heap/decode 185.2 → 184.3 KB
+(−0.9 KB, fewer order-0 trees and leaf groups); batched minor page faults
+0.90 → 0.87 (−0.03). Library (−O2, text+data): 310.3 → 310.7 KB (+0.4 KB).
+
+Checks: `make all`, `make test` (new `Order1OpcodePromotionModules` in
+`model_test`), `make asan`, 3000-iteration fuzz, valgrind memcheck with full
+leak checking (40 corpus decodes, `arixv_test`, 180 mutated/truncated/
+overwritten blobs), scalar/SIMD cross-check on 108 files, all 1080 corpus
+files round-trip (default and `--force-coded`).
+
+
