@@ -584,6 +584,7 @@ def enum_constant_name(class_name: str) -> str:
 # every emitted table with the C++ function and compares.
 SYMBOL_SCALE = 1 << 15
 OPCODE_PRIOR_LEGAL_WEIGHT = 64  # must equal kOpcodePriorLegalWeight
+STRING_ORDER0_FLOOR_WEIGHT = 4  # must equal kStringOrder0FloorWeight
 
 # Instructions the logical-layout rules allow in any section.
 ANYWHERE_OPS = {"OpNop", "OpLine", "OpNoLine", "OpExtInst",
@@ -1109,6 +1110,15 @@ def main() -> None:
                   for n in range(257)]
     index_leaf = [intern(prior_cdf(16, [1 if l < r else 0 for l in range(16)])) if r else 0
                   for r in range(16)]
+    primer_counts = [0] * 256
+    for b in primer:
+        primer_counts[b] += 1
+    string_weights = [c + STRING_ORDER0_FLOOR_WEIGHT for c in primer_counts]
+    string_order0_root = intern(prior_cdf(16, [
+        sum(string_weights[h * 16:(h + 1) * 16]) for h in range(16)]))
+    string_order0_leaf = [
+        intern(prior_cdf(16, string_weights[h * 16:(h + 1) * 16]))
+        for h in range(16)]
     # Header priors. Versions: major is the grammar's; minor is uniform over
     # 0..the grammar's minor. Generator IDs: the registered tool IDs in
     # spir-v.xml (one level above the grammar directory), which are
@@ -1138,6 +1148,9 @@ def main() -> None:
     lines.append(f"constexpr uint32_t kOpcodePriorLegalWeightGenerated = {OPCODE_PRIOR_LEGAL_WEIGHT};")
     lines.append("static_assert(kOpcodePriorLegalWeightGenerated == kOpcodePriorLegalWeight,")
     lines.append('              "rerun scripts/gen_grammar_tables.py");')
+    lines.append(f"constexpr uint32_t kStringOrder0FloorWeightGenerated = {STRING_ORDER0_FLOOR_WEIGHT};")
+    lines.append("static_assert(kStringOrder0FloorWeightGenerated == kStringOrder0FloorWeight,")
+    lines.append('              "rerun scripts/gen_grammar_tables.py");')
     lines.append("// Per section: which core instruction indices the logical layout allows")
     lines.append("// (bit i of word i / 32), and the opcode-index tree prior built from it")
     lines.append("// (pool indices: root, mid[0..3], leaf[0..63]).")
@@ -1157,6 +1170,12 @@ def main() -> None:
     lines.append("};")
     lines.append("constexpr uint16_t kIndexLeafPrior[16] = {")
     lines.append("    " + ", ".join(str(x) for x in index_leaf) + ",")
+    lines.append("};")
+    lines.append("// String order-0 byte-tree prior from kStringPrimer byte counts plus")
+    lines.append("// kStringOrder0FloorWeight per byte: root and 16 high-nibble leaves.")
+    lines.append(f"constexpr uint16_t kStringOrder0RootPrior = {string_order0_root};")
+    lines.append("constexpr uint16_t kStringOrder0LeafPrior[16] = {")
+    lines.append("    " + ", ".join(str(x) for x in string_order0_leaf) + ",")
     lines.append("};")
     lines.append("")
     lines.append(f"constexpr uint16_t kVersionMajorPrior = {version_major_prior};")
@@ -1190,6 +1209,12 @@ def main() -> None:
     lines.append("")
     lines.append("uint16_t GetIndexLeafPrior(uint32_t partial) {")
     lines.append("  return kIndexLeafPrior[partial & 15u];")
+    lines.append("}")
+    lines.append("")
+    lines.append("uint16_t GetStringOrder0RootPrior() { return kStringOrder0RootPrior; }")
+    lines.append("")
+    lines.append("uint16_t GetStringOrder0LeafPrior(uint32_t high) {")
+    lines.append("  return kStringOrder0LeafPrior[high & 15u];")
     lines.append("}")
     lines.append("")
     lines.append("const WellKnownKinds& GetWellKnownKinds() {")

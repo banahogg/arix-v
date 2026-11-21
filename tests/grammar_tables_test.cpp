@@ -112,6 +112,36 @@ int CheckPriors() {
   if (arixv::NumRegisteredGenerators() < 8 || arixv::NumRegisteredGenerators() > 256) {
     return Fail("generator registry size is implausible");
   }
+  {
+    uint32_t weights[256];
+    for (uint32_t b = 0; b < 256; ++b) {
+      weights[b] = arixv::kStringOrder0FloorWeight;
+    }
+    for (char ch : arixv::GetStringPrimer()) {
+      ++weights[static_cast<uint8_t>(ch)];
+    }
+    uint32_t root_w[16];
+    for (uint32_t h = 0; h < 16; ++h) {
+      root_w[h] = 0;
+      for (uint32_t l = 0; l < 16; ++l) {
+        root_w[h] += weights[(h << 4) | l];
+      }
+    }
+    if (!PriorMatches<16>(arixv::GetStringOrder0RootPrior(), root_w)) {
+      return Fail("string order-0 root prior mismatch");
+    }
+    for (uint32_t h = 0; h < 16; ++h) {
+      if (!PriorMatches<16>(arixv::GetStringOrder0LeafPrior(h),
+                            &weights[h << 4])) {
+        return Fail("string order-0 leaf prior mismatch");
+      }
+    }
+    for (uint32_t h = 8; h < 16; ++h) {
+      if (arixv::GetStringOrder0LeafPrior(h) != 0) {
+        return Fail("absent high-nibble string order-0 leaf not uniform");
+      }
+    }
+  }
   return 0;
 }
 

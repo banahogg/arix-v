@@ -9862,11 +9862,22 @@ constexpr uint16_t kPriorCdfs[][16] = {
     {0, 29, 53, 77, 101, 125, 149, 173, 197, 221, 245, 269, 293, 317, 341, 365},
     {0, 18, 34, 50, 66, 82, 98, 114, 130, 146, 162, 178, 194, 210, 226, 242},
     {0, 9, 17, 25, 33, 41, 49, 57, 65, 73, 81, 89, 97, 105, 113, 121},
+    {0, 65220, 63256, 61306, 59818, 62708, 65119, 11028, 15712, 13748, 11784, 9820, 7856, 5892, 3928, 1964},
+    {0, 29235, 27286, 25337, 23388, 21439, 19490, 17541, 15592, 13643, 11694, 9745, 7796, 5847, 3898, 1949},
+    {0, 65235, 64934, 64633, 64332, 64031, 63730, 63429, 63128, 62827, 62526, 62225, 61924, 61623, 61322, 301},
+    {0, 65473, 4845, 7836, 8308, 9467, 8412, 12548, 10806, 12194, 10452, 8710, 6968, 5226, 3484, 1742},
+    {0, 63523, 65438, 64689, 64693, 64203, 506, 65449, 64258, 63933, 184, 63716, 63105, 64321, 65061, 914},
+    {0, 1719, 170, 2896, 5555, 8290, 7028, 8920, 7515, 6857, 4867, 2982, 973, 64500, 62491, 60482},
+    {0, 63501, 28, 64125, 64026, 63702, 1982, 793, 206, 64420, 617, 64169, 62581, 62578, 61934, 63521},
+    {0, 828, 64494, 5354, 7801, 14530, 15904, 14929, 13294, 12472, 11954, 10110, 8088, 6066, 4044, 2022},
     {0, 63489, 28658, 26611, 24564, 22517, 20470, 18423, 16376, 14329, 12282, 10235, 8188, 6141, 4094, 2047},
 };
 
 constexpr uint32_t kOpcodePriorLegalWeightGenerated = 64;
 static_assert(kOpcodePriorLegalWeightGenerated == kOpcodePriorLegalWeight,
+              "rerun scripts/gen_grammar_tables.py");
+constexpr uint32_t kStringOrder0FloorWeightGenerated = 4;
+static_assert(kStringOrder0FloorWeightGenerated == kStringOrder0FloorWeight,
               "rerun scripts/gen_grammar_tables.py");
 // Per section: which core instruction indices the logical layout allows
 // (bit i of word i / 32), and the opcode-index tree prior built from it
@@ -9921,8 +9932,14 @@ constexpr uint16_t kIndexRootPrior[257] = {
 constexpr uint16_t kIndexLeafPrior[16] = {
     0, 74, 90, 106, 122, 138, 154, 170, 186, 202, 218, 24, 249, 265, 281, 297,
 };
+// String order-0 byte-tree prior from kStringPrimer byte counts plus
+// kStringOrder0FloorWeight per byte: root and 16 high-nibble leaves.
+constexpr uint16_t kStringOrder0RootPrior = 313;
+constexpr uint16_t kStringOrder0LeafPrior[16] = {
+    314, 0, 315, 316, 317, 318, 319, 320, 0, 0, 0, 0, 0, 0, 0, 0,
+};
 
-constexpr uint16_t kVersionMajorPrior = 313;
+constexpr uint16_t kVersionMajorPrior = 321;
 constexpr uint16_t kVersionMinorPrior = 170;
 // Tool IDs registered in spir-v.xml (contiguous from 0).
 constexpr uint32_t kNumRegisteredGenerators = 52;
@@ -9953,6 +9970,12 @@ uint16_t GetIndexRootPrior(uint32_t n) {
 
 uint16_t GetIndexLeafPrior(uint32_t partial) {
   return kIndexLeafPrior[partial & 15u];
+}
+
+uint16_t GetStringOrder0RootPrior() { return kStringOrder0RootPrior; }
+
+uint16_t GetStringOrder0LeafPrior(uint32_t high) {
+  return kStringOrder0LeafPrior[high & 15u];
 }
 
 const WellKnownKinds& GetWellKnownKinds() {

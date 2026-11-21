@@ -291,6 +291,21 @@ UintModel& EnsureUint(Arena& arena, ArenaPtr<UintModel>& model) {
   return *model;
 }
 
+ARIXV_NOINLINE UintModel& MakeUintWithPrior(Arena& arena,
+                                            ArenaPtr<UintModel>& model,
+                                            const BitTree<6>& prior) {
+  model.Make(arena);
+  if constexpr (kUintLengthBits == 6) {
+    model->length = prior;
+  }
+  return *model;
+}
+
+UintModel& EnsureUintWithPrior(Arena& arena, ArenaPtr<UintModel>& model,
+                               const BitTree<6>& prior) {
+  return model ? *model : MakeUintWithPrior(arena, model, prior);
+}
+
 // Lazily created contexts are built (as T{}) on first use. A model lives for
 // exactly one encode or decode, so a context, once made, is never stale.
 template <typename T>
@@ -467,7 +482,9 @@ inline uint32_t StringMatchHash(uint8_t a, uint8_t b) {
 }
 
 struct StringModel {
-  explicit StringModel(size_t classes) : dict_flag(classes) {}
+  explicit StringModel(size_t classes) : dict_flag(classes) {
+    LoadPrior(order0.root, GetStringOrder0RootPrior());
+  }
 
   // Order-1 byte trees (bytes.tree[prev]) and the order-0 tree they start
   // from; both allocate leaves in bytes.arena.
@@ -1501,8 +1518,14 @@ ARIXV_NOINLINE uint32_t CodeContextNumber(Bits& bits, ModelState& model,
       }
       const bool neg =
           bits.CodeBit(model.float_sign, Bits::kEncoding && (hint >> 31) != 0);
+      static constexpr BitTree<6> kFloatExpPrior =
+          MakeUintLengthTreePrior(0, 9);
+      static constexpr BitTree<6> kFloatMantPrior =
+          MakeUintLengthTreePrior(1, 23);
       const uint32_t exp =
-          CodeDelta(bits, model.arena, EnsureUint(model.arena, model.float_exp),
+          CodeDelta(bits, model.arena,
+                    EnsureUintWithPrior(model.arena, model.float_exp,
+                                        kFloatExpPrior),
                     (hint >> 23) & 0xffu, 127u) &
           0xffu;
       const uint32_t rmant_hint = Bits::kEncoding ? ReverseBits23(hint) : 0u;
@@ -1511,7 +1534,9 @@ ARIXV_NOINLINE uint32_t CodeContextNumber(Bits& bits, ModelState& model,
       const uint32_t rmant =
           mant_zero ? 0u
                     : CodeUint(bits, model.arena,
-                               EnsureUint(model.arena, model.float_mant),
+                               EnsureUintWithPrior(model.arena,
+                                                   model.float_mant,
+                                                   kFloatMantPrior),
                                rmant_hint);
       const uint32_t value =
           (neg ? 0x80000000u : 0u) | (exp << 23) | ReverseBits23(rmant);
@@ -1603,6 +1628,14 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
   return CodeUint(bits, model.arena, ctx.escape, hint);
 }
 
+ARIXV_NOINLINE SymbolCdf& MakeStringOrder0Leaf(Arena& arena,
+                                               ArenaPtr<SymbolCdf>& slot,
+                                               uint32_t high) {
+  slot.Make(arena);
+  LoadPrior(*slot, GetStringOrder0LeafPrior(high));
+  return *slot;
+}
+
 // One string byte under order-1 context `prev`. A context's tables start as
 // a copy of the running order-0 model (counts included) instead of uniform.
 template <class Bits>
@@ -1620,19 +1653,18 @@ uint8_t CodeStringByte(Bits& bits, StringModel& m, uint8_t prev, uint8_t b) {
     const uint32_t high = bits.template CodeSymbol<16, kByteSymbolRateCap>(
         tree->root, (b >> 4) & 15u);
     ArenaPtr<SymbolCdf>& leaf0 = m.order0.leaf[high];
-    if (!leaf0) {
-      leaf0.Make(arena);
-    }
+    SymbolCdf& order0_leaf =
+        leaf0 ? *leaf0 : MakeStringOrder0Leaf(arena, leaf0, high);
     ArenaPtr<SymbolCdf>& leaf = tree->leaf[high];
     if (!leaf) {
       leaf.Make(arena);
-      *leaf = *leaf0;
+      *leaf = order0_leaf;
     }
     const uint32_t low = bits.template CodeSymbol<16, kByteSymbolRateCap>(
         *leaf, b & 15u);
     SymbolCdfUpdate<16, kByteSymbolRateCap>(m.order0.root,
                                             static_cast<int>(high));
-    SymbolCdfUpdate<16, kByteSymbolRateCap>(*leaf0, static_cast<int>(low));
+    SymbolCdfUpdate<16, kByteSymbolRateCap>(order0_leaf, static_cast<int>(low));
     return Bits::kEncoding ? b : static_cast<uint8_t>((high << 4) | low);
   }
 }
@@ -1732,10 +1764,17 @@ ARIXV_NOINLINE void CodeString(Bits& bits, ModelState& model,
       // none) and how many predictions in a row have held.
       uint32_t match = 0;
       uint32_t match_len = 0;
+      if (remaining > 0) {
+        // Ensure the 4 KB match table is allocated before the first byte-tree
+        // objects so it fills bytes.arena's 4 KB first block without stranding.
+        (void)sm.Table();
+      }
       while (coded.size() < static_cast<size_t>(remaining) * 4u) {
         const uint8_t hint =
             Bits::kEncoding ? static_cast<uint8_t>(source[coded.size()]) : 0;
-        if (match == 0) {
+        // Byte 0 follows the previous string's NUL; its order-2 context
+        // (prev_last_char, '\0') crosses unrelated strings.
+        if (match == 0 && !coded.empty()) {
           match = sm.Lookup();
           match_len = 0;
         }

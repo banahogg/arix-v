@@ -238,6 +238,12 @@ const uint32_t* GetOpcodeSectionLegal(uint8_t section);
 // entries; 0 means uniform).
 uint16_t GetIndexRootPrior(uint32_t n);
 uint16_t GetIndexLeafPrior(uint32_t partial);
+// String order-0 byte-tree priors (pool indices), built from GetStringPrimer()
+// byte counts plus kStringOrder0FloorWeight per byte so every byte stays
+// codable: 16-way high-nibble root and 16-way low-nibble leaf per high nibble.
+constexpr uint32_t kStringOrder0FloorWeight = 4;
+uint16_t GetStringOrder0RootPrior();
+uint16_t GetStringOrder0LeafPrior(uint32_t high);
 // Header priors (pool indices): the grammar's major version, and minor
 // versions 0..the grammar's minor.
 uint16_t GetVersionMajorPrior();

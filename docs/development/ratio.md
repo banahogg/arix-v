@@ -628,5 +628,57 @@ Checks: `make all`, `make test` (new `KindRecencyListTests` in `model_test`),
 overwritten blobs on branch), scalar/SIMD cross-check on 108 files, all 1080
 corpus files round-trip (default and `--force-coded`).
 
+### 17. Cold-start priors for `UintModel` length and `StringModel` order-0 (2026-11-21)
+
+**Train-only analysis** (`[0-7]*.spv`, 534 files, `410,017 B` at item 3):
+- `UintModel::length` uses a 6-bit `BitTree<6>` (symbols `0..63`), even though
+  `uint32_t` bit lengths only span `0..32` (`float_exp` `0..9`, `float_mant`
+  `1..23`). Starting uniform wasted cold-start probability on impossible bit
+  widths `33..63` across every freshly created `UintModel`.
+- `StringModel::order0` (which seeds every newly touched order-1 byte context)
+  started uniform over all 256 byte values, even though the grammar's string
+  primer already defines a grammar-derived byte distribution (ASCII letters,
+  digits, `_`, NUL). In addition, `CodeString` attempted an order-2 match at
+  byte 0 using `(prev_string_last_char, '\0')`, which crossed unrelated
+  strings and added noisy miss flags.
+
+**Implementation:**
+- `src/prob.h`: compile-time `MakeSymbolCdfPrior` and `MakeUintLengthTreePrior`
+  seed `UintModel::length` root and leaf-32 tables over `0..32` (`0..9` for
+  `float_exp`, `1..23` for `float_mant` via `EnsureUintWithPrior`). Zero
+  runtime construction cost and pure-math bounds only.
+- `scripts/gen_grammar_tables.py`, `src/grammar_tables.*`: emit a grammar-
+  derived `order0` root + 16-nibble leaf prior pool from the existing string
+  primer (`GetStringOrder0RootPrior()`, `GetStringOrder0LeafPrior()`).
+  `grammar_tables_test` rebuilds every table with `SymbolCdfSetPrior` and
+  checks exact equality.
+- `src/model.cpp`: `StringModel` loads the `order0` root prior on construction
+  and leaf priors lazily (`MakeStringOrder0Leaf`), eagerly ensures the 4 KB
+  match table before the first byte-tree allocation so it fits `bytes.arena`'s
+  first block without stranding, and skips match lookup at byte 0 (`!coded.empty()`).
+
+| | corpus bytes | Δ vs item 3 | train total | holdout total | decode Ir | wall |
+|---|---|---|---|---|---|---|
+| item 3 (`e76155b`) | 844,347 | — | 0.13429 | 0.14430 | 320.2M | 77.44 MiB/s |
+| **landed: B2+B3** | **833,282** | **−1.31%** | 0.13251 (−1.33%) | 0.14243 (−1.30%) | **320.4M (+0.05%)** | 76.81 MiB/s (−0.93%) |
+
+Mean ratio: train 0.17861 → 0.17388 (−2.65%), holdout 0.17793 → 0.17340
+(−2.55%). Median ratio: train 0.17472 → 0.17154 (−1.82%), holdout 0.17285 →
+0.16976 (−1.79%). Small modules gain heavily from eliminating cold-start
+uniformity. Golden vectors: `GoldenSpirvModuleEncoding` unchanged at 68 B
+(content updated); header-only vector unchanged at 14 B.
+
+**Speed, memory, size.** Decode Ir is virtually flat: 320.2M → 320.35M
+(+0.05%). Wall time (quiet host, `taskset -c 4`, `arixv_decode_bench
+--iters=10` on all 1080 files, 12 interleaved rounds): median 77.44 → 76.81
+MiB/s, median paired −0.93% (−1.59% to −0.04%). Memory (`memory_breakdown`):
+heap/decode 183.6 → 183.6 KB (+78 B); batched minor page faults 0.85 → 0.85
+(0.848). Library (−O2, text+data): 311.3 → 314.5 KB (+3.2 KB).
+
+Checks: `make all`, `make test` (generator `--check`, new prior tests in
+`grammar_tables_test` and `model_test`), `make asan`, 3000-iteration fuzz,
+valgrind memcheck with full leak checking (`arixv_test`, `model_test`),
+scalar/SIMD cross-check on 135 files, all 1080 corpus files round-trip.
+
 
 

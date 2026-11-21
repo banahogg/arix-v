@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -9,6 +10,7 @@
 
 #include "arixv.h"
 #include "model.h"
+#include "prob.h"
 #include "tracker.h"
 #include "tuning.h"
 
@@ -711,6 +713,148 @@ void KindRecencyListTests() {
   }
 }
 
+void ColdStartPriorAndBoundaryTests() {
+  // Constexpr SymbolCdf / UintModel length priors must match SymbolCdfSetPrior
+  // byte-for-byte.
+  {
+    const uint32_t top_w[4] = {16, 16, 1, 0};
+    arixv::SymbolCdf expected_root;
+    arixv::SymbolCdfSetPrior<4>(expected_root, top_w);
+    assert(std::memcmp(arixv::kUint32LengthRootPrior.d, expected_root.d,
+                       sizeof(expected_root.d)) == 0);
+
+    const uint32_t leaf32_w[16] = {1, 0, 0, 0, 0, 0, 0, 0,
+                                   0, 0, 0, 0, 0, 0, 0, 0};
+    arixv::SymbolCdf expected_leaf32;
+    arixv::SymbolCdfSetPrior<16>(expected_leaf32, leaf32_w);
+    assert(std::memcmp(arixv::kUint32LengthLeaf32Prior.d, expected_leaf32.d,
+                       sizeof(expected_leaf32.d)) == 0);
+
+    const arixv::BitTree<6> tree32 = arixv::MakeUintLengthTreePrior(0, 32);
+    const arixv::UintModel fresh;
+    if constexpr (arixv::kUintLengthBits == 6) {
+      assert(std::memcmp(fresh.length.tables.data(), tree32.tables.data(),
+                         sizeof(tree32.tables)) == 0);
+    }
+
+    const arixv::BitTree<6> exp_tree = arixv::MakeUintLengthTreePrior(0, 9);
+    const uint32_t exp_top[4] = {10, 0, 0, 0};
+    const uint32_t exp_leaf0[16] = {1, 1, 1, 1, 1, 1, 1, 1,
+                                    1, 1, 0, 0, 0, 0, 0, 0};
+    arixv::SymbolCdf exp_r, exp_l0, zero{};
+    arixv::SymbolCdfSetPrior<4>(exp_r, exp_top);
+    arixv::SymbolCdfSetPrior<16>(exp_l0, exp_leaf0);
+    assert(std::memcmp(exp_tree.tables[0].d, exp_r.d, sizeof(exp_r.d)) == 0);
+    assert(std::memcmp(exp_tree.tables[1].d, exp_l0.d, sizeof(exp_l0.d)) == 0);
+    assert(std::memcmp(exp_tree.tables[2].d, zero.d, sizeof(zero.d)) == 0);
+    assert(std::memcmp(exp_tree.tables[3].d, zero.d, sizeof(zero.d)) == 0);
+    assert(std::memcmp(exp_tree.tables[4].d, zero.d, sizeof(zero.d)) == 0);
+
+    const arixv::BitTree<6> mant_tree = arixv::MakeUintLengthTreePrior(1, 23);
+    const uint32_t mant_top[4] = {15, 8, 0, 0};
+    const uint32_t mant_leaf0[16] = {0, 1, 1, 1, 1, 1, 1, 1,
+                                     1, 1, 1, 1, 1, 1, 1, 1};
+    const uint32_t mant_leaf1[16] = {1, 1, 1, 1, 1, 1, 1, 1,
+                                     0, 0, 0, 0, 0, 0, 0, 0};
+    arixv::SymbolCdf mant_r, mant_l0, mant_l1;
+    arixv::SymbolCdfSetPrior<4>(mant_r, mant_top);
+    arixv::SymbolCdfSetPrior<16>(mant_l0, mant_leaf0);
+    arixv::SymbolCdfSetPrior<16>(mant_l1, mant_leaf1);
+    assert(std::memcmp(mant_tree.tables[0].d, mant_r.d, sizeof(mant_r.d)) == 0);
+    assert(std::memcmp(mant_tree.tables[1].d, mant_l0.d, sizeof(mant_l0.d)) == 0);
+    assert(std::memcmp(mant_tree.tables[2].d, mant_l1.d, sizeof(mant_l1.d)) == 0);
+    assert(std::memcmp(mant_tree.tables[3].d, zero.d, sizeof(zero.d)) == 0);
+    assert(std::memcmp(mant_tree.tables[4].d, zero.d, sizeof(zero.d)) == 0);
+  }
+
+  // 32-bit and 0 uint boundary values across bit widths 0, 1, 15, 16, 31, 32
+  // (plus float32 extreme exponents 0x00/0xff and mantissas 1/23 bits).
+  {
+    std::vector<uint32_t> body = {
+        Op(21, 4), 1, 32, 0,  // %1 = OpTypeInt 32 0
+        Op(22, 3), 2, 32,     // %2 = OpTypeFloat 32
+    };
+    const uint32_t boundary_uints[] = {
+        0u,          1u,          2u,          0x7fffu,
+        0x8000u,     0xffffu,     0x7fffffffu, 0x80000000u,
+        0xffffffffu, 0u,          0xffffffffu, 0x80000000u,
+    };
+    uint32_t id = 3;
+    for (uint32_t v : boundary_uints) {
+      body.insert(body.end(), {Op(43, 4), 1, id++, v});       // OpConstant int
+      body.insert(body.end(), {Op(71, 4), 1, 35, v});         // OpDecorate Offset
+    }
+    const uint32_t boundary_floats[] = {
+        0x00000000u,  // +0.0 (exp=0, mant=0)
+        0x80000000u,  // -0.0 (exp=0 -> delta=-127 -> width 8)
+        0x00000001u,  // min subnormal (exp=0, rmant bitwidth 23)
+        0x00400000u,  // subnormal (exp=0, rmant bitwidth 1)
+        0x7f800000u,  // +inf (exp=255 -> delta=+128 -> width 9)
+        0xff800000u,  // -inf (exp=255)
+        0x7fffffffu,  // NaN all-ones mantissa (exp=255, rmant bitwidth 23)
+        0xffc00000u,  // quiet -NaN (exp=255, rmant bitwidth 1)
+    };
+    for (uint32_t f : boundary_floats) {
+      body.insert(body.end(), {Op(43, 4), 2, id++, f});
+    }
+    // Also exercise unknown enum escape and large result-ID jump + unregistered
+    // generator ID and mismatched bound (0xffffffffu).
+    body.insert(body.end(), {Op(71, 3), 1, 0xffffffffu});
+    body.insert(body.end(), {Op(71, 3), 1, 0x80000000u});
+    body.insert(body.end(), {Op(43, 4), 1, 0x80000000u, 0xffffffffu});
+    body.insert(body.end(), {Op(43, 4), 1, 0xffffffffu, 0u});
+    RoundTrip(Module(body, 0x00010300u, 0xffff0000u, 0xffffffffu), true,
+              arixv::kModeSpirv);
+  }
+
+  // Non-ASCII, binary, empty, and hostile string round-trips exercising every
+  // byte 0x00..0xff (all 16 order0 high-nibble leaves, both primer-present and
+  // primer-absent), byte-0 cross-string boundaries, non-canonical padding, and
+  // unterminated strings.
+  {
+    std::vector<uint32_t> body;
+    uint32_t id = 1;
+    const auto add_op_string = [&](const std::string& text,
+                                   uint32_t final_padding = 0) {
+      std::vector<uint32_t> str_words;
+      AppendStringWords(text, str_words, final_padding);
+      body.push_back(Op(7, static_cast<uint16_t>(2 + str_words.size())));
+      body.push_back(id++);
+      body.insert(body.end(), str_words.begin(), str_words.end());
+    };
+
+    // Empty string (NUL at byte 0).
+    add_op_string("");
+    // Single-byte non-ASCII and control strings.
+    add_op_string(std::string(1, '\x01'));
+    add_op_string(std::string(1, '\x7f'));
+    add_op_string(std::string(1, '\x80'));
+    add_op_string(std::string(1, '\xff'));
+    // Every non-zero byte 0x01..0xff in one canonical string (touches all 16
+    // high-nibble leaves of StringModel::order0).
+    std::string all_bytes;
+    all_bytes.reserve(255);
+    for (int b = 1; b <= 255; ++b) {
+      all_bytes.push_back(static_cast<char>(static_cast<uint8_t>(b)));
+    }
+    add_op_string(all_bytes);
+    // Repeated UTF-8 and binary strings exercising order-2 matches + byte-0
+    // boundary between adjacent strings.
+    add_op_string("\xc3\xa9\xe2\x9c\x93\xf0\x9f\x9a\x80/path/to/shader.glsl");
+    add_op_string("\xc3\xa9\xe2\x9c\x93\xf0\x9f\x9a\x80/path/to/other.glsl");
+    add_op_string("\xff\xfe\xfd\xfc\x01\x02\x03\x04\x80\x90\xa0\xb0");
+    // Non-canonical trailing bytes after NUL.
+    add_op_string("\x80\xff", 0xaa000000u);
+    // Hostile unterminated OpString (no NUL byte anywhere in its words).
+    body.push_back(Op(7, 4));
+    body.push_back(id++);
+    body.push_back(0xdeadbeefu);
+    body.push_back(0x80818283u);
+
+    RoundTrip(Module(body, 0x00010300u, 0, id), true, arixv::kModeSpirv);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -722,6 +866,7 @@ int main() {
   LiteralModelingModules();
   Order1OpcodePromotionModules();
   KindRecencyListTests();
+  ColdStartPriorAndBoundaryTests();
   MutatedCorpusRoundTrips();
   return 0;
 }
