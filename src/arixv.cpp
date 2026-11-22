@@ -3,6 +3,7 @@
 
 #include "arixv/arixv.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <new>
@@ -18,10 +19,22 @@ namespace arixv {
 inline namespace v1 {
 namespace {
 
-constexpr uint32_t kHeaderInfoV1Size =
-    static_cast<uint32_t>(sizeof(arixv_header_info));
-constexpr uint32_t kDecodeOptionsV1Size =
-    static_cast<uint32_t>(sizeof(arixv_decode_options));
+constexpr uint32_t kHeaderInfoV1Size = ARIXV_HEADER_INFO_V1_SIZE;
+constexpr uint32_t kDecodeOptionsV1Size = ARIXV_DECODE_OPTIONS_V1_SIZE;
+
+static_assert(kHeaderInfoV1Size == 24u, "v1 arixv_header_info size is frozen");
+static_assert(sizeof(arixv_header_info) == kHeaderInfoV1Size);
+static_assert(offsetof(arixv_header_info, struct_size) == 0u);
+static_assert(offsetof(arixv_header_info, magic) == 4u);
+static_assert(offsetof(arixv_header_info, mode) == 8u);
+static_assert(offsetof(arixv_header_info, reserved) == 12u);
+static_assert(offsetof(arixv_header_info, uncompressed_size) == 16u);
+
+static_assert(kDecodeOptionsV1Size == 8u,
+              "v1 arixv_decode_options size is frozen");
+static_assert(sizeof(arixv_decode_options) == kDecodeOptionsV1Size);
+static_assert(offsetof(arixv_decode_options, struct_size) == 0u);
+static_assert(offsetof(arixv_decode_options, flags) == 4u);
 
 struct ParsedHeader {
   uint32_t magic = 0;
@@ -144,10 +157,15 @@ arixv_status DecodeImpl(const void* in, size_t in_size, void* out,
   }
   if (opts != nullptr) {
     if (opts->struct_size < kDecodeOptionsV1Size ||
-        opts->struct_size > sizeof(arixv_decode_options)) {
+        opts->struct_size > kMaxOptionsStructSize) {
       return ARIXV_STATUS_INVALID_ARGUMENT;
     }
     if (opts->flags != 0) {
+      return ARIXV_STATUS_INVALID_ARGUMENT;
+    }
+    if (opts->struct_size > sizeof(arixv_decode_options) &&
+        !HasZeroTrailingBytes(opts, sizeof(arixv_decode_options),
+                              opts->struct_size)) {
       return ARIXV_STATUS_INVALID_ARGUMENT;
     }
   }
@@ -162,6 +180,20 @@ arixv_status DecodeImpl(const void* in, size_t in_size, void* out,
     return ARIXV_STATUS_TOO_LARGE;
   }
   const size_t required = static_cast<size_t>(hdr.original_size);
+  const uint8_t* payload = data + hdr.payload_offset;
+  const size_t payload_size = in_size - hdr.payload_offset;
+
+  // For stored mode, validate exact payload length in O(1) even on size
+  // queries so a tiny truncated header cannot trick callers into multi-GiB
+  // allocations.
+  if (hdr.mode == kModeStored) {
+    if (payload_size < required) {
+      return ARIXV_STATUS_TRUNCATED;
+    }
+    if (payload_size != required) {
+      return ARIXV_STATUS_BAD_CONTAINER;
+    }
+  }
 
   if (out == nullptr) {
     *out_size = required;
@@ -172,16 +204,7 @@ arixv_status DecodeImpl(const void* in, size_t in_size, void* out,
     return ARIXV_STATUS_BUFFER_TOO_SMALL;
   }
 
-  const uint8_t* payload = data + hdr.payload_offset;
-  const size_t payload_size = in_size - hdr.payload_offset;
-
   if (hdr.mode == kModeStored) {
-    if (payload_size < required) {
-      return ARIXV_STATUS_TRUNCATED;
-    }
-    if (payload_size != required) {
-      return ARIXV_STATUS_BAD_CONTAINER;
-    }
     if (required > 0) {
       std::memcpy(out, payload, required);
     }
@@ -228,13 +251,13 @@ arixv_status DecodeImpl(const void* in, size_t in_size, void* out,
 
 extern "C" {
 
-uint32_t arixv_version(void) ARIXV_NOEXCEPT {
+uint32_t ARIXV_CALL arixv_version(void) ARIXV_NOEXCEPT {
   return (static_cast<uint32_t>(ARIXV_VERSION_MAJOR) << 16) |
          (static_cast<uint32_t>(ARIXV_VERSION_MINOR) << 8) |
          static_cast<uint32_t>(ARIXV_VERSION_PATCH);
 }
 
-const char* arixv_status_string(arixv_status status) ARIXV_NOEXCEPT {
+const char* ARIXV_CALL arixv_status_string(arixv_status status) ARIXV_NOEXCEPT {
   switch (status) {
     case ARIXV_STATUS_OK:
       return "ok";
@@ -256,8 +279,8 @@ const char* arixv_status_string(arixv_status status) ARIXV_NOEXCEPT {
   return "unknown status";
 }
 
-arixv_status arixv_inspect(const void* in, size_t in_size,
-                           arixv_header_info* out_info) ARIXV_NOEXCEPT {
+arixv_status ARIXV_CALL arixv_inspect(const void* in, size_t in_size,
+                                      arixv_header_info* out_info) ARIXV_NOEXCEPT {
   if (in == nullptr || out_info == nullptr) {
     return ARIXV_STATUS_INVALID_ARGUMENT;
   }
@@ -278,9 +301,9 @@ arixv_status arixv_inspect(const void* in, size_t in_size,
   return ARIXV_STATUS_OK;
 }
 
-arixv_status arixv_decode(const void* in, size_t in_size, void* out,
-                          size_t* out_size,
-                          const arixv_decode_options* opts) ARIXV_NOEXCEPT {
+arixv_status ARIXV_CALL arixv_decode(const void* in, size_t in_size, void* out,
+                                     size_t* out_size,
+                                     const arixv_decode_options* opts) ARIXV_NOEXCEPT {
 #if ARIXV_HAS_EXCEPTIONS
   try {
     return arixv::v1::DecodeImpl(in, in_size, out, out_size, opts);

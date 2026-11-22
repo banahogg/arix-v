@@ -18,6 +18,16 @@
 #endif
 #endif
 
+#if CONSUMER_HAS_ENCODER
+#if !ARIXV_HAS_ENCODER_
+#error "arixv::encoder must propagate ARIXV_ENCODER=1"
+#endif
+#else
+#if ARIXV_HAS_ENCODER_
+#error "arixv::decoder must not expose encoder declarations"
+#endif
+#endif
+
 int main() {
   // Golden 11-byte ARX2 encoding of a minimal 20-byte SPIR-V 1.3 header.
   static constexpr uint8_t kMinimalArx2[] = {

@@ -9,6 +9,7 @@
 # Knobs (environment):
 #   FUZZ_SMOKE_SECONDS  seconds per harness (default 120)
 #   FUZZ_SMOKE_JOBS     parallel fuzzing processes (default: nproc)
+#   FUZZ_SMOKE_ALLOW_NONCRASH  set to 1 to treat timeout/OOM artifacts as warnings
 #   ARIXV_CORPUS        SPIR-V seed directory (default corpus/spv)
 #   BUILD_DIR           where the harness binaries live (default build/fuzz-smoke)
 #   RUN_WRAP            optional process wrapper, e.g. "setarch $(uname -m) -R"
@@ -22,6 +23,7 @@ cd "$ROOT"
 
 SECS="${FUZZ_SMOKE_SECONDS:-120}"
 JOBS="${FUZZ_SMOKE_JOBS:-$(nproc)}"
+ALLOW_NONCRASH="${FUZZ_SMOKE_ALLOW_NONCRASH:-0}"
 BUILD="${BUILD_DIR:-build/fuzz-smoke}"
 CORPUS="${ARIXV_CORPUS:-corpus/spv}"
 SEED_KB="${FUZZ_SMOKE_SEED_KB:-100000}"
@@ -63,7 +65,7 @@ run() { # <name> <binary>
   rm -f "$dir"/artifacts/*
   echo "== fuzz-smoke $name: ${SECS}s x ${JOBS} jobs (log: $dir/fuzz.log)"
   # Fork mode stops at the first crash and exits non-zero; timeouts and OOMs
-  # are recorded as artifacts but do not stop the run.
+  # are recorded as artifacts and fail the run unless FUZZ_SMOKE_ALLOW_NONCRASH=1.
   $RUN_WRAP "$bin" -fork="$JOBS" -max_total_time="$SECS" -timeout=10 \
     -rss_limit_mb=4096 -print_final_stats=1 \
     -artifact_prefix="$dir/artifacts/" "$dir/corpus" "$dir/seeds" \
@@ -77,11 +79,14 @@ run() { # <name> <binary>
     grep -m1 -A12 -E "ERROR: (AddressSanitizer|libFuzzer)|runtime error:|FAIL:" \
       "$dir/fuzz.log" || tail -20 "$dir/fuzz.log"
     failed=1
+  elif [ "$others" -ne 0 ] && [ "$ALLOW_NONCRASH" != "1" ]; then
+    echo "FAIL: fuzz-smoke $name ($others timeout/oom artifact(s) in $dir/artifacts)"
+    failed=1
   else
     echo "ok: fuzz-smoke $name"
-  fi
-  if [ "$others" -ne 0 ]; then
-    echo "note: $others timeout/oom artifact(s) in $dir/artifacts (not fatal)"
+    if [ "$others" -ne 0 ]; then
+      echo "note: $others timeout/oom artifact(s) in $dir/artifacts (allowed via FUZZ_SMOKE_ALLOW_NONCRASH=1)"
+    fi
   fi
 }
 

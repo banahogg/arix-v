@@ -3,6 +3,7 @@
 
 #include "arixv/arixv.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -16,23 +17,45 @@
 #include "range_coder.h"
 #include "tuning.h"
 
-#if defined(ARIXV_ENCODER) && (ARIXV_ENCODER != 0)
+#if !ARIXV_HAS_ENCODER_
+#error "src/arixv_encode.cpp requires -DARIXV_ENCODER=1"
+#endif
+
 namespace arixv {
 inline namespace v1 {
 namespace {
 
-constexpr uint32_t kEncodeOptionsV1Size =
-    static_cast<uint32_t>(sizeof(arixv_encode_options));
+constexpr uint32_t kEncodeOptionsV1Size = ARIXV_ENCODE_OPTIONS_V1_SIZE;
+static_assert(kEncodeOptionsV1Size == 8u,
+              "v1 arixv_encode_options size is frozen");
+static_assert(sizeof(arixv_encode_options) == kEncodeOptionsV1Size);
+static_assert(offsetof(arixv_encode_options, struct_size) == 0u);
+static_assert(offsetof(arixv_encode_options, flags) == 4u);
+
+// Mode 1 (ByteModel) stages two uint32_t rANS records per input byte in
+// RansEncoder::syms_. On 32-bit ILP32 platforms, inputs exceeding
+// PTRDIFF_MAX / (2 * sizeof(uint32_t)) (~256 MiB) would hit std::vector's
+// max_size(); emit stored mode directly instead of failing with OOM.
+constexpr size_t kMaxMode1CodedBytes =
+    kMaxPlatformSpan / (2u * sizeof(uint32_t));
 
 bool ValidateEncodeOptions(const arixv_encode_options* opts) {
   if (opts == nullptr) {
     return true;
   }
   if (opts->struct_size < kEncodeOptionsV1Size ||
-      opts->struct_size > sizeof(arixv_encode_options)) {
+      opts->struct_size > kMaxOptionsStructSize) {
     return false;
   }
-  return opts->flags == 0;
+  if (opts->flags != 0) {
+    return false;
+  }
+  if (opts->struct_size > sizeof(arixv_encode_options) &&
+      !HasZeroTrailingBytes(opts, sizeof(arixv_encode_options),
+                            opts->struct_size)) {
+    return false;
+  }
+  return true;
 }
 
 void EncodeStored(const uint8_t* data, size_t size, std::vector<uint8_t>& out) {
@@ -64,6 +87,11 @@ arixv_status EncodeInternal(const uint8_t* data, size_t size, bool force_coded,
   }
 
   const bool spirv_eligible = IsSpirvModelEligible(data, size);
+  if (!spirv_eligible && !force_coded && size > kMaxMode1CodedBytes) {
+    EncodeStored(data, size, out);
+    return ARIXV_STATUS_OK;
+  }
+
   const uint32_t header_size =
       spirv_eligible ? static_cast<uint32_t>((size - kSpirvHeaderBytes) / 4u)
                      : static_cast<uint32_t>(size);
@@ -136,8 +164,8 @@ arixv_status EncodeImpl(const void* in, size_t in_size, void* out,
 
 extern "C" {
 
-size_t arixv_encode_bound(size_t in_size,
-                          const arixv_encode_options* opts) ARIXV_NOEXCEPT {
+size_t ARIXV_CALL arixv_encode_bound(size_t in_size,
+                                     const arixv_encode_options* opts) ARIXV_NOEXCEPT {
   if (!arixv::v1::ValidateEncodeOptions(opts)) {
     return 0;
   }
@@ -148,9 +176,9 @@ size_t arixv_encode_bound(size_t in_size,
          arixv::v1::CompactUint32Size(static_cast<uint32_t>(in_size)) + in_size;
 }
 
-arixv_status arixv_encode(const void* in, size_t in_size, void* out,
-                          size_t* out_size,
-                          const arixv_encode_options* opts) ARIXV_NOEXCEPT {
+arixv_status ARIXV_CALL arixv_encode(const void* in, size_t in_size, void* out,
+                                     size_t* out_size,
+                                     const arixv_encode_options* opts) ARIXV_NOEXCEPT {
 #if ARIXV_HAS_EXCEPTIONS
   try {
     return arixv::v1::EncodeImpl(in, in_size, out, out_size, opts);
@@ -165,4 +193,3 @@ arixv_status arixv_encode(const void* in, size_t in_size, void* out,
 }
 
 }  // extern "C"
-#endif

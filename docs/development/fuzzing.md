@@ -1,13 +1,21 @@
 # Fuzzing
 
 The coverage-guided and long-running fuzzing workflow is development-only. It
-is intentionally separate from `make test`, which runs a deterministic smoke
-fuzzer without external tooling or a downloaded corpus.
+is intentionally separate from `ctest --preset release`, which runs a
+deterministic smoke fuzzer without external tooling or a downloaded corpus.
 
-For a quick coverage-guided check, run `make fuzz-smoke`. It needs
-`clang++` and the corpus. It runs the libFuzzer round-trip and decode harnesses
-(`tools/fuzz/*_cov.cpp`) under ASan/UBSan for `FUZZ_SMOKE_SECONDS` (default
-120) each, on `FUZZ_SMOKE_JOBS` processes (default `nproc`). It is
+For a quick coverage-guided check, run the `fuzz-smoke` CMake preset:
+
+```bash
+cmake --preset fuzz-smoke
+cmake --build --preset fuzz-smoke --target fuzz-smoke
+```
+
+It needs `clang++` and the corpus. It runs the libFuzzer round-trip and decode
+harnesses (`tools/fuzz/*_cov.cpp`) under ASan/UBSan for `FUZZ_SMOKE_SECONDS`
+(default 120) each, on `FUZZ_SMOKE_JOBS` processes (default `nproc`), and exits
+non-zero on any crash, timeout, or OOM artifact (set
+`FUZZ_SMOKE_ALLOW_NONCRASH=1` to treat timeouts/OOMs as warnings). It is
 recommended after major model or tracker changes and before pushing. Its
 working corpora persist in `build/fuzz-smoke/` between runs. It seeds from the
 whole corpus rather than the size-capped overnight seeds: with the <33 KiB cap
@@ -54,6 +62,7 @@ ninja -C build spirv-fuzz && cp build/tools/spirv-fuzz ~/.local/bin/
 loop then falls back to `spirv-opt` for that iteration.
 
 Some sanitizer environments need custom process wrapping. For example,
-`RUN_WRAP="setarch $(uname -m) -R" scripts/fuzz/overnight.sh` applies a wrapper
-only to that campaign. Likewise, `make ASAN_RUN='…' asan` supplies an opt-in
-wrapper for the sanitizer test target.
+`RUN_WRAP="setarch $(uname -m) -R" scripts/fuzz/overnight.sh` (or the same
+`RUN_WRAP=...` with `scripts/fuzz/smoke.sh`) applies a wrapper to the fuzz
+harnesses. For the CMake sanitizer preset, run
+`cmake --preset asan && cmake --build --preset asan -j && setarch $(uname -m) -R ctest --preset asan`.

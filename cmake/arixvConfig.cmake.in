@@ -1,12 +1,19 @@
 @PACKAGE_INIT@
 
-# ARIX-V exposes a pure C public API but is implemented in C++17 internally.
-# Enable CXX so pure-C CMake parents linking static ARIX-V targets receive
-# automatic C++ runtime linkage.
-if(NOT CMAKE_CXX_COMPILER_LOADED)
+# Only static installed packages require CXX in pure-C consumers so CMake
+# propagates the C++ runtime linkage for ARIX-V's internal C++17 implementation.
+# Shared packages link the C++ runtime inside libarixv and expose a pure C ABI.
+if(NOT @ARIXV_INSTALLED_SHARED@ AND NOT CMAKE_CXX_COMPILER_LOADED)
   enable_language(CXX)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/arixvTargets.cmake")
+
+set(arixv_decoder_FOUND TRUE)
+if(@ARIXV_INSTALLED_ENCODER@)
+  set(arixv_encoder_FOUND TRUE)
+else()
+  set(arixv_encoder_FOUND FALSE)
+endif()
 
 check_required_components(arixv)

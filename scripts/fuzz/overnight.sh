@@ -33,8 +33,9 @@ if [ ! -f "$GRAMMAR" ]; then
   exit 1
 fi
 
-LIB_SRCS="src/arixv.cpp src/model.cpp src/tracker.cpp src/operand_cursor.cpp \
-  src/grammar_tables.cpp"
+LIB_SRCS="src/arixv.cpp src/arixv_encode.cpp src/model.cpp src/tracker.cpp \
+  src/operand_cursor.cpp src/grammar_tables.cpp"
+COMMON_FLAGS="-std=c++17 -Iinclude -Isrc -DARIXV_ENCODER=1"
 
 # Optional command prefix for hosts that need to wrap sanitizer processes.
 # For example: RUN_WRAP="setarch $(uname -m) -R" scripts/fuzz/overnight.sh
@@ -84,8 +85,8 @@ try_build() { # <out> <compiler...> — appends -o $BIN/<out>
 afl_build() { # <out> <harness> [env VAR=1 ...]
   local out=$1 harness=$2
   shift 2
-  try_build "$out" env "$@" AFL_QUIET=1 afl-clang-fast++ -O2 -g -std=c++17 \
-    -Isrc -fsanitize=fuzzer -fno-crash-diagnostics "$harness" $LIB_SRCS
+  try_build "$out" env "$@" AFL_QUIET=1 afl-clang-fast++ -O2 -g $COMMON_FLAGS \
+    -fsanitize=fuzzer -fno-crash-diagnostics "$harness" $LIB_SRCS
 }
 afl_build rt-afl tools/fuzz/fuzz_roundtrip_cov.cpp
 afl_build dec-afl tools/fuzz/fuzz_decode_cov.cpp
@@ -95,35 +96,35 @@ afl_build rt-afl-asan tools/fuzz/fuzz_roundtrip_cov.cpp AFL_USE_ASAN=1 AFL_USE_U
 afl_build dec-afl-asan tools/fuzz/fuzz_decode_cov.cpp AFL_USE_ASAN=1 AFL_USE_UBSAN=1
 
 # libFuzzer builds: in-process, value profile, ASan+UBSan.
-try_build rt-libfuzzer clang++ -O1 -g -std=c++17 -Isrc -fno-crash-diagnostics \
+try_build rt-libfuzzer clang++ -O1 -g $COMMON_FLAGS -fno-crash-diagnostics \
   -fsanitize=fuzzer,address,undefined tools/fuzz/fuzz_roundtrip_cov.cpp $LIB_SRCS
-try_build dec-libfuzzer clang++ -O1 -g -std=c++17 -Isrc -fno-crash-diagnostics \
+try_build dec-libfuzzer clang++ -O1 -g $COMMON_FLAGS -fno-crash-diagnostics \
   -fsanitize=fuzzer,address,undefined tools/fuzz/fuzz_decode_cov.cpp $LIB_SRCS
 
 # Unsigned-wraparound hunter: not UB, so plain UBSan stays silent, but in
 # coder arithmetic a wrap is usually a bug. Recovering so one noisy site
 # cannot mask others; triage dedupes the log by source location.
-try_build rt-intsan clang++ -O1 -g -std=c++17 -Isrc -fno-crash-diagnostics \
+try_build rt-intsan clang++ -O1 -g $COMMON_FLAGS -fno-crash-diagnostics \
   -fsanitize=address,undefined,unsigned-integer-overflow \
   -fsanitize-recover=unsigned-integer-overflow \
   tools/fuzz/fuzz_roundtrip.cpp $LIB_SRCS
 
 # 32-bit build: size_t shrinks to 4 bytes, exposing offset+length overflow
 # unreachable on 64-bit. ASan if the 32-bit runtime is present, else plain.
-if ! try_build rt-m32 g++ -m32 -O1 -g -std=c++17 -Isrc \
+if ! try_build rt-m32 g++ -m32 -O1 -g $COMMON_FLAGS \
   -fsanitize=address,undefined tools/fuzz/fuzz_roundtrip.cpp $LIB_SRCS
 then
   echo "  (32-bit sanitizer runtime unavailable; building -m32 plain)"
-  try_build rt-m32 g++ -m32 -O2 -g -std=c++17 -Isrc \
+  try_build rt-m32 g++ -m32 -O2 -g $COMMON_FLAGS \
     tools/fuzz/fuzz_roundtrip.cpp $LIB_SRCS
 fi
 
 # Valgrind wants an uninstrumented binary with symbols.
-try_build rt-vg g++ -O1 -g -std=c++17 -Isrc tools/fuzz/fuzz_roundtrip.cpp $LIB_SRCS
+try_build rt-vg g++ -O1 -g $COMMON_FLAGS tools/fuzz/fuzz_roundtrip.cpp $LIB_SRCS
 
 # CLI builds: plain for seed encoding, ASan for the generator loop's checks.
-try_build arixv g++ -O2 -std=c++17 -Isrc cli/main.cpp $LIB_SRCS
-try_build arixv-asan clang++ -O1 -g -std=c++17 -Isrc -fno-crash-diagnostics \
+try_build arixv g++ -O2 $COMMON_FLAGS cli/main.cpp $LIB_SRCS
+try_build arixv-asan clang++ -O1 -g $COMMON_FLAGS -fno-crash-diagnostics \
   -fsanitize=address,undefined cli/main.cpp $LIB_SRCS
 
 # ----------------------------------------------------------------- seeds ---

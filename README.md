@@ -1,9 +1,9 @@
 # ARIX-V — SPIR-V Arithmetic Compressor
 
 ARIX-V (*Arithmetic Reduction Intermediate Transform - V*) is a standalone,
-purely adaptive SPIR-V compressor with a thin C99/C11 public API, zero runtime
-dependencies, and a lean decoder-only target (~142–189 KB) designed for direct
-engine and Vulkan runtime integration.
+purely adaptive SPIR-V compressor with a thin C99/C11 public API, zero
+third-party dependencies, and a lean decoder-only target (~136–189 KB) designed
+for direct engine and Vulkan runtime integration.
 
 No corpus-trained probability tables are shipped: all shipped knowledge is
 derived structurally from the pinned Khronos SPIR-V specification grammars plus
@@ -12,9 +12,10 @@ a small audited set of scalar constants (`src/tuning.h`).
 ## Benchmarks
 
 **Results** (2026-11-21, `scripts/bench/benchmark_spv_compressors.py`,
-1070-file decode-verified intersection, 20 decode iterations per file, single
-core of an AMD Ryzen 9 5950X; `total = Σout / Σin`; decode is MiB/s of
-uncompressed SPIR-V output):
+1,070-file decode-verified intersection of the 1,080-file corpus where all
+compared tools succeed, 20 decode iterations per file, single core of an AMD
+Ryzen 9 5950X; `total = Σout / Σin`; decode is MiB/s of uncompressed SPIR-V
+output):
 
 | Tool | Mean | Median | Total | Single-Core Decode |
 |---|---:|---:|---:|---:|
@@ -24,17 +25,22 @@ uncompressed SPIR-V output):
 | smol-v + zstd -19 | 0.2647 | 0.2534 | 0.1950 | 591.29 MiB/s |
 | **ARIX-V (`ARX2`)** | **0.1561** | **0.1539** | **0.1249** | **73.88 MiB/s** |
 
+*(Across the full 1,080-file corpus including big-endian modules rejected by
+other tools, ARIX-V achieves `0.1252` total ratio and ~72–77 MiB/s single-core
+decode via `arixv_decode_bench`.)*
+
 - **SIMD & multi-core scaling:** rANS symbol updates use x86_64 SSE2 and
   AArch64 NEON with a portable scalar fallback (`-DARIXV_NO_SIMD`). Because
-  `arixv_decode` is completely stateless and thread-safe, decoding a shader
-  pack across worker threads scales linearly with core count.
+  `arixv_decode` is stateless and thread-safe, decoding a shader pack scales
+  across worker threads without shared mutable state.
 - **Full lossless coverage:** ARIX-V round-trips all 1,080 corpus shaders
   (including big-endian modules rejected by other tools), arbitrary non-SPIR-V
   byte streams (byte-coded or stored fallback), and SPIR-V modules using
   opcodes or enumerants from newer SPIR-V revisions.
 - **Hardened decoder:** Validated container framing, bounded internal
-  reservations against untrusted headers, and continuous libFuzzer + ASan/UBSan
-  testing (`tools/fuzz/`).
+  reservations against untrusted headers, local libFuzzer coverage-guided
+  smoke harnesses (`fuzz-smoke`, `tools/fuzz/`), and CI ASan/UBSan/TSan
+  verification.
 - Development logs covering ratio and CPU optimization live in
   [`docs/development/performance.md`](docs/development/performance.md),
   [`docs/development/ratio.md`](docs/development/ratio.md), and
@@ -68,18 +74,24 @@ FetchContent_MakeAvailable(arixv)
 target_link_libraries(my_engine PRIVATE arixv::decoder)
 ```
 
-Or against an installed package (`cmake --install ...`):
+Or against an installed package (`cmake --install ...`), with optional
+`COMPONENTS` verification:
 
 ```cmake
-find_package(arixv REQUIRED)
+find_package(arixv REQUIRED COMPONENTS decoder)
 target_link_libraries(my_engine PRIVATE arixv::decoder)
-# Optional: target_link_libraries(my_tool PRIVATE arixv::encoder)
+# Optional (when installed with ARIXV_BUILD_ENCODER=ON):
+# find_package(arixv REQUIRED COMPONENTS decoder encoder)
+# target_link_libraries(my_tool PRIVATE arixv::encoder)
 ```
 
 Pure-C CMake projects (`project(app LANGUAGES C)`) work out of the box for both
 `find_package(arixv)` and `FetchContent` (static and `BUILD_SHARED_LIBS=ON`):
 CMake automatically propagates the C++ runtime linkage required by ARIX-V's
-internal C++17 implementation.
+internal C++17 implementation (and shared installed packages do not require a
+C++ compiler in a pure-C consumer). If a parent project installs its own static
+library that links `arixv::decoder` via `FetchContent`, configure with
+`-DARIXV_INSTALL=ON` (or consume an installed `find_package(arixv)` package).
 
 ### Direct Source-Copy Integration (No Build System Required)
 
@@ -92,11 +104,11 @@ decoder translation units with C++17 (`-Iinclude -Isrc`):
 - `src/operand_cursor.cpp`
 - `src/grammar_tables.cpp`
 
-To include the encoder as well, also compile `src/arixv_encode.cpp` and define
-`ARIXV_ENCODER=1` (in decoder-only source builds, define `ARIXV_ENCODER=0` if
-you want encoder declarations hidden from `arixv/arixv.h`). Do **not** compile
-`src/grammar_names.cpp` into runtime binaries — it contains diagnostic-only
-name tables for tests and analysis tools.
+`ARIXV_ENCODER` defaults to `0` (opt-in), so decoder-only builds need no extra
+`-D` flags and only expose the decoder declarations in `arixv/arixv.h`. To
+include the encoder as well, also compile `src/arixv_encode.cpp` and define
+`-DARIXV_ENCODER=1`. Do **not** compile `src/grammar_names.cpp` into runtime
+binaries — it contains diagnostic-only name tables for tests and analysis tools.
 
 When linking static ARIX-V object files into a pure-C executable outside CMake,
 link the platform C++ runtime (`-lstdc++` on GCC/libstdc++, `-lc++` on
@@ -120,9 +132,12 @@ Pass `uint32_t`-aligned storage when forwarding the result to
 /* 1. O(1) size query from the untrusted container header. */
 size_t spirv_bytes = 0;
 arixv_status st = arixv_decode(blob, blob_size, NULL, &spirv_bytes, NULL);
-if (st != ARIXV_STATUS_OK || spirv_bytes == 0 ||
-    spirv_bytes > MAX_SHADER_BYTES || (spirv_bytes % 4) != 0) {
-  return handle_error(st);
+if (st != ARIXV_STATUS_OK) {
+  return handle_codec_error(st);
+}
+if (spirv_bytes == 0 || spirv_bytes > MAX_SHADER_BYTES ||
+    (spirv_bytes % 4) != 0) {
+  return handle_invalid_shader_size(spirv_bytes);
 }
 
 /* 2. Allocate uint32_t-aligned output and decode directly into it. */
@@ -134,7 +149,7 @@ size_t out_size = spirv_bytes;
 st = arixv_decode(blob, blob_size, spirv, &out_size, NULL);
 if (st != ARIXV_STATUS_OK) {
   free(spirv);
-  return handle_error(st);
+  return handle_codec_error(st);
 }
 
 VkShaderModuleCreateInfo ci = {
@@ -160,8 +175,15 @@ if (bound == 0) {
   return handle_too_large();
 }
 void* out = malloc(bound);
+if (!out) {
+  return handle_oom();
+}
 size_t out_size = bound;
 arixv_status st = arixv_encode(spirv, spirv_bytes, out, &out_size, NULL);
+if (st != ARIXV_STATUS_OK) {
+  free(out);
+  return handle_codec_error(st);
+}
 /* On ARIXV_STATUS_OK, `out_size` bytes were written to `out`. */
 ```
 
@@ -177,7 +199,10 @@ if (arixv_inspect(blob, blob_size, &info) == ARIXV_STATUS_OK) {
 
 ## CLI Usage
 
-Build the CLI with the `release` preset and use it as an offline build step:
+Build the CLI with the `release` preset (or `release-lto` for an LTO build) and
+use it as an offline build step. On POSIX single-config generators the binary is
+`build/release/arixv`; on Windows MSVC multi-config generators it is
+`build/release/Release/arixv.exe`:
 
 ```bash
 cmake --preset release
@@ -186,12 +211,14 @@ cmake --build --preset release --target arixv_cli -j
 # Single-file compress / decompress (use '-' for binary stdin/stdout)
 build/release/arixv c -v shader.spv shader.arixv
 build/release/arixv d shader.arixv shader.spv
+build/release/arixv d --max-size 67108864 shader.arixv shader.spv
 cat shader.spv | build/release/arixv c - - | build/release/arixv d - shader.spv
 
 # Batch compress a directory of shaders into out/ (<filename>.arixv)
 build/release/arixv c --out-dir build/shaders shaders/*.spv
 
-# O(1) header inspection (reads only the first 16 bytes of regular files)
+# O(1) header inspection (reads only the first 16 bytes of regular files;
+# streams stdin/FIFOs with constant memory)
 build/release/arixv info build/shaders/*.arixv
 
 # Round-trip verification and version info
@@ -199,7 +226,9 @@ build/release/arixv roundtrip shaders/*.spv
 build/release/arixv --version
 ```
 
-Exit codes: `0` success, `1` runtime/codec/I/O error, `2` CLI usage error.
+By default `d` / `decompress` caps decoded output at 512 MiB (`--max-size 0`
+raises the cap to the platform maximum). Exit codes: `0` success, `1`
+runtime/codec/I/O error, `2` CLI usage error.
 
 ## Decoder Binary Footprint
 
@@ -208,18 +237,18 @@ live in the separate test-only `src/grammar_names.cpp`) and stores all SPIR-V
 grammar tables as pure position-independent `.rodata` with zero `.data.rel.ro`
 entries.
 
-Measured on Linux x86_64 (GCC 15, `ARIXV_BUILD_ENCODER=OFF`):
+Measured on Linux x86_64 (`g++` 15.2.0, `ARIXV_BUILD_ENCODER=OFF`,
+`BUILD_SHARED_LIBS=ON`, `size` / `size -A` / `strip`, decimal KB = 1,000 B):
 
-| Build | `.text` | `.rodata` | `.data.rel.ro` | Total (`size`) | Stripped `.so` |
-|---|---:|---:|---:|---:|---:|
-| Shared `-O3` (`Release`) | 93.2 KB | 83.9 KB | 0 B | 188.9 KB | 194.9 KB |
-| Shared `-O3` + LTO | — | — | 0 B | 182.6 KB | 186.7 KB |
-| Shared `-Os` (`MinSizeRel`) | 44.4 KB | 84.1 KB | 0 B | 142.2 KB | 149.9 KB |
-| Shared `-Os` + LTO | — | — | 0 B | 135.4 KB | 145.8 KB |
+| Build | `.text` | `.rodata` | `.data` | `.data.rel.ro` | Total (`size`) | Stripped `.so` |
+|---|---:|---:|---:|---:|---:|---:|
+| Shared `-O3` (`Release`) | 93.4 KB | 83.9 KB | 24 B | 0 B | 189.2 KB | 199.1 KB |
+| Shared `-O3` + LTO | 89.5 KB | 84.0 KB | 32 B | 0 B | 183.2 KB | 190.9 KB |
+| Shared `-Os` (`MinSizeRel`) | 44.5 KB | 84.1 KB | 24 B | 0 B | 142.4 KB | 149.9 KB |
+| Shared `-Os` + LTO | 40.5 KB | 84.0 KB | 32 B | 0 B | 135.6 KB | 145.8 KB |
 
-Static links with `-Wl,--gc-sections` against `arixv::decoder` achieve the
-same footprint even when configured with `ARIXV_BUILD_ENCODER=ON` (~178 KB at
-`-O3`, ~143 KB at `-Os`).
+Static links with `-Wl,--gc-sections` against `arixv::decoder` achieve a
+comparable footprint even when configured with `ARIXV_BUILD_ENCODER=ON`.
 
 ## Portability, Exceptions & Format Stability
 
@@ -232,9 +261,11 @@ same footprint even when configured with `ARIXV_BUILD_ENCODER=ON` (~178 KB at
   the C boundary and returned as `ARIXV_STATUS_OUT_OF_MEMORY`. When built with
   exceptions disabled, internal OOM aborts the process in v1.0.
 - **32-bit & 64-bit support:** Tested on both 64-bit (`LP64`/`LLP64`, up to
-  `UINT32_MAX` uncompressed bytes) and 32-bit (`ILP32`, up to
+  `UINT32_MAX` uncompressed bytes) and 32-bit (`ILP32`, framing limit
   `PTRDIFF_MAX - 16` bytes; valid larger blobs return `ARIXV_STATUS_TOO_LARGE`
-  from `arixv_decode` while `arixv_inspect` still reports the full 64-bit size).
+  from `arixv_decode` while `arixv_inspect` still reports the full 64-bit size;
+  generic non-SPIR-V byte-coded mode-1 inputs above ~256 MiB on ILP32 fall back
+  directly to stored mode).
 - **Format stability (`ARX2`):** The `ARX2` format is frozen for v1.0,
   including the pinned `SPIRV-Headers` revision (`02c0394e…`) and all wire
   constants, backed by an immutable cross-architecture golden fixture suite in

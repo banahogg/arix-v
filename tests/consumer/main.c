@@ -18,6 +18,16 @@
 #endif
 #endif
 
+#if CONSUMER_HAS_ENCODER
+#if !ARIXV_HAS_ENCODER_
+#error "arixv::encoder must propagate ARIXV_ENCODER=1"
+#endif
+#else
+#if ARIXV_HAS_ENCODER_
+#error "arixv::decoder must not expose encoder declarations"
+#endif
+#endif
+
 int main(void) {
   static const uint8_t kMinimalArx2[] = {
       0x41, 0x52, 0x58, 0x32, 0x02, 0x00, 0x10, 0x6c, 0xe3, 0x3f, 0xa3

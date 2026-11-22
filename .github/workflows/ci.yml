@@ -37,7 +37,7 @@ jobs:
             --grammar-dir grammar-deps/spirv-headers/include/spirv/unified1 \
             --check
 
-      - name: Verify no wire-format tuning overrides outside src/tuning.h
+      - name: Verify wire-format tuning lock & header C99/C11/C++17 strictness
         run: |
           if grep -rn '#ifndef ARIXV_K' src/ include/ --exclude=tuning.h; then
             echo "ERROR: Found #ifndef ARIXV_K outside src/tuning.h"
@@ -51,6 +51,12 @@ jobs:
             echo "ERROR: Expected ARIXV_RESEARCH_TUNING combined with ARIXV_BUILDING to fail"
             exit 1
           fi
+          for std in c99 c11 c17; do
+            for def in "" "-DARIXV_ENCODER=" "-DARIXV_ENCODER=0" "-DARIXV_ENCODER=1"; do
+              printf '#include <arixv/arixv.h>\nint arixv_hdr_check(void) { return (int)ARIXV_HEADER_INFO_V1_SIZE; }\n' | \
+                gcc -x c -std="$std" -Wall -Wextra -Wpedantic -Werror -Iinclude $def -fsyntax-only -
+            done
+          done
 
   linux:
     name: Linux (${{ matrix.name }})
@@ -96,14 +102,44 @@ jobs:
           cmake --build build/noexc -j
           ctest --test-dir build/noexc --output-on-failure
 
-      - name: Build and test (decoder-only)
+      - name: Build and test (decoder-only static + shared + export check)
         env:
+          CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
         run: |
           cmake -S . -B build/dec -DCMAKE_BUILD_TYPE=Release \
             -DARIXV_BUILD_ENCODER=OFF -DARIXV_BUILD_CLI=OFF -DARIXV_BUILD_TOOLS=OFF
           cmake --build build/dec -j
           ctest --test-dir build/dec --output-on-failure
+          cmake --install build/dec --prefix "$PWD/build/install-dec-static"
+
+          cmake -S . -B build/dec-shared -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DARIXV_BUILD_ENCODER=OFF -DARIXV_BUILD_CLI=OFF -DARIXV_BUILD_TOOLS=OFF
+          cmake --build build/dec-shared -j
+          ctest --test-dir build/dec-shared --output-on-failure
+          exported=$(nm -D --defined-only build/dec-shared/libarixv.so | awk '$2 != "A" {print $3}' | sort)
+          expected=$(printf '%s\n' arixv_decode@@ARIXV_1.0 arixv_inspect@@ARIXV_1.0 arixv_status_string@@ARIXV_1.0 arixv_version@@ARIXV_1.0)
+          if [ "$exported" != "$expected" ]; then
+            echo "ERROR: Unexpected exported symbols in decoder-only libarixv.so:"
+            echo "$exported"
+            exit 1
+          fi
+          cmake --install build/dec-shared --prefix "$PWD/build/install-dec-shared"
+
+          for kind in static shared; do
+            for lang in C CXX; do
+              bdir="build/consumer-dec-${kind}-${lang}"
+              cmake -S tests/consumer -B "$bdir" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH="$PWD/build/install-dec-${kind}" \
+                -DARIXV_CONSUMER_LANG="$lang" \
+                -DARIXV_CONSUMER_MODE=find_package \
+                -DARIXV_CONSUMER_TARGETS=decoder
+              cmake --build "$bdir" -j
+              "./$bdir/consumer_smoke"
+            done
+          done
 
       - name: Build, test, and verify shared library + C11/C++17 consumer smoke tests
         env:
@@ -126,13 +162,13 @@ jobs:
             done
           done
 
-          # Shared build + CTest + verify ONLY C arixv_* symbols are exported
+          # Shared build + CTest + verify ONLY ARIXV_1.0 C arixv_* symbols are exported
           cmake -S . -B build/shared -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=ON
           cmake --build build/shared -j
           ctest --test-dir build/shared --output-on-failure
-          exported=$(nm -D --defined-only build/shared/libarixv.so | awk '{print $3}' | sort)
-          expected=$(printf '%s\n' arixv_decode arixv_encode arixv_encode_bound arixv_inspect arixv_status_string arixv_version)
+          exported=$(nm -D --defined-only build/shared/libarixv.so | awk '$2 != "A" {print $3}' | sort)
+          expected=$(printf '%s\n' arixv_decode@@ARIXV_1.0 arixv_encode@@ARIXV_1.0 arixv_encode_bound@@ARIXV_1.0 arixv_inspect@@ARIXV_1.0 arixv_status_string@@ARIXV_1.0 arixv_version@@ARIXV_1.0)
           if [ "$exported" != "$expected" ]; then
             echo "ERROR: Unexpected exported symbols in libarixv.so:"
             echo "$exported"
@@ -155,18 +191,21 @@ jobs:
             done
           done
 
-          # FetchContent consumers (C11 & C++17; decoder-only and decoder+encoder)
-          for lang in C CXX; do
-            for tgt in decoder both; do
-              bdir="build/consumer-fc-${lang}-${tgt}"
-              cmake -S tests/consumer -B "$bdir" \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DARIXV_CONSUMER_LANG="$lang" \
-                -DARIXV_CONSUMER_MODE=fetchcontent \
-                -DARIXV_CONSUMER_SOURCE_DIR="$PWD" \
-                -DARIXV_CONSUMER_TARGETS="$tgt"
-              cmake --build "$bdir" -j
-              "./$bdir/consumer_smoke"
+          # FetchContent consumers (static + shared; C11 & C++17; decoder, encoder, both)
+          for shared in OFF ON; do
+            for lang in C CXX; do
+              for tgt in decoder encoder both; do
+                bdir="build/consumer-fc-${shared}-${lang}-${tgt}"
+                cmake -S tests/consumer -B "$bdir" \
+                  -DCMAKE_BUILD_TYPE=Release \
+                  -DBUILD_SHARED_LIBS="$shared" \
+                  -DARIXV_CONSUMER_LANG="$lang" \
+                  -DARIXV_CONSUMER_MODE=fetchcontent \
+                  -DARIXV_CONSUMER_SOURCE_DIR="$PWD" \
+                  -DARIXV_CONSUMER_TARGETS="$tgt"
+                cmake --build "$bdir" -j
+                "./$bdir/consumer_smoke"
+              done
             done
           done
 
@@ -248,12 +287,19 @@ jobs:
           cmake --build build/scalar -j
           ctest --test-dir build/scalar --output-on-failure
 
-      - name: Build and test (shared + C11/C++17 find_package consumers)
+      - name: Build and test (shared + Mach-O export check + C11/C++17 consumers)
         run: |
           cmake -S . -B build/shared -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=ON
           cmake --build build/shared -j
           ctest --test-dir build/shared --output-on-failure
+          exported=$(nm -gU build/shared/libarixv.dylib | awk '{print $3}' | sort)
+          expected=$(printf '%s\n' _arixv_decode _arixv_encode _arixv_encode_bound _arixv_inspect _arixv_status_string _arixv_version)
+          if [ "$exported" != "$expected" ]; then
+            echo "ERROR: Unexpected exported symbols in libarixv.dylib:"
+            echo "$exported"
+            exit 1
+          fi
           cmake --install build/shared --prefix "$PWD/build/install-shared"
           for lang in C CXX; do
             bdir="build/consumer-shared-${lang}"
@@ -266,6 +312,20 @@ jobs:
             cmake --build "$bdir" -j
             "./$bdir/consumer_smoke"
           done
+          for shared in OFF ON; do
+            for lang in C CXX; do
+              bdir="build/consumer-fc-${shared}-${lang}"
+              cmake -S tests/consumer -B "$bdir" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS="$shared" \
+                -DARIXV_CONSUMER_LANG="$lang" \
+                -DARIXV_CONSUMER_MODE=fetchcontent \
+                -DARIXV_CONSUMER_SOURCE_DIR="$PWD" \
+                -DARIXV_CONSUMER_TARGETS=both
+              cmake --build "$bdir" -j
+              "./$bdir/consumer_smoke"
+            done
+          done
 
   windows-msvc:
     name: Windows (MSVC x64)
@@ -276,51 +336,132 @@ jobs:
       - name: Build and test (Release SSE2 + C11/C++17 static consumers)
         shell: pwsh
         run: |
-          cmake -S . -B build/rel -A x64
-          cmake --build build/rel --config Release --parallel
-          ctest --test-dir build/rel -C Release --output-on-failure
-          cmake --install build/rel --config Release --prefix "$PWD/build/install-static"
+          $ErrorActionPreference = 'Stop'
+          function Invoke-Checked {
+            $global:LASTEXITCODE = 0
+            $exe = $args[0]
+            if ($args.Length -gt 1) {
+              $rest = $args[1..($args.Length - 1)]
+              & $exe @rest
+            } else {
+              & $exe
+            }
+            if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $($args -join ' ')" }
+          }
+          Invoke-Checked cmake -S . -B build/rel -A x64
+          Invoke-Checked cmake --build build/rel --config Release --parallel
+          Invoke-Checked ctest --test-dir build/rel -C Release --output-on-failure
+          Invoke-Checked cmake --install build/rel --config Release --prefix "$PWD/build/install-static"
           foreach ($lang in @("C", "CXX")) {
-            $bdir = "build/consumer-static-$lang"
-            cmake -S tests/consumer -B $bdir -A x64 `
-              -DCMAKE_PREFIX_PATH="$PWD/build/install-static" `
-              -DARIXV_CONSUMER_LANG="$lang" `
-              -DARIXV_CONSUMER_MODE=find_package `
-              -DARIXV_CONSUMER_TARGETS=both
-            cmake --build $bdir --config Release --parallel
-            & ".\$bdir\Release\consumer_smoke.exe"
+            foreach ($tgt in @("decoder", "both")) {
+              $bdir = "build/consumer-static-$lang-$tgt"
+              Invoke-Checked cmake -S tests/consumer -B $bdir -A x64 `
+                -DCMAKE_PREFIX_PATH="$PWD/build/install-static" `
+                -DARIXV_CONSUMER_LANG="$lang" `
+                -DARIXV_CONSUMER_MODE=find_package `
+                -DARIXV_CONSUMER_TARGETS="$tgt"
+              Invoke-Checked cmake --build $bdir --config Release --parallel
+              Invoke-Checked ".\$bdir\Release\consumer_smoke.exe"
+            }
           }
 
-      - name: Build and test (Shared DLL + C11/C++17 consumers)
+      - name: Build and test (Shared DLL + export check + C11/C++17 consumers)
         shell: pwsh
         run: |
-          cmake -S . -B build/shared -A x64 -DBUILD_SHARED_LIBS=ON
-          cmake --build build/shared --config Release --parallel
-          ctest --test-dir build/shared -C Release --output-on-failure
-          cmake --install build/shared --config Release --prefix "$PWD/build/install-shared"
+          $ErrorActionPreference = 'Stop'
+          function Invoke-Checked {
+            $global:LASTEXITCODE = 0
+            $exe = $args[0]
+            if ($args.Length -gt 1) {
+              $rest = $args[1..($args.Length - 1)]
+              & $exe @rest
+            } else {
+              & $exe
+            }
+            if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $($args -join ' ')" }
+          }
+          Invoke-Checked cmake -S . -B build/shared -A x64 -DBUILD_SHARED_LIBS=ON
+          Invoke-Checked cmake --build build/shared --config Release --parallel
+          Invoke-Checked ctest --test-dir build/shared -C Release --output-on-failure
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dumpbin = Get-ChildItem -Path "$vsPath\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $dumpbin) { throw "dumpbin.exe not found" }
+          $dll = "build\shared\bin\Release\arixv.dll"
+          $dumpOut = & $dumpbin /exports $dll
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed ($LASTEXITCODE)" }
+          $exported = @(
+            $dumpOut | ForEach-Object {
+              if ($_ -match '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)') { $Matches[1] }
+            } | Sort-Object
+          )
+          $expected = @("arixv_decode", "arixv_encode", "arixv_encode_bound", "arixv_inspect", "arixv_status_string", "arixv_version")
+          if (($exported -join ",") -ne ($expected -join ",")) {
+            throw "Unexpected DLL exports: $($exported -join ', ')"
+          }
+
+          Invoke-Checked cmake --install build/shared --config Release --prefix "$PWD/build/install-shared"
           $env:PATH = "$PWD\build\install-shared\bin;$env:PATH"
           foreach ($lang in @("C", "CXX")) {
-            $bdir = "build/consumer-shared-$lang"
-            cmake -S tests/consumer -B $bdir -A x64 `
-              -DCMAKE_PREFIX_PATH="$PWD/build/install-shared" `
+            foreach ($tgt in @("decoder", "both")) {
+              $bdir = "build/consumer-shared-$lang-$tgt"
+              Invoke-Checked cmake -S tests/consumer -B $bdir -A x64 `
+                -DCMAKE_PREFIX_PATH="$PWD/build/install-shared" `
+                -DARIXV_CONSUMER_LANG="$lang" `
+                -DARIXV_CONSUMER_MODE=find_package `
+                -DARIXV_CONSUMER_TARGETS="$tgt"
+              Invoke-Checked cmake --build $bdir --config Release --parallel
+              Invoke-Checked ".\$bdir\Release\consumer_smoke.exe"
+            }
+          }
+
+          foreach ($lang in @("C", "CXX")) {
+            $bdir = "build/consumer-fc-$lang"
+            Invoke-Checked cmake -S tests/consumer -B $bdir -A x64 `
               -DARIXV_CONSUMER_LANG="$lang" `
-              -DARIXV_CONSUMER_MODE=find_package `
+              -DARIXV_CONSUMER_MODE=fetchcontent `
+              -DARIXV_CONSUMER_SOURCE_DIR="$PWD" `
               -DARIXV_CONSUMER_TARGETS=both
-            cmake --build $bdir --config Release --parallel
-            & ".\$bdir\Release\consumer_smoke.exe"
+            Invoke-Checked cmake --build $bdir --config Release --parallel
+            Invoke-Checked ".\$bdir\Release\consumer_smoke.exe"
           }
 
       - name: Build and test (scalar / ARIXV_NO_SIMD)
         shell: pwsh
         run: |
-          cmake -S . -B build/scalar -A x64 -DCMAKE_CXX_FLAGS="/DARIXV_NO_SIMD"
-          cmake --build build/scalar --config Release --parallel
-          ctest --test-dir build/scalar -C Release --output-on-failure
+          $ErrorActionPreference = 'Stop'
+          function Invoke-Checked {
+            $global:LASTEXITCODE = 0
+            $exe = $args[0]
+            if ($args.Length -gt 1) {
+              $rest = $args[1..($args.Length - 1)]
+              & $exe @rest
+            } else {
+              & $exe
+            }
+            if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $($args -join ' ')" }
+          }
+          Invoke-Checked cmake -S . -B build/scalar -A x64 -DCMAKE_CXX_FLAGS="/DARIXV_NO_SIMD"
+          Invoke-Checked cmake --build build/scalar --config Release --parallel
+          Invoke-Checked ctest --test-dir build/scalar -C Release --output-on-failure
 
       - name: Build and test (no-exceptions /EHs-c- /D_HAS_EXCEPTIONS=0 /GR-)
         shell: pwsh
         run: |
-          cmake -S . -B build/noexc -A x64 `
+          $ErrorActionPreference = 'Stop'
+          function Invoke-Checked {
+            $global:LASTEXITCODE = 0
+            $exe = $args[0]
+            if ($args.Length -gt 1) {
+              $rest = $args[1..($args.Length - 1)]
+              & $exe @rest
+            } else {
+              & $exe
+            }
+            if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $($args -join ' ')" }
+          }
+          Invoke-Checked cmake -S . -B build/noexc -A x64 `
             -DCMAKE_CXX_FLAGS="/DWIN32 /D_WINDOWS /EHs-c- /D_HAS_EXCEPTIONS=0 /GR-"
-          cmake --build build/noexc --config Release --parallel
-          ctest --test-dir build/noexc -C Release --output-on-failure
+          Invoke-Checked cmake --build build/noexc --config Release --parallel
+          Invoke-Checked ctest --test-dir build/noexc -C Release --output-on-failure

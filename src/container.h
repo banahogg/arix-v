@@ -19,13 +19,32 @@
 namespace arixv {
 inline namespace v1 {
 
+#ifdef ARIXV_RESEARCH_TUNING
+// Research builds with overridden tuning constants emit a distinct magic
+// ("ARXR") so experimental bitstreams can never masquerade as frozen ARX2.
+inline constexpr uint8_t kContainerMagic[] = {'A', 'R', 'X', 'R'};
+#else
 inline constexpr uint8_t kContainerMagic[] = {
     static_cast<uint8_t>(ARIXV_MAGIC_0),
     static_cast<uint8_t>(ARIXV_MAGIC_1),
     static_cast<uint8_t>(ARIXV_MAGIC_2),
     static_cast<uint8_t>(ARIXV_MAGIC_3),
 };
+#endif
 inline constexpr size_t kContainerMagicBytes = sizeof(kContainerMagic);
+
+inline constexpr uint32_t kMaxOptionsStructSize = 4096u;
+
+inline bool HasZeroTrailingBytes(const void* ptr, size_t known_size,
+                                 size_t struct_size) {
+  const auto* bytes = static_cast<const uint8_t*>(ptr);
+  for (size_t i = known_size; i < struct_size; ++i) {
+    if (bytes[i] != 0) {
+      return false;
+    }
+  }
+  return true;
+}
 
 inline constexpr uint32_t kSizeOneByteLimit = 192u;
 inline constexpr uint32_t kSizeTwoByteLimit =

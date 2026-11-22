@@ -22,7 +22,7 @@
 #include "test_util.h"
 
 #ifndef ARIXV_ENCODER
-#define ARIXV_ENCODER 1
+#define ARIXV_ENCODER 0
 #endif
 
 namespace {

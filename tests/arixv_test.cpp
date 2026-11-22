@@ -413,12 +413,12 @@ void HostileInputs() {
                        &sz, nullptr) == ARIXV_STATUS_BAD_CONTAINER);
     CHECK(sz == 123);
 
-    const std::pair<std::vector<uint8_t>, uint64_t> huge_cases[] = {
-        {huge_stored, 0xFFFFFFFFull},
-        {huge_coded, 0xFFFFFFFFull},
-        {max_spirv, 4294967292ull},
+    const std::tuple<std::vector<uint8_t>, uint64_t, bool> huge_cases[] = {
+        {huge_stored, 0xFFFFFFFFull, true},
+        {huge_coded, 0xFFFFFFFFull, false},
+        {max_spirv, 4294967292ull, false},
     };
-    for (const auto& [blob, expected_bytes] : huge_cases) {
+    for (const auto& [blob, expected_bytes, is_stored] : huge_cases) {
       // arixv_inspect always reports the full 64-bit declared size.
       arixv_header_info h{};
       h.struct_size = sizeof(h);
@@ -437,9 +437,18 @@ void HostileInputs() {
         CHECK(arixv_decode(blob.data(), blob.size(), small_buf, &cap,
                            nullptr) == ARIXV_STATUS_TOO_LARGE);
         CHECK(cap == sizeof(small_buf));
+      } else if (is_stored) {
+        // 64-bit stored mode: O(1) payload-length check rejects truncated
+        // payload immediately without reporting a multi-GiB size query.
+        CHECK(arixv_decode(blob.data(), blob.size(), nullptr, &q, nullptr) ==
+              ARIXV_STATUS_TRUNCATED);
+        CHECK(q == 777);
+        CHECK(arixv_decode(blob.data(), blob.size(), small_buf, &cap,
+                           nullptr) == ARIXV_STATUS_TRUNCATED);
+        CHECK(cap == sizeof(small_buf));
       } else {
-        // 64-bit: size query reports declared size; small buffer rejects with
-        // BUFFER_TOO_SMALL without allocating or touching `small_buf`.
+        // 64-bit compressed modes: size query reports declared size; small
+        // buffer rejects with BUFFER_TOO_SMALL without touching `small_buf`.
         CHECK(arixv_decode(blob.data(), blob.size(), nullptr, &q, nullptr) ==
               ARIXV_STATUS_OK);
         CHECK(q == static_cast<size_t>(expected_bytes));
@@ -451,6 +460,13 @@ void HostileInputs() {
         CHECK(b == 0x5A);
       }
     }
+
+    // Stored mode with extra trailing byte fails BAD_CONTAINER even on out==NULL.
+    const auto trailing_stored = make_blob({arixv::kModeStored, 1, 0xAA, 0xBB});
+    size_t tq = 321;
+    CHECK(arixv_decode(trailing_stored.data(), trailing_stored.size(), nullptr,
+                       &tq, nullptr) == ARIXV_STATUS_BAD_CONTAINER);
+    CHECK(tq == 321);
   }
 
   const auto unknown = make_blob({99, 0});
@@ -606,9 +622,9 @@ void CApiContractTests() {
 
     const arixv_decode_options bad_opts[] = {
         {0, 0},
-        {sizeof(arixv_decode_options) - 1, 0},
-        {sizeof(arixv_decode_options) + 4, 0},
-        {sizeof(arixv_decode_options), 1},
+        {ARIXV_DECODE_OPTIONS_V1_SIZE - 1, 0},
+        {arixv::kMaxOptionsStructSize + 1, 0},
+        {ARIXV_DECODE_OPTIONS_V1_SIZE, 1},
     };
     for (const auto& o : bad_opts) {
       size_t sz = 888;
@@ -616,6 +632,24 @@ void CApiContractTests() {
                          &o) == ARIXV_STATUS_INVALID_ARGUMENT);
       CHECK(sz == 888);
     }
+
+    // Forward-compatible larger options struct: zeroed tail accepted, non-zero
+    // tail rejected.
+    struct FutureDecodeOptions {
+      arixv_decode_options base;
+      uint64_t future_field;
+    };
+    FutureDecodeOptions fut_dec{{sizeof(FutureDecodeOptions), 0}, 0};
+    cap = buf.size();
+    CHECK(arixv_decode(spirv_blob.data(), spirv_blob.size(), buf.data(), &cap,
+                       &fut_dec.base) == ARIXV_STATUS_OK);
+    CHECK(cap == spirv_in.size());
+    fut_dec.future_field = 1;
+    size_t keep_sz = 888;
+    CHECK(arixv_decode(spirv_blob.data(), spirv_blob.size(), buf.data(),
+                       &keep_sz, &fut_dec.base) ==
+          ARIXV_STATUS_INVALID_ARGUMENT);
+    CHECK(keep_sz == 888);
   }
 
   // 4. 0-byte payloads (both stored and forced-coded): out==NULL vs out!=NULL.
@@ -655,9 +689,9 @@ void CApiContractTests() {
 
     const arixv_encode_options bad_opts[] = {
         {0, 0},
-        {sizeof(arixv_encode_options) - 1, 0},
-        {sizeof(arixv_encode_options) + 4, 0},
-        {sizeof(arixv_encode_options), 1},
+        {ARIXV_ENCODE_OPTIONS_V1_SIZE - 1, 0},
+        {arixv::kMaxOptionsStructSize + 1, 0},
+        {ARIXV_ENCODE_OPTIONS_V1_SIZE, 1},
     };
     for (const auto& o : bad_opts) {
       CHECK(arixv_encode_bound(16, &o) == 0);
@@ -668,6 +702,28 @@ void CApiContractTests() {
                          &o) == ARIXV_STATUS_INVALID_ARGUMENT);
       CHECK(out_sz == sizeof(out_buf));
       CHECK(out_buf[0] == 0x77);
+    }
+
+    struct FutureEncodeOptions {
+      arixv_encode_options base;
+      uint64_t future_field;
+    };
+    FutureEncodeOptions fut_enc{{sizeof(FutureEncodeOptions), 0}, 0};
+    CHECK(arixv_encode_bound(16, &fut_enc.base) == 5 + 1 + 16);
+    {
+      uint8_t out_buf[32];
+      size_t out_sz = sizeof(out_buf);
+      CHECK(arixv_encode(stored_in.data(), stored_in.size(), out_buf, &out_sz,
+                         &fut_enc.base) == ARIXV_STATUS_OK);
+      CHECK(out_sz == stored_blob.size());
+    }
+    fut_enc.future_field = 0x100u;
+    CHECK(arixv_encode_bound(16, &fut_enc.base) == 0);
+    {
+      uint8_t out_buf[32];
+      size_t out_sz = sizeof(out_buf);
+      CHECK(arixv_encode(stored_in.data(), stored_in.size(), out_buf, &out_sz,
+                         &fut_enc.base) == ARIXV_STATUS_INVALID_ARGUMENT);
     }
 
     // in == NULL && in_size == 0 is valid and produces a 6-byte container.

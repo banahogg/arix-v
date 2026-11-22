@@ -18,8 +18,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = ROOT / "corpus" / "spv"
 SOURCES = [
-    "tools/bench/bench.cpp", "src/arixv.cpp", "src/model.cpp", "src/tracker.cpp",
-    "src/operand_cursor.cpp", "src/grammar_tables.cpp",
+    "tools/bench/bench.cpp", "src/arixv.cpp", "src/arixv_encode.cpp",
+    "src/model.cpp", "src/tracker.cpp", "src/operand_cursor.cpp",
+    "src/grammar_tables.cpp",
 ]
 
 # knob -> candidate values (first entry = current default). Rank-list caps
@@ -42,7 +43,11 @@ def split_files(which: str) -> list[Path]:
 
 
 def build(defines: dict[str, int], out: Path) -> None:
-    cmd = ["c++", "-O2", "-std=c++17", "-DNDEBUG", f"-I{ROOT}/src"]
+    cmd = [
+        "c++", "-O2", "-std=c++17", "-DNDEBUG",
+        f"-I{ROOT}/include", f"-I{ROOT}/src",
+        "-DARIXV_ENCODER=1", "-DARIXV_RESEARCH_TUNING",
+    ]
     cmd += [f"-D{k}={v}" for k, v in defines.items()]
     cmd += [str(ROOT / s) for s in SOURCES]
     cmd += ["-o", str(out)]

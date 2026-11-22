@@ -46,10 +46,22 @@ def main() -> int:
     for flag in ("-h", "--help"):
         r = run(cli, [flag])
         require(r.returncode == 0, f"{flag} rc={r.returncode}")
-        require(b"usage:" in r.stdout, f"{flag} missing usage on stdout")
+        require(b"arixv 1.0.0" in r.stdout and b"ARX2" in r.stdout and b"usage:" in r.stdout,
+                f"{flag} missing version/magic/usage on stdout: {r.stdout!r}")
 
     # 2. Usage errors exit with code 2
-    for bad_args in ([], ["unknown-cmd"], ["c"], ["c", "only-one"], ["d", "--force-coded", "a", "b"], ["info"]):
+    for bad_args in (
+        [],
+        ["unknown-cmd"],
+        ["c"],
+        ["c", "only-one"],
+        ["c", "--out-dir", "", "a"],
+        ["c", "--out-dir=", "a"],
+        ["d", "--force-coded", "a", "b"],
+        ["d", "--max-size", "not-a-num", "a", "b"],
+        ["info"],
+        ["info", "-", "-"],
+    ):
         r = run(cli, bad_args)
         require(r.returncode == 2, f"expected exit 2 for {bad_args}, got {r.returncode}")
         require(len(r.stderr) > 0, f"expected stderr for {bad_args}")
@@ -82,6 +94,14 @@ def main() -> int:
         r = run(cli, ["d", "-v", str(out0), str(dec0)])
         require(r.returncode == 0, f"d -v failed: {r.stderr!r}")
         require(dec0.read_bytes() == src0_bytes, "d output mismatch")
+
+        # --max-size enforcement and override
+        r = run(cli, ["d", "--max-size", "1", str(out0), str(dec0)])
+        require(r.returncode == 1 and b"--max-size" in r.stderr,
+                f"expected --max-size rejection: rc={r.returncode} stderr={r.stderr!r}")
+        r = run(cli, ["d", f"--max-size={len(src0_bytes)}", str(out0), str(dec0)])
+        require(r.returncode == 0 and dec0.read_bytes() == src0_bytes,
+                f"--max-size exact override failed: {r.stderr!r}")
 
         # -q overrides -v
         r = run(cli, ["c", "-v", "-q", str(src0), str(out0)])
@@ -133,6 +153,19 @@ def main() -> int:
         r = run(cli, ["c", "--out-dir", str(batch_dir), str(d1 / "same.spv"), str(d2 / "same.spv")])
         require(r.returncode == 1, f"expected exit 1 on duplicate basename, got {r.returncode}")
 
+        # Output-to-input overwrite rejection in --out-dir (foo + foo.arixv in same dir)
+        alias_dir = tmp_path / "alias"
+        alias_dir.mkdir()
+        f_a = alias_dir / "foo"
+        f_b = alias_dir / "foo.arixv"
+        f_a.write_bytes(b"first-input")
+        f_b.write_bytes(b"second-input-must-not-be-overwritten")
+        r = run(cli, ["c", "--out-dir", str(alias_dir), str(f_a), str(f_b)])
+        require(r.returncode == 1 and b"overwrite" in r.stderr,
+                f"expected overwrite rejection: rc={r.returncode} stderr={r.stderr!r}")
+        require(f_b.read_bytes() == b"second-input-must-not-be-overwritten",
+                "foo.arixv was modified before batch collision check!")
+
         # 6. info on files (valid + invalid)
         batch_outputs = [str(batch_dir / f"{p.name}.arixv") for p in spv_files]
         r = run(cli, ["info", *batch_outputs])
@@ -152,11 +185,33 @@ def main() -> int:
         r = run(cli, ["d", str(empty_file), str(tmp_path / "empty.out")])
         require(r.returncode == 1 and b"bad container" in r.stderr, f"expected bad container on empty file: {r.stderr!r}")
 
-        # 7. roundtrip subcommand
+        # Hostile 10-byte 4 GiB stored & coded headers fail fast without 4 GiB allocation
+        huge_stored = tmp_path / "huge_stored.arx2"
+        huge_stored.write_bytes(b"ARX2\x00\xfe\xff\xff\xff\xff")
+        r = run(cli, ["d", str(huge_stored), str(tmp_path / "huge_stored.out")])
+        require(r.returncode == 1, f"expected exit 1 on huge_stored, got {r.returncode}")
+
+        huge_coded = tmp_path / "huge_coded.arx2"
+        huge_coded.write_bytes(b"ARX2\x01\xfe\xff\xff\xff\xff")
+        r = run(cli, ["d", str(huge_coded), str(tmp_path / "huge_coded.out")])
+        require(r.returncode == 1, f"expected exit 1 on huge_coded, got {r.returncode}")
+
+        # Linux /dev/full flush/close write failure check
+        dev_full = Path("/dev/full")
+        if dev_full.exists():
+            r = run(cli, ["c", "-", str(dev_full)], stdin_bytes=b"hello")
+            require(r.returncode == 1 and b"failed to write" in r.stderr,
+                    f"expected exit 1 writing to /dev/full: rc={r.returncode} stderr={r.stderr!r}")
+
+        # 7. roundtrip subcommand (success + missing-file error on stderr)
         r = run(cli, ["roundtrip", str(src0), str(spv_files[1])])
         require(r.returncode == 0, f"roundtrip failed: {r.stderr!r}")
         rt_lines = r.stdout.decode("utf-8").splitlines()
         require(len(rt_lines) == 2 and all("\tOK\t" in ln for ln in rt_lines), f"unexpected roundtrip output: {rt_lines!r}")
+
+        r = run(cli, ["roundtrip", str(tmp_path / "does_not_exist.spv")])
+        require(r.returncode == 1 and b"FAIL" in r.stdout and len(r.stderr) > 0,
+                f"expected roundtrip failure with stderr: rc={r.returncode} out={r.stdout!r} err={r.stderr!r}")
 
     print("cli_test: all checks passed")
     return 0

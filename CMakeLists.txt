@@ -85,14 +85,12 @@ if(BUILD_SHARED_LIBS)
       ARIXV_BUILDING
       ARIXV_ENCODER=$<BOOL:${ARIXV_BUILD_ENCODER}>
   )
-  if(NOT ARIXV_BUILD_ENCODER)
-    target_compile_definitions(arixv_shared PUBLIC ARIXV_ENCODER=0)
-  endif()
   set_target_properties(arixv_shared PROPERTIES
     OUTPUT_NAME arixv
     EXPORT_NAME shared
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}
+    WINDOWS_EXPORT_ALL_SYMBOLS OFF
   )
   if(UNIX AND NOT APPLE)
     set(_arixv_version_script "${CMAKE_CURRENT_SOURCE_DIR}/cmake/arixv.map")
@@ -137,9 +135,6 @@ else()
       ARIXV_BUILDING
       ARIXV_ENCODER=$<BOOL:${ARIXV_BUILD_ENCODER}>
   )
-  if(NOT ARIXV_BUILD_ENCODER)
-    target_compile_definitions(arixv_decoder PUBLIC ARIXV_ENCODER=0)
-  endif()
   # When a pure-C parent consumes static ARIX-V via FetchContent/add_subdirectory
   # without enabling CXX in its own directory scope, CMake links the parent
   # executable with the C linker driver. Propagating only the extra C++ runtime
@@ -165,7 +160,10 @@ else()
         $<BUILD_INTERFACE:$<$<LINK_LANGUAGE:C>:${_arixv_cxx_dirs}>>
     )
   endif()
-  set_target_properties(arixv_decoder PROPERTIES EXPORT_NAME decoder)
+  set_target_properties(arixv_decoder PROPERTIES
+    EXPORT_NAME decoder
+    POSITION_INDEPENDENT_CODE ON
+  )
   add_library(arixv::decoder ALIAS arixv_decoder)
   list(APPEND ARIXV_INSTALL_TARGETS arixv_decoder)
 
@@ -186,7 +184,10 @@ else()
         ARIXV_BUILDING
     )
     target_link_libraries(arixv_encoder PUBLIC arixv_decoder)
-    set_target_properties(arixv_encoder PROPERTIES EXPORT_NAME encoder)
+    set_target_properties(arixv_encoder PROPERTIES
+      EXPORT_NAME encoder
+      POSITION_INDEPENDENT_CODE ON
+    )
     add_library(arixv::encoder ALIAS arixv_encoder)
     list(APPEND ARIXV_INSTALL_TARGETS arixv_encoder)
   endif()
@@ -314,9 +315,6 @@ if(ARIXV_BUILD_TESTS)
   # Public-surface golden vector test (runs in both decoder-only & full builds)
   add_executable(golden_test tests/golden_test.cpp)
   arixv_apply_compile_options(golden_test)
-  target_compile_definitions(golden_test PRIVATE
-    ARIXV_ENCODER=$<BOOL:${ARIXV_BUILD_ENCODER}>
-  )
   if(ARIXV_BUILD_ENCODER)
     target_link_libraries(golden_test PRIVATE arixv::encoder arixv::decoder)
   else()
@@ -325,6 +323,17 @@ if(ARIXV_BUILD_TESTS)
   add_test(NAME golden_test
     COMMAND golden_test --dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/golden"
   )
+
+  # Public-surface C API contract test linked directly against shipped targets
+  # (exercises the actual DSO/DLL directly in BUILD_SHARED_LIBS=ON builds).
+  add_executable(public_api_test tests/public_api_test.cpp)
+  arixv_apply_compile_options(public_api_test)
+  if(ARIXV_BUILD_ENCODER)
+    target_link_libraries(public_api_test PRIVATE arixv::encoder arixv::decoder Threads::Threads)
+  else()
+    target_link_libraries(public_api_test PRIVATE arixv::decoder Threads::Threads)
+  endif()
+  add_test(NAME public_api_test COMMAND public_api_test)
 
   # Decoder-safe unit tests (header/table/cursor)
   add_executable(range_coder_test tests/range_coder_test.cpp)
@@ -425,6 +434,17 @@ endif()
 # Install & find_package(arixv) support
 # ---------------------------------------------------------------------------
 if(ARIXV_INSTALL)
+  if(BUILD_SHARED_LIBS)
+    set(ARIXV_INSTALLED_SHARED ON)
+  else()
+    set(ARIXV_INSTALLED_SHARED OFF)
+  endif()
+  if(ARIXV_BUILD_ENCODER)
+    set(ARIXV_INSTALLED_ENCODER ON)
+  else()
+    set(ARIXV_INSTALLED_ENCODER OFF)
+  endif()
+
   install(TARGETS ${ARIXV_INSTALL_TARGETS}
     EXPORT arixvTargets
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"

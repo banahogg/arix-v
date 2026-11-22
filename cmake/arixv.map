@@ -1,4 +1,4 @@
-{
+ARIXV_1.0 {
   global:
     arixv_*;
   local:

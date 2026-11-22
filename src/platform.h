@@ -58,10 +58,10 @@
 #define ARIXV_HAS_EXCEPTIONS 0
 #endif
 
-// Encoder support defaults to enabled for standalone / source-copy builds.
-// CMake decoder-only builds set ARIXV_ENCODER=0 to omit encoder-only code.
+// Encoder support is opt-in: decoder-only builds omit ARIXV_ENCODER (default 0),
+// while encoder targets and source-copy encoder builds define ARIXV_ENCODER=1.
 #ifndef ARIXV_ENCODER
-#define ARIXV_ENCODER 1
+#define ARIXV_ENCODER 0
 #endif
 
 namespace arixv {
