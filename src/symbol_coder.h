@@ -182,7 +182,8 @@ ARIXV_FORCE_INLINE void SymbolCdfAdapt(SymbolCdf& t, int s, int rate,
   if constexpr (kN > 8) {
     const uint16x8_t d1 = vld1q_u16(t.d + 8);
     const uint16x8_t c1 = vaddq_u16(d1, vld1q_u16(K::kUniform + 8));
-    vst1q_u16(t.d + 8, SymbolCdfAdaptNeon<kN, 8>(d1, c1, s, rate));
+    const uint16x8_t out1 = SymbolCdfAdaptNeon<kN, 8>(d1, c1, s, rate);
+    vst1q_u16(t.d + 8, out1);
   }
 #else
   constexpr int kEnd = kN <= 8 ? 8 : 16;
@@ -308,7 +309,8 @@ ARIXV_FORCE_INLINE int SymbolCdfDecodeAndUpdate(SymbolCdf& t, uint32_t slot,
   const uint16x8_t out0 = SymbolCdfAdaptNeon<kN, 0>(d0, c0, s, rate);
   vst1q_u16(t.d, vsetq_lane_u16(next_count, out0, 0));
   if constexpr (kN > 8) {
-    vst1q_u16(t.d + 8, SymbolCdfAdaptNeon<kN, 8>(d1, c1, s, rate));
+    const uint16x8_t out1 = SymbolCdfAdaptNeon<kN, 8>(d1, c1, s, rate);
+    vst1q_u16(t.d + 8, out1);
   }
 #endif
   return s;

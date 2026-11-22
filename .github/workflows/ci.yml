@@ -105,7 +105,7 @@ jobs:
             echo Visual Studio C++ build tools not found
             exit /b 1
           )
-          call "%VSINSTALLDIR%\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64 || exit /b 1
+          call "%VSINSTALLDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           mkdir build\msvc 2>nul
           set "LIB_SRCS=src\arixv.cpp src\model.cpp src\tracker.cpp src\operand_cursor.cpp src\grammar_tables.cpp"
           set "CL_FLAGS=/nologo /O2 /std:c++17 /EHsc /W3 /Isrc /Fo:build\msvc\"
