@@ -53,7 +53,7 @@ Track A: 1.0 Productization                 Track B: Multi-Module Research
    [x] 1. Thin C-only public API & zero-copy decode
    [x] 2. Decoder-only binary size trimming
    [x] 3. CLI usability
-   [ ] 4. Format spec, README refresh & v1.0 freeze
+   [x] 4. Format spec, README refresh & v1.0 freeze
 ```
 
 ---
