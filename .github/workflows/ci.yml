@@ -100,12 +100,12 @@ jobs:
       - name: Build and test (MSVC x64 SSE2 + scalar)
         shell: cmd
         run: |
-          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSINSTALLDIR=%%i"
-          if not defined VSINSTALLDIR (
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%i"
+          if not defined VS_PATH (
             echo Visual Studio C++ build tools not found
             exit /b 1
           )
-          call "%VSINSTALLDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           mkdir build\msvc 2>nul
           set "LIB_SRCS=src\arixv.cpp src\model.cpp src\tracker.cpp src\operand_cursor.cpp src\grammar_tables.cpp"
           set "CL_FLAGS=/nologo /O2 /std:c++17 /EHsc /W3 /Isrc /Fo:build\msvc\"
