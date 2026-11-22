@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing git tag to build and package (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86_64
+            os: ubuntu-latest
+            archive_ext: tar.gz
+          - label: macos-arm64
+            os: macos-latest
+            archive_ext: tar.gz
+          - label: windows-x64
+            os: windows-latest
+            archive_ext: zip
+
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Build, test, and stage (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/rel \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_LIBDIR=lib
+          cmake --build build/rel -j
+          ctest --test-dir build/rel --output-on-failure
+
+          name="arixv-${RELEASE_TAG}-${{ matrix.label }}"
+          stage="$PWD/dist/${name}"
+          mkdir -p "$stage/bin"
+          cmake --install build/rel --prefix "$stage"
+          cp build/rel/arixv "$stage/bin/arixv"
+          cp LICENSE README.md docs/format-arx2.md "$stage/"
+
+          # Smoke-check staged CLI binary
+          "$stage/bin/arixv" --version
+          "$stage/bin/arixv" info tests/golden/*.arx2
+
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+
+      - name: Build, test, and stage (Windows MSVC x64)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Invoke-Checked {
+            $global:LASTEXITCODE = 0
+            $exe = $args[0]
+            if ($args.Length -gt 1) {
+              $rest = $args[1..($args.Length - 1)]
+              & $exe @rest
+            } else {
+              & $exe
+            }
+            if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $($args -join ' ')" }
+          }
+
+          Invoke-Checked cmake -S . -B build/rel -A x64 -DCMAKE_INSTALL_LIBDIR=lib
+          Invoke-Checked cmake --build build/rel --config Release --parallel
+          Invoke-Checked ctest --test-dir build/rel -C Release --output-on-failure
+
+          $name = "arixv-$($env:RELEASE_TAG)-${{ matrix.label }}"
+          $stage = Join-Path $PWD "dist\$name"
+          New-Item -ItemType Directory -Force -Path (Join-Path $stage "bin") | Out-Null
+          Invoke-Checked cmake --install build/rel --config Release --prefix "$stage"
+          Copy-Item "build\rel\bin\Release\arixv.exe" (Join-Path $stage "bin\arixv.exe")
+          Copy-Item "LICENSE", "README.md", "docs\format-arx2.md" "$stage\"
+
+          # Smoke-check staged CLI binary
+          Invoke-Checked (Join-Path $stage "bin\arixv.exe") --version
+          $goldens = Get-ChildItem "tests\golden\*.arx2" | ForEach-Object { $_.FullName }
+          Invoke-Checked (Join-Path $stage "bin\arixv.exe") info @goldens
+
+          Compress-Archive -Path "$stage" -DestinationPath "dist\$name.zip" -Force
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.label }}
+          path: dist/arixv-${{ env.RELEASE_TAG }}-${{ matrix.label }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+
+  publish:
+    name: Create Draft GitHub Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum arixv-* > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+
+      - name: Create or update draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+
+          if [ "$tag" = "v1.0.0" ]; then
+            cat <<'EOF' > /tmp/release-notes.md
+          First stable release of **ARIX-V**, a standalone, purely adaptive SPIR-V compressor with a frozen C99/C11 ABI, a lean decoder-only runtime target, and zero third-party dependencies.
+
+          ### Highlights
+          - **Frozen `ARX2` format ([`docs/format-arx2.md`](https://github.com/banahogg/arix-v/blob/v1.0.0/docs/format-arx2.md)):** Permanently frozen single-module wire format backed by pinned Khronos SPIR-V grammar tables (`SPIRV-Headers` `02c0394e…`) and an immutable cross-architecture golden fixture suite (`tests/golden/`). Round-trips SPIR-V (including big-endian and future-revision modules) as well as arbitrary byte streams losslessly.
+          - **Stable C99/C11 public API & ABI (`include/arixv/arixv.h`):** Zero-copy `arixv_decode` (suitable for direct decode into `VkShaderModuleCreateInfo::pCode`), O(1) header inspection (`arixv_inspect`), opt-in encoder API (`arixv_encode_bound`, `arixv_encode`), versioned public structs with forward/backward compatibility, `ARIXV_1.0` ELF symbol versioning, and distinct shared-library identities (`libarixv` full vs. `libarixv_decoder` decoder-only).
+          - **Lean decoder-only runtime target:** ~136–189 KB (`-Os`+LTO to `-O3` on Linux x86_64), zero `.data.rel.ro` relocations, stateless and thread-safe, and compiles cleanly with `-fno-exceptions -fno-rtti` / `/EHs-c- /GR-`.
+          - **Compression & speed:** `0.1249` total ratio and `73.88 MiB/s` single-core decode on the 1,070-file decode-verified shader intersection (`0.1252` across all 1,080 corpus shaders), with x86_64 SSE2, AArch64 NEON, and portable scalar (`-DARIXV_NO_SIMD`) backends.
+          - **CMake & CLI:** First-class `FetchContent` and `find_package(arixv REQUIRED COMPONENTS decoder [encoder])` support (static and shared, C11 and C++17), plus the offline `arixv` CLI (`c`, `d`, `--out-dir`, `--max-size`, `info`, `roundtrip`, binary `-` stdin/stdout).
+
+          ### Prebuilt Release Archives
+          Each archive contains the standalone `arixv` CLI binary (`bin/`), public C header (`include/arixv/arixv.h`), static decoder/encoder libraries and CMake package config (`lib/`), `LICENSE`, `README.md`, and `format-arx2.md`. Checksums are provided in `SHA256SUMS.txt`.
+
+          ### Verification
+          - Verified green on `v1.0.0` (`cec862c`) across Linux (GCC & Clang, SIMD/scalar/no-exceptions/ASan/UBSan/TSan), Linux 32-bit ILP32 (SSE2 & scalar), macOS AArch64 (NEON/scalar/shared), Windows MSVC x64 (SSE2/scalar/no-exceptions/shared DLL), full static/shared C11 & C++17 consumer matrices, and local ASan/UBSan libFuzzer `fuzz-smoke`.
+          EOF
+            notes_args=(--notes-file /tmp/release-notes.md)
+          else
+            notes_args=(--generate-notes)
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* \
+              --draft \
+              --title "ARIX-V ${tag}" \
+              "${notes_args[@]}"
+          fi
