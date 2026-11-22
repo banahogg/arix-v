@@ -400,6 +400,14 @@ if(ARIXV_BUILD_TESTS)
 
   # Verify generated grammar tables stay in sync when grammar-deps are present.
   find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_FOUND AND TARGET arixv_cli)
+    add_test(NAME cli_test
+      COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.py"
+        --cli "$<TARGET_FILE:arixv_cli>"
+        --golden "${CMAKE_CURRENT_SOURCE_DIR}/tests/golden"
+    )
+  endif()
   set(_grammar_json_dir
     "${CMAKE_CURRENT_SOURCE_DIR}/grammar-deps/spirv-headers/include/spirv/unified1"
   )
