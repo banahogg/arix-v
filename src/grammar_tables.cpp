@@ -6815,9 +6815,6 @@ constexpr InstructionDesc kNonSemantic_ClspvReflectionInstructions[] = {
   {"WorkgroupVariableSize", 42, 159, 3, static_cast<uint16_t>(0), 2, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
 };
 
-constexpr OperandSlotDesc kNonSemantic_DebugBreakOperandSlots[] = {
-};
-
 constexpr InstructionDesc kNonSemantic_DebugBreakInstructions[] = {
   {"DebugBreak", 1, 0, 1, static_cast<uint16_t>(0), 0, false, false, 0, 3, InstructionTypeClass::kOther, 0, true, 0},
 };
@@ -7791,7 +7788,7 @@ constexpr ExtInstSetDesc kExtInstSets[] = {
   {"DebugInfo", kDebugInfoInstructions, 34, kDebugInfoOperandSlots},
   {"GLSL.std.450", kGLSL_std_450Instructions, 81, kGLSL_std_450OperandSlots},
   {"NonSemantic.ClspvReflection", kNonSemantic_ClspvReflectionInstructions, 42, kNonSemantic_ClspvReflectionOperandSlots},
-  {"NonSemantic.DebugBreak", kNonSemantic_DebugBreakInstructions, 1, kNonSemantic_DebugBreakOperandSlots},
+  {"NonSemantic.DebugBreak", kNonSemantic_DebugBreakInstructions, 1, nullptr},
   {"NonSemantic.DebugPrintf", kNonSemantic_DebugPrintfInstructions, 1, kNonSemantic_DebugPrintfOperandSlots},
   {"NonSemantic.Shader.DebugInfo.100", kNonSemantic_Shader_DebugInfo_100Instructions, 44, kNonSemantic_Shader_DebugInfo_100OperandSlots},
   {"OpenCL.DebugInfo.100", kOpenCL_DebugInfo_100Instructions, 37, kOpenCL_DebugInfo_100OperandSlots},

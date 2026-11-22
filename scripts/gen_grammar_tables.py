@@ -853,22 +853,26 @@ def main() -> None:
     lines.append("};")
     lines.append("")
     for ext_set in ext_sets:
-        lines.append(f"constexpr OperandSlotDesc k{ext_set.ident}OperandSlots[] = {{")
-        for slot in ext_set.operand_slots:
-            lines.append(f"  {emit_operand_slot(slot)},")
-        lines.append("};")
-        lines.append("")
-        lines.append(f"constexpr InstructionDesc k{ext_set.ident}Instructions[] = {{")
-        for instruction in ext_set.instructions:
-            lines.append(f"  {emit_instruction(instruction)},")
-        lines.append("};")
-        lines.append("")
+        if ext_set.operand_slots:
+            lines.append(f"constexpr OperandSlotDesc k{ext_set.ident}OperandSlots[] = {{")
+            for slot in ext_set.operand_slots:
+                lines.append(f"  {emit_operand_slot(slot)},")
+            lines.append("};")
+            lines.append("")
+        if ext_set.instructions:
+            lines.append(f"constexpr InstructionDesc k{ext_set.ident}Instructions[] = {{")
+            for instruction in ext_set.instructions:
+                lines.append(f"  {emit_instruction(instruction)},")
+            lines.append("};")
+            lines.append("")
     lines.append("constexpr ExtInstSetDesc kExtInstSets[] = {")
     for ext_set in ext_sets:
+        insts_expr = f"k{ext_set.ident}Instructions" if ext_set.instructions else "nullptr"
+        slots_expr = f"k{ext_set.ident}OperandSlots" if ext_set.operand_slots else "nullptr"
         lines.append(
             "  {"
-            f"{cpp_string(ext_set.name)}, k{ext_set.ident}Instructions, "
-            f"{len(ext_set.instructions)}, k{ext_set.ident}OperandSlots"
+            f"{cpp_string(ext_set.name)}, {insts_expr}, "
+            f"{len(ext_set.instructions)}, {slots_expr}"
             "},"
         )
     lines.append("};")

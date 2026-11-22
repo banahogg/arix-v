@@ -274,7 +274,7 @@ class RangeDecoder {
   int DecodeBitDirect() {
     range_ >>= 1;
     const int bit = code_ >= range_ ? 1 : 0;
-    code_ -= range_ & -static_cast<uint32_t>(bit);
+    code_ -= range_ & (0u - static_cast<uint32_t>(bit));
     Normalize();
     return bit;
   }
@@ -321,7 +321,7 @@ class RangeDecoder {
     const uint16_t raw = p.raw();
     const uint32_t bound = (st.range >> kProbBits) * Prob::ValueFromRaw(raw);
     const int bit = st.code >= bound ? 1 : 0;
-    const uint32_t mask = -static_cast<uint32_t>(bit);
+    const uint32_t mask = 0u - static_cast<uint32_t>(bit);
     st.code -= bound & mask;
     st.range = (bound & ~mask) | ((st.range - bound) & mask);
     p.UpdateFromRawBranchless(raw, bit);
