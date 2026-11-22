@@ -201,7 +201,7 @@ uint32_t RecencyList::MatchMask(uint32_t id) const {
 
 int RecencyList::Find(uint32_t id) const {
   const uint32_t mask = MatchMask(id);
-  return mask != 0 ? __builtin_ctz(mask) : -1;
+  return mask != 0 ? Ctz32(mask) : -1;
 }
 
 void RecencyList::Touch(uint32_t id) {
@@ -216,7 +216,7 @@ void RecencyList::Touch(uint32_t id) {
   // when present, else the first free slot (or the oldest entry when full).
   int last;
   if (mask != 0) {
-    last = __builtin_ctz(mask);
+    last = Ctz32(mask);
   } else {
     last = size_ < cap_ ? size_ : cap_ - 1;
     if (size_ < cap_) {
@@ -244,7 +244,7 @@ void RecencyList::Replace(uint32_t old_id, uint32_t id) {
     ShiftIn(last, id);
     return;
   }
-  const int at = __builtin_ctz(mask);
+  const int at = Ctz32(mask);
   ShiftIn(at, id);
 }
 

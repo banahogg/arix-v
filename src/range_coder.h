@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "platform.h"
 #include "tuning.h"
 
 namespace arixv {
@@ -59,8 +60,7 @@ struct Prob {
       shift = kProbShift;
       if (count < kPackedSaturation) {
         ++count;
-        shift = 32u - static_cast<uint32_t>(
-                          __builtin_clz(static_cast<unsigned int>(count)));
+        shift = 32u - static_cast<uint32_t>(Clz32(count));
       }
     }
     if (bit == 0) {
@@ -82,8 +82,7 @@ struct Prob {
       shift = kProbShift;
       if (count < kPackedSaturation) {
         ++count;
-        shift = 32u - static_cast<uint32_t>(
-                          __builtin_clz(static_cast<unsigned int>(count)));
+        shift = 32u - static_cast<uint32_t>(Clz32(count));
       }
     }
     const uint32_t v0 = v + ((kProbScale - v) >> shift);
@@ -123,7 +122,7 @@ struct Prob {
     const uint16_t stage = ++n;
     // Bit width of stage (>= 1): position of the high bit plus one. Same
     // result as counting shifts, one instruction instead of a loop.
-    int width = 32 - __builtin_clz(static_cast<unsigned int>(stage));
+    int width = 32 - Clz32(static_cast<uint32_t>(stage));
     if (width < kProbAdaptMinShift) {
       width = kProbAdaptMinShift;
     }

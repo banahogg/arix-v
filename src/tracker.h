@@ -23,6 +23,7 @@
 
 #include "grammar_tables.h"
 #include "operand_cursor.h"
+#include "platform.h"
 #include "tuning.h"
 
 namespace arixv {
@@ -53,12 +54,12 @@ static_assert(kRecencyListStorageCap <= 31,
               "RecencyList match masks are 32-bit");
 
 // SIMD fast paths for the 16-entry recency lists.
-#if defined(__SSE2__) && !defined(ARIXV_NO_SIMD)
+#if ARIXV_HAS_SSE2
 #define ARIXV_RECENCY_SSE2 1
 #else
 #define ARIXV_RECENCY_SSE2 0
 #endif
-#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(ARIXV_NO_SIMD)
+#if ARIXV_HAS_NEON
 #define ARIXV_RECENCY_NEON 1
 #else
 #define ARIXV_RECENCY_NEON 0

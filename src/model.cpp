@@ -329,14 +329,16 @@ T& EnsureContext(std::unique_ptr<T>& slot) {
   return *slot;
 }
 
-// ARIXV_STATS=1: entropy cost per field category, accumulated process-wide
-// across Encode calls and dumped to stderr at exit (bench/diagnostics only).
+// ARIXV_STATS=1 (requires -DARIXV_ENABLE_STATS): entropy cost per field
+// category, accumulated process-wide across Encode calls and dumped to stderr
+// at exit (bench/diagnostics only).
 enum StatCat {
   kStatHeader = 0, kStatOpcode, kStatWordCount, kStatResultId,
   kStatResultType, kStatIdRef, kStatValueEnum, kStatBitEnum, kStatLitInt,
   kStatLitCdn, kStatExtNum, kStatString, kStatSpecOp, kStatOpaque, kStatBound,
   kStatCount,
 };
+#ifdef ARIXV_ENABLE_STATS
 constexpr const char* kStatNames[kStatCount] = {
     "header", "opcode", "word_count", "result_id", "result_type", "id_ref",
     "value_enum", "bit_enum", "literal_int", "literal_cdn", "ext_inst_num",
@@ -396,6 +398,7 @@ void DumpStats() {
                static_cast<unsigned long long>(adaptive_total),
                static_cast<unsigned long long>(direct_total));
 }
+#endif
 
 // Per-instruction caches: the last ID and last literal seen in each of the
 // 16 operand slots (each guarded by a valid flag) and the last word count.
@@ -2763,6 +2766,7 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
 template <class Bits, class IO>
 Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
   model.tracker.Reserve(word_count);
+#ifdef ARIXV_ENABLE_STATS
   // Stats tagging: encoder accumulates entropy per category; decoder no-op.
   const bool stats = StatsEnabled();
   const auto stat = [&bits, stats](StatCat cat) {
@@ -2771,6 +2775,9 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
       g_stat_cat = stats ? static_cast<int>(cat) : -1;
     }
   };
+#else
+  const auto stat = [](StatCat) {};
+#endif
   stat(kStatHeader);
   const bool swapped = bits.CodeBit(model.swapped_flag, io.SwappedHint());
   if constexpr (!Bits::kEncoding) {
@@ -3231,22 +3238,25 @@ bool IsSpirvModelEligible(const uint8_t* data, size_t size) {
 
 void EncodeModule(const uint8_t* data, size_t size,
                   std::vector<uint8_t>& out_payload) {
-  ModelState model;
+  // Heap-allocated: ModelState's inline models are too large for the stack.
+  const auto model = std::make_unique<ModelState>();
   RangeEncoder range(out_payload);
   BitEncoder bits(range);
   EncodeIO io(data, size);
-  const Status status = CodeModule(model, bits, io, size / 4);
+  const Status status = CodeModule(*model, bits, io, size / 4);
   (void)status;
+#ifdef ARIXV_ENABLE_STATS
   g_stat_cat = -1;
+#endif
   bits.Flush();
 }
 
 void EncodeModuleRawResidual(const uint8_t* data, size_t size,
                              std::vector<uint8_t>& out_payload) {
-  ModelState model;
+  const auto model = std::make_unique<ModelState>();
   RawResidualEncoder bits(out_payload);
   EncodeIO io(data, size);
-  const Status status = CodeModule(model, bits, io, size / 4);
+  const Status status = CodeModule(*model, bits, io, size / 4);
   (void)status;
   bits.Flush();
 }

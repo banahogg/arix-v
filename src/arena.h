@@ -17,6 +17,8 @@
 #include <new>
 #include <type_traits>
 
+#include "platform.h"
+
 #ifdef ARIXV_MEMSTATS
 #include <map>
 #include <string>
@@ -32,7 +34,11 @@ inline std::map<std::string, std::pair<uint64_t, uint64_t>> g_arena_objects;
 inline uint64_t g_arena_block_bytes = 0;
 template <typename T>
 const char* ArenaTypeName() {
+#if defined(_MSC_VER)
+  return __FUNCSIG__;
+#else
   return __PRETTY_FUNCTION__;
+#endif
 }
 #endif
 
@@ -94,7 +100,11 @@ class Arena {
 #endif
       void* raw = std::malloc(sizeof(Block) + payload);
       if (raw == nullptr) {
+#if ARIXV_HAS_EXCEPTIONS
         throw std::bad_alloc();
+#else
+        std::abort();
+#endif
       }
       Block* block = static_cast<Block*>(raw);
       block->next = head_;

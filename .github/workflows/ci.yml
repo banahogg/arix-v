@@ -61,6 +61,12 @@ jobs:
           make -j"$(nproc)" BUILD_DIR=build-scalar CXX="${{ matrix.cxx }}" \
             CXXFLAGS="-O2 -std=c++17 -Wall -Wextra -DARIXV_NO_SIMD" test
 
+      - name: Build and test (-fno-exceptions -fno-rtti)
+        run: |
+          make -j"$(nproc)" BUILD_DIR=build-noexc CXX="${{ matrix.cxx }}" \
+            CXXFLAGS="-O2 -std=c++17 -Wall -Wextra -fno-exceptions -fno-rtti" \
+            all test
+
       - name: Build and test (ASan + UBSan)
         run: |
           make -j"$(nproc)" CXX="${{ matrix.cxx }}" asan
@@ -91,7 +97,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build and test (MSVC x64)
+      - name: Build and test (MSVC x64 SSE2 + scalar)
         shell: cmd
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSINSTALLDIR=%%i"
@@ -118,3 +124,9 @@ jobs:
           build\msvc\operand_cursor_test.exe || exit /b 1
           build\msvc\grammar_tables_test.exe || exit /b 1
           build\msvc\fuzz_roundtrip.exe --iters=500 || exit /b 1
+          mkdir build\msvc-scalar 2>nul
+          set "CL_SCALAR=/nologo /O2 /std:c++17 /EHsc /W3 /DARIXV_NO_SIMD /Isrc /Fo:build\msvc-scalar\"
+          cl %CL_SCALAR% /c %LIB_SRCS% || exit /b 1
+          set "SCALAR_OBJS=build\msvc-scalar\arixv.obj build\msvc-scalar\model.obj build\msvc-scalar\tracker.obj build\msvc-scalar\operand_cursor.obj build\msvc-scalar\grammar_tables.obj"
+          cl %CL_SCALAR% tests\arixv_test.cpp %SCALAR_OBJS% /Fe:build\msvc-scalar\arixv_test.exe || exit /b 1
+          build\msvc-scalar\arixv_test.exe || exit /b 1

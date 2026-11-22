@@ -5,6 +5,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -477,6 +478,59 @@ void DecoderCompatShim() {
   assert(count >= 2);
 }
 
+void ConcurrentEncodeDecode() {
+  const std::vector<uint32_t> words = {
+      0x07230203u, 0x00010300u, 0x0008000bu, 15, 0,
+      (2u << 16) | 17, 1,
+      (3u << 16) | 14, 0, 1,
+      (6u << 16) | 15, 4, 1, 0x6e69616d, 0, 2,
+      (3u << 16) | 16, 1, 7,
+      (4u << 16) | 5, 2, 0x0074756f, 0,
+      (4u << 16) | 71, 2, 30, 0,
+      (2u << 16) | 19, 3,
+      (3u << 16) | 33, 4, 3,
+      (3u << 16) | 22, 5, 32,
+      (4u << 16) | 23, 6, 5, 4,
+      (4u << 16) | 32, 7, 3, 6,
+      (4u << 16) | 59, 7, 2, 3,
+      (4u << 16) | 43, 5, 8, 0x3f800000u,
+      (7u << 16) | 44, 6, 9, 8, 8, 8, 8,
+      (5u << 16) | 54, 3, 1, 0, 4,
+      (2u << 16) | 248, 10,
+      (3u << 16) | 62, 2, 9,
+      (1u << 16) | 253,
+      (1u << 16) | 56,
+  };
+  std::vector<uint8_t> spirv(words.size() * 4);
+  for (size_t i = 0; i < words.size(); ++i) {
+    const uint32_t w = words[i];
+    spirv[i * 4 + 0] = static_cast<uint8_t>(w & 0xffu);
+    spirv[i * 4 + 1] = static_cast<uint8_t>((w >> 8) & 0xffu);
+    spirv[i * 4 + 2] = static_cast<uint8_t>((w >> 16) & 0xffu);
+    spirv[i * 4 + 3] = static_cast<uint8_t>((w >> 24) & 0xffu);
+  }
+  const std::vector<uint8_t> baseline =
+      arixv::Encode(spirv.data(), spirv.size());
+
+  std::vector<std::thread> threads;
+  for (int t = 0; t < 4; ++t) {
+    threads.emplace_back([&spirv, &baseline]() {
+      for (int i = 0; i < 16; ++i) {
+        const std::vector<uint8_t> encoded =
+            arixv::Encode(spirv.data(), spirv.size());
+        assert(encoded == baseline);
+        std::vector<uint8_t> decoded;
+        assert(arixv::Decode(encoded.data(), encoded.size(), decoded) ==
+               arixv::Status::kOk);
+        assert(decoded == spirv);
+      }
+    });
+  }
+  for (std::thread& th : threads) {
+    th.join();
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -490,5 +544,6 @@ int main() {
   CompactSizeEdgeCases();
   HostileInputs();
   DecoderCompatShim();
+  ConcurrentEncodeDecode();
   return 0;
 }

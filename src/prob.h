@@ -5,7 +5,9 @@
 #define ARIXV_PROB_H_
 
 #include <array>
+#ifdef ARIXV_ENABLE_STATS
 #include <cmath>
+#endif
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -18,19 +20,20 @@
 
 namespace arixv {
 
-// ARIXV_STATS decision counting (encoder-only diagnostics). The encoder makes
-// exactly the decisions the decoder will, so counting them at encode time
-// measures the decoder's serial decision chain. g_stat_cat is the field
-// category (set by CodeModule, -1 = off); g_stat_site is the coding primitive.
+// ARIXV_STATS decision counting (encoder-only diagnostics; compiled in only
+// under -DARIXV_ENABLE_STATS so normal library builds have no mutable globals
+// and Encode() is cleanly thread-safe).
 enum StatSite {
   kSiteFlag = 0, kSiteBitTree, kSiteUintLength, kSiteUintMantissa, kSiteByte,
   kSiteCount,
 };
+#ifdef ARIXV_ENABLE_STATS
 constexpr int kStatMaxCats = 16;
 inline int g_stat_cat = -1;
 inline int g_stat_site = kSiteFlag;
 inline uint64_t g_stat_adaptive[kStatMaxCats][kSiteCount];
 inline uint64_t g_stat_direct[kStatMaxCats];
+#endif
 
 #ifdef ARIXV_TRACE_DECISIONS
 // Diagnostics build only (tools/bench/ans_microbench.cpp): every adaptive
@@ -51,9 +54,10 @@ inline std::vector<TracedTree>* g_tree_trace = nullptr;
 
 // Tags decisions made inside a primitive. Only the outermost primitive wins
 // (CodeUint's length tree counts as uint length, not as a generic bit tree).
-// Compiles away for decoders.
+// Compiles away for decoders and non-stats builds.
 template <typename Coder>
 struct StatSiteScope {
+#ifdef ARIXV_ENABLE_STATS
   int saved = kSiteFlag;
   explicit StatSiteScope(StatSite site) {
     if constexpr (Coder::kEncoding) {
@@ -64,6 +68,9 @@ struct StatSiteScope {
   ~StatSiteScope() {
     if constexpr (Coder::kEncoding) g_stat_site = saved;
   }
+#else
+  explicit StatSiteScope(StatSite) {}
+#endif
 };
 
 class BitEncoder {
@@ -79,6 +86,7 @@ class BitEncoder {
       g_decision_trace->push_back({&p, bit_for_encoder});
     }
 #endif
+#ifdef ARIXV_ENABLE_STATS
     if (g_stat_cat >= 0) {
       ++g_stat_adaptive[g_stat_cat][g_stat_site];
     }
@@ -86,17 +94,20 @@ class BitEncoder {
       const double p0 = static_cast<double>(p.value()) / kProbScale;
       *cost_sink_ -= std::log2(bit_for_encoder ? 1.0 - p0 : p0);
     }
+#endif
     enc_.EncodeBit(p, bit_for_encoder ? 1 : 0);
     return bit_for_encoder;
   }
 
   uint32_t CodeBitsDirect(uint32_t value, int nbits) {
+#ifdef ARIXV_ENABLE_STATS
     if (g_stat_cat >= 0) {
       g_stat_direct[g_stat_cat] += static_cast<uint64_t>(nbits);
     }
     if (cost_sink_ != nullptr) {
       *cost_sink_ += nbits;
     }
+#endif
     for (int i = nbits - 1; i >= 0; --i) {
       enc_.EncodeBitDirect(static_cast<int>((value >> i) & 1u));
     }
@@ -106,9 +117,11 @@ class BitEncoder {
   // One symbol of an adaptive kN-symbol CDF, on the rANS stream.
   template <int kN, int kRateCap>
   uint32_t CodeSymbol(SymbolCdf& t, uint32_t s) {
+#ifdef ARIXV_ENABLE_STATS
     if (g_stat_cat >= 0) {
       ++g_stat_adaptive[g_stat_cat][g_stat_site];
     }
+#endif
     using K = SymbolCdfConst<kN>;
     const uint32_t lo =
         s == 0 ? 0u : static_cast<uint16_t>(t.d[s] + K::kUniform[s]);
@@ -120,9 +133,11 @@ class BitEncoder {
                       : kSymbolScale;
     }
     const uint32_t f = hi - lo;
+#ifdef ARIXV_ENABLE_STATS
     if (cost_sink_ != nullptr) {
       *cost_sink_ -= std::log2(static_cast<double>(f) / kSymbolScale);
     }
+#endif
     rans_.Put(lo, f);
     SymbolCdfUpdate<kN, kRateCap>(t, static_cast<int>(s));
     return s;
@@ -141,10 +156,17 @@ class BitEncoder {
   };
   ARIXV_FORCE_INLINE SymbolSession BeginSymbols() { return {*this}; }
 
-  // Stats instrumentation (ARIXV_STATS): while set, the entropy cost of
-  // every decision is accumulated into *sink. Encoder-only; the decoder's
-  // counterpart is a no-op so shared model code can call it unconditionally.
-  void SetCostSink(double* sink) { cost_sink_ = sink; }
+  // Stats instrumentation (ARIXV_ENABLE_STATS + ARIXV_STATS=1): while set,
+  // the entropy cost of every decision is accumulated into *sink. No-op when
+  // stats are compiled out or on decoders so shared model code calls it
+  // unconditionally.
+  void SetCostSink(double* sink) {
+#ifdef ARIXV_ENABLE_STATS
+    cost_sink_ = sink;
+#else
+    (void)sink;
+#endif
+  }
 
   // Range-coder bytes, then the rANS words (see symbol_coder.h).
   void Flush() {
@@ -156,7 +178,9 @@ class BitEncoder {
  private:
   RangeEncoder& enc_;
   RansEncoder rans_;
+#ifdef ARIXV_ENABLE_STATS
   double* cost_sink_ = nullptr;
+#endif
 };
 
 class BitDecoder {
@@ -412,7 +436,7 @@ struct UintModel {
 };
 
 inline uint32_t BitWidth(uint32_t v) {
-  return v == 0 ? 0u : static_cast<uint32_t>(32 - __builtin_clz(v));
+  return v == 0 ? 0u : static_cast<uint32_t>(32 - Clz32(v));
 }
 
 template <typename Coder>

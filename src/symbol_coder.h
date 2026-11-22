@@ -23,13 +23,13 @@
 #include "platform.h"
 #include "tuning.h"
 
-#if defined(__SSE2__) && !defined(ARIXV_NO_SIMD)
+#if ARIXV_HAS_SSE2
 #define ARIXV_SYMBOL_SSE2 1
 #include <emmintrin.h>
 #else
 #define ARIXV_SYMBOL_SSE2 0
 #endif
-#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(ARIXV_NO_SIMD)
+#if ARIXV_HAS_NEON
 #define ARIXV_SYMBOL_NEON 1
 #include <arm_neon.h>
 #else
@@ -117,7 +117,7 @@ ARIXV_FORCE_INLINE int SymbolCdfLookup(const SymbolCdf& t, uint32_t v, uint16_t 
   const __m128i le1 = _mm_cmpeq_epi16(_mm_subs_epu16(c1, vv), z);
   const uint32_t mask =
       static_cast<uint32_t>(_mm_movemask_epi8(_mm_packs_epi16(le0, le1)));
-  return __builtin_ctz(~mask) - 1;
+  return Ctz32(~mask) - 1;
 #elif ARIXV_SYMBOL_NEON
   const uint16x8_t c0 = vsetq_lane_u16(
       0, vaddq_u16(vld1q_u16(t.d), vld1q_u16(K::kUniform)), 0);
@@ -208,7 +208,7 @@ ARIXV_FORCE_INLINE void SymbolCdfUpdate(SymbolCdf& t, int s) {
   static_assert(kRateCap >= 1 && kRateCap <= 14, "bad symbol rate cap");
   constexpr uint16_t kSaturation = static_cast<uint16_t>((1u << kRateCap) - 2u);
   const uint16_t count = t.d[0];
-  const int rate = 32 - __builtin_clz(static_cast<unsigned>(count) + 1u);
+  const int rate = 32 - Clz32(static_cast<uint32_t>(count) + 1u);
   SymbolCdfAdapt<kN>(t, s, rate,
                      static_cast<uint16_t>(count + (count < kSaturation)));
 }
@@ -240,14 +240,14 @@ ARIXV_FORCE_INLINE int SymbolCdfDecodeAndUpdate(SymbolCdf& t, uint32_t slot,
   if constexpr (kN <= 8) {
     const uint32_t mask =
         static_cast<uint32_t>(_mm_movemask_epi8(_mm_packs_epi16(le0, z)));
-    s = __builtin_ctz(~mask) - 1;
+    s = Ctz32(~mask) - 1;
   } else {
     d1 = _mm_load_si128(d + 1);
     c1 = _mm_add_epi16(d1, _mm_load_si128(u + 1));
     const __m128i le1 = _mm_cmpeq_epi16(_mm_subs_epu16(c1, vv), z);
     const uint32_t mask =
         static_cast<uint32_t>(_mm_movemask_epi8(_mm_packs_epi16(le0, le1)));
-    s = __builtin_ctz(~mask) - 1;
+    s = Ctz32(~mask) - 1;
   }
 #elif ARIXV_SYMBOL_NEON
   constexpr uint16_t kSaturation = static_cast<uint16_t>((1u << kRateCap) - 2u);
@@ -280,7 +280,7 @@ ARIXV_FORCE_INLINE int SymbolCdfDecodeAndUpdate(SymbolCdf& t, uint32_t slot,
 
 #if ARIXV_SYMBOL_SSE2
   const uint16_t count = static_cast<uint16_t>(_mm_cvtsi128_si32(d0));
-  const int rate = 32 - __builtin_clz(static_cast<unsigned>(count) + 1u);
+  const int rate = 32 - Clz32(static_cast<uint32_t>(count) + 1u);
   const uint16_t next_count =
       static_cast<uint16_t>(count + (count < kSaturation));
   const __m128i shift = _mm_cvtsi32_si128(rate);
@@ -302,7 +302,7 @@ ARIXV_FORCE_INLINE int SymbolCdfDecodeAndUpdate(SymbolCdf& t, uint32_t slot,
   }
 #else
   const uint16_t count = vgetq_lane_u16(d0, 0);
-  const int rate = 32 - __builtin_clz(static_cast<unsigned>(count) + 1u);
+  const int rate = 32 - Clz32(static_cast<uint32_t>(count) + 1u);
   const uint16_t next_count =
       static_cast<uint16_t>(count + (count < kSaturation));
   const uint16x8_t out0 = SymbolCdfAdaptNeon<kN, 0>(d0, c0, s, rate);
@@ -434,7 +434,7 @@ class RansDecoder {
                                      uint32_t& last_f) {
     x = x_;
     if (x < kRansL) {
-      if (__builtin_expect(x == 0, 0)) {
+      if (ARIXV_UNLIKELY(x == 0)) {
         InitState();
         x = x_;
       } else {
