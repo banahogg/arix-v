@@ -157,9 +157,17 @@ The payload uses the dual-stream range + rANS layout described above to code:
    `kStringPrimer` and `kPrimedStringMatch`.
 
 - **Error contract:** Exhausting the forward range stream returns
-  `ARIXV_STATUS_TRUNCATED`; exhausting the backward rANS stream, failing
-  structural consistency (e.g. out-of-bounds word count), or failing
-  `ConsumedExactly()` returns `ARIXV_STATUS_BAD_CONTAINER`.
+  `ARIXV_STATUS_TRUNCATED`; exhausting the backward rANS stream or failing
+  `ConsumedExactly()` returns `ARIXV_STATUS_BAD_CONTAINER`. If a SPIR-V-shaped
+  input ends with a final instruction whose declared word count exceeds the
+  remaining words in the module, the reference codec bounds operand coding to
+  the remaining words and reconstructs the original input bytes losslessly
+  rather than rejecting the blob.
+- **No built-in integrity checksum:** `ARX2` intentionally omits an embedded
+  CRC/hash to keep per-shader framing minimal. Bit flips inside a coded payload
+  can occasionally decode to altered bytes without returning an error; callers
+  requiring corruption or tamper detection should verify blobs with a package-
+  or container-level checksum.
 - **Forward compatibility with newer SPIR-V versions:** Opcodes, enumerants,
   and extended instruction sets absent from the frozen `02c0394e…` grammar
   tables fall back automatically to escape/literal coding. A v1.0 `ARX2`
@@ -218,12 +226,15 @@ arixv_encode_bound(in_size, opts) == 5 + CompactUint32Size(in_size) + in_size
   the exact original byte sequence across all future 1.x releases and across
   all supported architectures (x86_64 SSE2, AArch64 NEON, 32-bit `ILP32`, and
   scalar fallback).
-- **Encoder byte determinism:** The v1.0 reference `ARX2` encoder produces
-  byte-identical output across architectures, compilers, and SIMD/scalar builds,
-  verified by the immutable golden fixture suite in
-  [`tests/golden/`](../tests/golden/) (`golden_test`). Any future encoder
-  change that alters output bytes must allocate a new container magic rather
-  than mutating `ARX2` output.
+- **Encoder byte determinism:** Within each platform's coded-mode limits (§4),
+  the v1.0 reference `ARX2` encoder produces byte-identical output across
+  architectures, compilers, and SIMD/scalar builds, verified by the immutable
+  golden fixture suite in [`tests/golden/`](../tests/golden/) (`golden_test`).
+  On 32-bit `ILP32`, non-SPIR-V inputs larger than `PTRDIFF_MAX / 8` (~256 MiB)
+  fall back directly to stored mode `0` while 64-bit builds may still emit mode
+  `1`; both produce valid `ARX2` blobs that decode identically on every
+  platform. Any future encoder change that alters `ARX2` coded-stream output
+  bytes must allocate a new container magic rather than mutating `ARX2` output.
 - **Additive evolution:** Future multi-module / shader-pack formats or revised
   single-module bitstreams will use distinct `ARX?` magic values and additive
   API entry points without breaking `ARX2` decoding or the v1.0 C ABI.

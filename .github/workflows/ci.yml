@@ -118,13 +118,14 @@ jobs:
             -DARIXV_BUILD_ENCODER=OFF -DARIXV_BUILD_CLI=OFF -DARIXV_BUILD_TOOLS=OFF
           cmake --build build/dec-shared -j
           ctest --test-dir build/dec-shared --output-on-failure
-          exported=$(nm -D --defined-only build/dec-shared/libarixv.so | awk '$2 != "A" {print $3}' | sort)
+          exported=$(nm -D --defined-only build/dec-shared/libarixv_decoder.so | awk '$2 != "A" {print $3}' | sort)
           expected=$(printf '%s\n' arixv_decode@@ARIXV_1.0 arixv_inspect@@ARIXV_1.0 arixv_status_string@@ARIXV_1.0 arixv_version@@ARIXV_1.0)
           if [ "$exported" != "$expected" ]; then
-            echo "ERROR: Unexpected exported symbols in decoder-only libarixv.so:"
+            echo "ERROR: Unexpected exported symbols in decoder-only libarixv_decoder.so:"
             echo "$exported"
             exit 1
           fi
+          readelf -d build/dec-shared/libarixv_decoder.so | grep -q 'SONAME.*\[libarixv_decoder\.so\.1\]'
           cmake --install build/dec-shared --prefix "$PWD/build/install-dec-shared"
 
           for kind in static shared; do
@@ -174,6 +175,7 @@ jobs:
             echo "$exported"
             exit 1
           fi
+          readelf -d build/shared/libarixv.so | grep -q 'SONAME.*\[libarixv\.so\.1\]'
 
           # Shared install + find_package consumers (C11 & C++17; decoder, encoder, both)
           cmake --install build/shared --prefix "$PWD/build/install-shared"

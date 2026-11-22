@@ -202,7 +202,7 @@ if (arixv_inspect(blob, blob_size, &info) == ARIXV_STATUS_OK) {
 Build the CLI with the `release` preset (or `release-lto` for an LTO build) and
 use it as an offline build step. On POSIX single-config generators the binary is
 `build/release/arixv`; on Windows MSVC multi-config generators it is
-`build/release/Release/arixv.exe`:
+`build/release/bin/Release/arixv.exe`:
 
 ```bash
 cmake --preset release

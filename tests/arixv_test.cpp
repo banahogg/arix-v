@@ -555,9 +555,20 @@ void CApiContractTests() {
     info.struct_size = sizeof(arixv_header_info) - 1;
     CHECK(arixv_inspect(stored_blob.data(), stored_blob.size(), &info) ==
           ARIXV_STATUS_INVALID_ARGUMENT);
-    info.struct_size = sizeof(arixv_header_info) + 4;
+    info.struct_size = 4097;
     CHECK(arixv_inspect(stored_blob.data(), stored_blob.size(), &info) ==
           ARIXV_STATUS_INVALID_ARGUMENT);
+    struct FutureHeaderInfo {
+      arixv_header_info base;
+      uint64_t extra;
+    };
+    FutureHeaderInfo finfo{};
+    finfo.base.struct_size = sizeof(FutureHeaderInfo);
+    finfo.extra = 0xCAFEBABE12345678ull;
+    CHECK(arixv_inspect(stored_blob.data(), stored_blob.size(), &finfo.base) ==
+          ARIXV_STATUS_OK);
+    CHECK(finfo.base.magic == 0x32585241u);
+    CHECK(finfo.extra == 0);
     info.struct_size = sizeof(arixv_header_info);
     const size_t over_span =
         static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()) + 1u;
@@ -816,6 +827,31 @@ void ConcurrentEncodeDecode() {
   }
 }
 
+void TruncatedFinalInstructionSpirvRoundTrip() {
+  // 24-byte SPIR-V-shaped input whose final instruction declares 2 words
+  // (OpCapability) with only 1 word remaining. The reference codec bounds
+  // operand coding to the remaining words and preserves the bytes losslessly
+  // in mode 2.
+  const std::vector<uint32_t> words = {
+      0x07230203u, 0x00010000u, 0u, 2u, 0u,
+      (2u << 16) | 17u,  // declares 2 words, only 1 word remains
+  };
+  std::vector<uint8_t> input(words.size() * 4);
+  for (size_t i = 0; i < words.size(); ++i) {
+    const uint32_t w = words[i];
+    input[i * 4 + 0] = static_cast<uint8_t>(w & 0xffu);
+    input[i * 4 + 1] = static_cast<uint8_t>((w >> 8) & 0xffu);
+    input[i * 4 + 2] = static_cast<uint8_t>((w >> 16) & 0xffu);
+    input[i * 4 + 3] = static_cast<uint8_t>((w >> 24) & 0xffu);
+  }
+  const std::vector<uint8_t> encoded = EncodeBytes(input, false);
+  CHECK(ContainerMode(encoded) == arixv::kModeSpirv);
+  std::vector<uint8_t> decoded;
+  CHECK(DecodeBytes(encoded.data(), encoded.size(), decoded) ==
+        ARIXV_STATUS_OK);
+  CHECK(decoded == input);
+}
+
 }  // namespace
 
 int main() {
@@ -823,6 +859,7 @@ int main() {
   BasicRoundTrips();
   GoldenSpirvEncoding();
   GoldenSpirvModuleEncoding();
+  TruncatedFinalInstructionSpirvRoundTrip();
   RandomRoundTrips();
   CorpusRoundTrips();
   StoredModeForIncompressible();

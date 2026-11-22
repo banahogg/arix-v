@@ -285,9 +285,10 @@ arixv_status ARIXV_CALL arixv_inspect(const void* in, size_t in_size,
     return ARIXV_STATUS_INVALID_ARGUMENT;
   }
   if (out_info->struct_size < arixv::v1::kHeaderInfoV1Size ||
-      out_info->struct_size > sizeof(arixv_header_info)) {
+      out_info->struct_size > arixv::v1::kMaxOptionsStructSize) {
     return ARIXV_STATUS_INVALID_ARGUMENT;
   }
+  const uint32_t caller_size = out_info->struct_size;
   arixv::v1::ParsedHeader hdr;
   const arixv_status status =
       arixv::v1::ParseHeader(static_cast<const uint8_t*>(in), in_size, &hdr);
@@ -298,6 +299,10 @@ arixv_status ARIXV_CALL arixv_inspect(const void* in, size_t in_size,
   out_info->mode = hdr.mode;
   out_info->reserved = 0;
   out_info->uncompressed_size = hdr.original_size;
+  if (caller_size > sizeof(arixv_header_info)) {
+    std::memset(reinterpret_cast<uint8_t*>(out_info) + sizeof(arixv_header_info),
+                0, caller_size - sizeof(arixv_header_info));
+  }
   return ARIXV_STATUS_OK;
 }
 

@@ -64,8 +64,9 @@
 #endif
 
 /* Encoder declarations are opt-in: link `arixv::encoder` in CMake or define
- * `ARIXV_ENCODER=1` when building with `src/arixv_encode.cpp`. Safely handles
- * undefined, empty (`-DARIXV_ENCODER=`), `0`, and non-zero definitions.
+ * `ARIXV_ENCODER=1` when building with `src/arixv_encode.cpp`. In this public
+ * header, undefined, empty (`-DARIXV_ENCODER=`), `0`, and non-zero definitions
+ * are all handled safely.
  */
 #if defined(ARIXV_ENCODER)
 #if (ARIXV_ENCODER + 0) != 0
@@ -134,11 +135,12 @@ typedef struct arixv_header_info {
  * non-NULL (even when `in_size == 0`).
  *
  * Struct versioning:
- * - Accepts `out_info->struct_size` in [ARIXV_HEADER_INFO_V1_SIZE,
- *   sizeof(arixv_header_info)] (24 bytes in v1.0). Future 1.x libraries accept
- *   v1 callers and only write fields that fit within `out_info->struct_size`.
- *   A newer caller targeting an older 1.0 runtime should pass
- *   `ARIXV_HEADER_INFO_V1_SIZE` or check `arixv_version()`.
+ * - Backward compatible: future 1.x libraries accept v1 callers passing
+ *   `out_info->struct_size == ARIXV_HEADER_INFO_V1_SIZE` (24) and write only
+ *   the fields that fit within `out_info->struct_size`.
+ * - Forward compatible: accepts larger `out_info->struct_size` up to 4096
+ *   bytes, populates the v1 fields, and zero-fills any trailing extension
+ *   bytes beyond `sizeof(arixv_header_info)`.
  * - Reports the full 64-bit declared `uncompressed_size` even if it exceeds
  *   this platform's addressable limit (unlike `arixv_decode`, which returns
  *   ARIXV_STATUS_TOO_LARGE).

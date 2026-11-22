@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -165,6 +166,49 @@ def main() -> int:
                 f"expected overwrite rejection: rc={r.returncode} stderr={r.stderr!r}")
         require(f_b.read_bytes() == b"second-input-must-not-be-overwritten",
                 "foo.arixv was modified before batch collision check!")
+
+        # Strict --max-size parsing rejects leading whitespace / signed values
+        r = run(cli, ["d", "--max-size", " -1", str(out0), str(tmp_path / "bad_max.spv")])
+        require(r.returncode == 2, f"expected exit 2 on --max-size ' -1', got {r.returncode}")
+
+        # Hardlinked batch destinations must be rejected before writing
+        hl_in_dir = tmp_path / "hl_in"
+        hl_out_dir = tmp_path / "hl_out"
+        hl_in_dir.mkdir()
+        hl_out_dir.mkdir()
+        hl_in1 = hl_in_dir / "one.spv"
+        hl_in2 = hl_in_dir / "two.spv"
+        hl_in1.write_bytes(b"input-one")
+        hl_in2.write_bytes(b"input-two")
+        hl_out1 = hl_out_dir / "one.spv.arixv"
+        hl_out2 = hl_out_dir / "two.spv.arixv"
+        hl_out1.write_bytes(b"orig-hardlink")
+        try:
+            os.link(hl_out1, hl_out2)
+            r = run(cli, ["c", "--out-dir", str(hl_out_dir), str(hl_in1), str(hl_in2)])
+            require(r.returncode == 1,
+                    f"expected exit 1 on hardlinked destinations: rc={r.returncode} stderr={r.stderr!r}")
+            require(hl_out1.read_bytes() == b"orig-hardlink",
+                    "hardlinked batch destination was overwritten!")
+        except OSError:
+            pass
+
+        # Dangling symlink from first batch destination to second destination must be rejected
+        if os.name != "nt":
+            sym_in_dir = tmp_path / "sym_in"
+            sym_out_dir = tmp_path / "sym_out"
+            sym_in_dir.mkdir()
+            sym_out_dir.mkdir()
+            sym_in1 = sym_in_dir / "first.spv"
+            sym_in2 = sym_in_dir / "second.spv"
+            sym_in1.write_bytes(b"first-payload")
+            sym_in2.write_bytes(b"second-payload")
+            os.symlink("second.spv.arixv", sym_out_dir / "first.spv.arixv")
+            r = run(cli, ["c", "--out-dir", str(sym_out_dir), str(sym_in1), str(sym_in2)])
+            require(r.returncode == 1,
+                    f"expected exit 1 on dangling-symlink destination alias: rc={r.returncode} stderr={r.stderr!r}")
+            require(not (sym_out_dir / "second.spv.arixv").exists(),
+                    "dangling symlink target was created during rejected batch!")
 
         # 6. info on files (valid + invalid)
         batch_outputs = [str(batch_dir / f"{p.name}.arixv") for p in spv_files]

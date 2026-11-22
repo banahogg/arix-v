@@ -85,8 +85,13 @@ if(BUILD_SHARED_LIBS)
       ARIXV_BUILDING
       ARIXV_ENCODER=$<BOOL:${ARIXV_BUILD_ENCODER}>
   )
+  if(ARIXV_BUILD_ENCODER)
+    set(_shared_output_name arixv)
+  else()
+    set(_shared_output_name arixv_decoder)
+  endif()
   set_target_properties(arixv_shared PROPERTIES
-    OUTPUT_NAME arixv
+    OUTPUT_NAME ${_shared_output_name}
     EXPORT_NAME shared
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}

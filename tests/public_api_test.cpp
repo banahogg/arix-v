@@ -65,9 +65,26 @@ void TestInspectAndDecode() {
   info.struct_size = ARIXV_HEADER_INFO_V1_SIZE - 1;
   CHECK(arixv_inspect(kMinimalArx2, sizeof(kMinimalArx2), &info) ==
         ARIXV_STATUS_INVALID_ARGUMENT);
-  info.struct_size = sizeof(arixv_header_info) + 4;
+  info.struct_size = 4097;
   CHECK(arixv_inspect(kMinimalArx2, sizeof(kMinimalArx2), &info) ==
         ARIXV_STATUS_INVALID_ARGUMENT);
+
+  // Forward-compatible larger header_info struct: v1 fields populated, tail zeroed.
+  struct FutureHeaderInfo {
+    arixv_header_info base;
+    uint64_t extra;
+  };
+  FutureHeaderInfo finfo{};
+  finfo.base.struct_size = sizeof(FutureHeaderInfo);
+  finfo.base.reserved = 0xDEADBEEFu;
+  finfo.extra = 0x1122334455667788ull;
+  CHECK(arixv_inspect(kMinimalArx2, sizeof(kMinimalArx2), &finfo.base) ==
+        ARIXV_STATUS_OK);
+  CHECK(finfo.base.magic == 0x32585241u);
+  CHECK(finfo.base.mode == ARIXV_MODE_SPIRV);
+  CHECK(finfo.base.reserved == 0);
+  CHECK(finfo.base.uncompressed_size == sizeof(kMinimalSpv));
+  CHECK(finfo.extra == 0);
 
   // Future ARX? magic -> UNSUPPORTED_FORMAT.
   const uint8_t future_blob[] = {'A', 'R', 'X', '3', 0, 0};

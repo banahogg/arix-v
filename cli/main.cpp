@@ -205,6 +205,31 @@ bool WriteOutputPath(const fs::path& path, const std::vector<uint8_t>& data) {
   return static_cast<bool>(out);
 }
 
+bool ResolveLinkTarget(const fs::path& p, fs::path* out_resolved) {
+  fs::path cur = p;
+  for (int hop = 0; hop < 32; ++hop) {
+    std::error_code ec;
+    const fs::file_status st = fs::symlink_status(cur, ec);
+    if (st.type() == fs::file_type::not_found) {
+      *out_resolved = cur;
+      return true;
+    }
+    if (ec) {
+      return false;
+    }
+    if (!fs::is_symlink(st)) {
+      *out_resolved = cur;
+      return true;
+    }
+    const fs::path target = fs::read_symlink(cur, ec);
+    if (ec) {
+      return false;
+    }
+    cur = target.is_relative() ? (cur.parent_path() / target) : target;
+  }
+  return false;  // symlink loop
+}
+
 std::string NormalizeCollisionKey(const fs::path& p) {
   std::error_code ec;
   fs::path norm = fs::weakly_canonical(p, ec);
@@ -221,8 +246,13 @@ std::string NormalizeCollisionKey(const fs::path& p) {
 }
 
 bool ParseSizeArg(const std::string& s, uint64_t* value) {
-  if (s.empty() || s[0] == '-' || s[0] == '+') {
+  if (s.empty()) {
     return false;
+  }
+  for (unsigned char c : s) {
+    if (c < '0' || c > '9') {
+      return false;
+    }
   }
   char* end = nullptr;
   errno = 0;
@@ -463,6 +493,8 @@ int RunCompress(const char* argv0, int argc, char** argv) {
     std::vector<fs::path> out_paths;
     in_paths.reserve(positional.size());
     out_paths.reserve(positional.size());
+    std::vector<fs::path> resolved_out_paths;
+    resolved_out_paths.reserve(positional.size());
     std::set<std::string> seen_inputs;
     std::set<std::string> seen_outputs;
 
@@ -481,32 +513,63 @@ int RunCompress(const char* argv0, int argc, char** argv) {
       fs::path out_fname = fname;
       out_fname += ".arixv";
       const fs::path out_path = dir_path / out_fname;
+      fs::path resolved_out;
+      if (!ResolveLinkTarget(out_path, &resolved_out)) {
+        std::cerr << "error: cannot resolve output path in --out-dir: "
+                  << out_path.string() << "\n";
+        return kExitError;
+      }
       const std::string out_key = NormalizeCollisionKey(out_path);
-      if (!seen_outputs.insert(out_key).second) {
-        std::cerr << "error: duplicate output path in --out-dir: "
+      const std::string resolved_out_key = NormalizeCollisionKey(resolved_out);
+      if (!seen_outputs.insert(out_key).second ||
+          (resolved_out_key != out_key &&
+           !seen_outputs.insert(resolved_out_key).second)) {
+        std::cerr << "error: duplicate or aliased output path in --out-dir: "
                   << out_path.string() << "\n";
         return kExitError;
       }
       seen_inputs.insert(NormalizeCollisionKey(in_path));
+      fs::path resolved_in;
+      if (ResolveLinkTarget(in_path, &resolved_in)) {
+        seen_inputs.insert(NormalizeCollisionKey(resolved_in));
+      }
       in_paths.push_back(in_path);
       out_paths.push_back(out_path);
+      resolved_out_paths.push_back(resolved_out);
     }
 
     for (size_t i = 0; i < out_paths.size(); ++i) {
       const std::string out_key = NormalizeCollisionKey(out_paths[i]);
-      if (seen_inputs.count(out_key) != 0) {
+      const std::string resolved_out_key =
+          NormalizeCollisionKey(resolved_out_paths[i]);
+      if (seen_inputs.count(out_key) != 0 ||
+          seen_inputs.count(resolved_out_key) != 0) {
         std::cerr << "error: batch output would overwrite input file: "
                   << out_paths[i].string() << "\n";
         return kExitError;
       }
-      for (const fs::path& in_path : in_paths) {
-        std::error_code eq_ec;
-        if (fs::exists(out_paths[i], eq_ec) && !eq_ec &&
-            fs::exists(in_path, eq_ec) && !eq_ec &&
-            fs::equivalent(out_paths[i], in_path, eq_ec) && !eq_ec) {
-          std::cerr << "error: batch output would overwrite input file: "
-                    << out_paths[i].string() << "\n";
-          return kExitError;
+      std::error_code out_exists_ec;
+      const bool out_i_exists = fs::exists(out_paths[i], out_exists_ec) &&
+                                !out_exists_ec;
+      if (out_i_exists) {
+        for (size_t j = i + 1; j < out_paths.size(); ++j) {
+          std::error_code eq_ec;
+          if (fs::exists(out_paths[j], eq_ec) && !eq_ec &&
+              fs::equivalent(out_paths[i], out_paths[j], eq_ec) && !eq_ec) {
+            std::cerr << "error: aliased output files in --out-dir: "
+                      << out_paths[i].string() << " and "
+                      << out_paths[j].string() << "\n";
+            return kExitError;
+          }
+        }
+        for (const fs::path& in_path : in_paths) {
+          std::error_code eq_ec;
+          if (fs::exists(in_path, eq_ec) && !eq_ec &&
+              fs::equivalent(out_paths[i], in_path, eq_ec) && !eq_ec) {
+            std::cerr << "error: batch output would overwrite input file: "
+                      << out_paths[i].string() << "\n";
+            return kExitError;
+          }
         }
       }
     }
