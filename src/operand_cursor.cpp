@@ -4,6 +4,7 @@
 #include "operand_cursor.h"
 
 namespace arixv {
+inline namespace v1 {
 namespace {
 
 uint8_t CapSlot(int slot) {
@@ -317,4 +318,5 @@ void OperandCursor::SetExtInstSet(const ExtInstSetDesc* set) {
   ext_set_ = set;
 }
 
+}  // namespace v1
 }  // namespace arixv

@@ -4,12 +4,13 @@
 #include "model.h"
 
 #include <algorithm>
-#include <cstring>
 #include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -27,14 +28,11 @@
 #include "tuning.h"
 
 namespace arixv {
+inline namespace v1 {
 namespace {
 
 constexpr uint32_t kSpirvMagic = 0x07230203u;
 constexpr uint32_t kSpirvMagicSwapped = 0x03022307u;
-#ifndef ARIXV_KOPCODE_ORDER1_MIN_COUNT
-#define ARIXV_KOPCODE_ORDER1_MIN_COUNT 4
-#endif
-constexpr uint32_t kOpcodeOrder1MinCount = ARIXV_KOPCODE_ORDER1_MIN_COUNT;
 constexpr size_t kInlineInstructionWords = 256;
 constexpr size_t kInlineOperandWords = 8;
 
@@ -515,14 +513,12 @@ struct StringModel {
   ArenaPtr<StringMatchTable> match;   // copied from the primed table on first use
   std::vector<uint8_t> history;       // this module's string bytes
 
-  uint8_t At(uint32_t v) const {
+  uint8_t At(size_t v) const {
     const std::string_view primer = GetStringPrimer();
     return v < primer.size() ? static_cast<uint8_t>(primer[v])
                              : history[v - primer.size()];
   }
-  uint32_t End() const {
-    return static_cast<uint32_t>(GetStringPrimer().size() + history.size());
-  }
+  size_t End() const { return GetStringPrimer().size() + history.size(); }
   StringMatchTable& Table() {
     if (!match) {
       // Private copy of the generated primed table (constant data, so no
@@ -536,46 +532,28 @@ struct StringModel {
   }
   // Earlier position that followed the two bytes before End() (verified,
   // since the table is hashed); 0 if none.
-  uint32_t Lookup() {
-    const uint32_t v = End();
+  size_t Lookup() {
+    const size_t v = End();
     if (v < 2) {
       return 0;
     }
     const uint8_t c0 = At(v - 2);
     const uint8_t c1 = At(v - 1);
-    const uint32_t slot = Table().pos[StringMatchHash(c0, c1)];
+    const size_t slot = Table().pos[StringMatchHash(c0, c1)];
     return slot >= 2 && slot < v && At(slot - 2) == c0 && At(slot - 1) == c1
                ? slot
                : 0;
   }
   // Appends b at End(), pointing its context's table slot at it.
   void Push(uint8_t b) {
-    const uint32_t v = End();
-    if (v >= 2) {
-      Table().pos[StringMatchHash(At(v - 2), At(v - 1))] = v;
+    const size_t v = End();
+    if (v >= 2 && v <= std::numeric_limits<uint32_t>::max()) {
+      Table().pos[StringMatchHash(At(v - 2), At(v - 1))] =
+          static_cast<uint32_t>(v);
     }
     history.push_back(b);
   }
 };
-
-struct ValueEnumOrdinalTable {
-  std::vector<uint16_t> ordinal;
-  size_t count = 0;
-};
-
-const ValueEnumOrdinalTable& GetValueEnumOrdinals() {
-  static const ValueEnumOrdinalTable kTable = []() {
-    ValueEnumOrdinalTable t;
-    t.ordinal.resize(NumOperandKinds());
-    for (uint16_t k = 0; k < NumOperandKinds(); ++k) {
-      if (GetOperandKind(k).category == OperandCategory::kValueEnum) {
-        t.ordinal[k] = static_cast<uint16_t>(t.count++);
-      }
-    }
-    return t;
-  }();
-  return kTable;
-}
 
 struct ModelState {
   // Owns every lazily created context (ArenaPtr members below); declared
@@ -592,7 +570,7 @@ struct ModelState {
         type_in_list(static_cast<size_t>(NumInstructionClasses()) + 1),
         type_rank(static_cast<size_t>(NumInstructionClasses()) + 1),
         type_escape(static_cast<size_t>(NumInstructionClasses()) + 1),
-        value_enums(GetValueEnumOrdinals().count * 16),
+        value_enums(static_cast<size_t>(NumValueEnumKinds()) * 16),
         bit_enums(NumOperandKinds()),
         integer_values(
             (static_cast<size_t>(NumInstructionClasses()) + 1) * 9),
@@ -736,6 +714,10 @@ struct ModelState {
 
 };
 
+static_assert(alignof(ModelState) >= 16,
+              "ModelState must preserve 16-byte alignment for SIMD contexts");
+
+#if defined(ARIXV_ENCODER) && (ARIXV_ENCODER != 0)
 class EncodeIO {
  public:
   EncodeIO(const uint8_t* data, size_t size) {
@@ -762,10 +744,17 @@ class EncodeIO {
     if (emitted_ != 3) {
       assert(word == words_[emitted_]);
     }
+    (void)word;
     ++emitted_;
   }
-  void EmitBodyWord(uint32_t word) { assert(word == words_[emitted_++]); }
-  void PatchBound(uint32_t word) { assert(word == words_[3]); }
+  void EmitBodyWord(uint32_t word) {
+    assert(word == words_[emitted_++]);
+    (void)word;
+  }
+  void PatchBound(uint32_t word) {
+    assert(word == words_[3]);
+    (void)word;
+  }
   void PatchBodyWord(size_t index, uint32_t word) {
     assert(word == words_[5 + index]);
     (void)index;
@@ -777,18 +766,12 @@ class EncodeIO {
   bool swapped_ = false;
   size_t emitted_ = 0;
 };
+#endif
 
 class DecodeIO {
  public:
-  DecodeIO(std::vector<uint8_t>& out, size_t expected_size) {
-    // The module header has already validated this size.  Allocate it once so
-    // the hot path can write each decoded word directly instead of growing the
-    // vector one byte at a time.
-    out.resize(expected_size);
-    data_ = out.data();
-    ptr_ = data_;
-    end_ = data_ + expected_size;
-  }
+  DecodeIO(uint8_t* out, size_t expected_size)
+      : data_(out), size_(expected_size) {}
 
   bool SwappedHint() const { return false; }
   uint32_t HeaderWord(size_t) const { return 0; }
@@ -801,10 +784,10 @@ class DecodeIO {
   void EmitHeaderWord(uint32_t word) { Append(word); }
   ARIXV_FORCE_INLINE void EmitBodyWord(uint32_t word) { Append(word); }
 
-  bool Complete() const { return !overflowed_ && ptr_ == end_; }
+  bool Complete() const { return !overflowed_ && pos_ == size_; }
 
   void PatchBound(uint32_t word) {
-    if (static_cast<size_t>(end_ - data_) < 16) {
+    if (size_ < 16) {
       return;
     }
     if (swapped_) {
@@ -815,9 +798,11 @@ class DecodeIO {
 
   // Overwrites a body word already emitted (a deferred Result Type).
   void PatchBodyWord(size_t index, uint32_t word) {
+    if (index > (std::numeric_limits<size_t>::max() / 4) - 5) {
+      return;
+    }
     const size_t at = (5 + index) * 4;
-    const size_t written = static_cast<size_t>(ptr_ - data_);
-    if (at > written || written - at < 4) {
+    if (at > pos_ || pos_ - at < 4) {
       return;  // never written (overflowed); the decode fails anyway
     }
     if (swapped_) {
@@ -828,28 +813,30 @@ class DecodeIO {
 
  private:
   ARIXV_FORCE_INLINE void Append(uint32_t word) {
-    if (static_cast<size_t>(end_ - ptr_) < 4) {
+    if (size_ - pos_ < 4) {
       overflowed_ = true;
       return;
     }
     if (swapped_) {
       word = ByteSwap32(word);
     }
-    StoreLe32(word, ptr_);
-    ptr_ += 4;
+    StoreLe32(word, data_ + pos_);
+    pos_ += 4;
   }
 
   uint8_t* data_ = nullptr;
-  uint8_t* ptr_ = nullptr;
-  uint8_t* end_ = nullptr;
+  size_t size_ = 0;
+  size_t pos_ = 0;
   bool overflowed_ = false;
   bool swapped_ = false;
 };
 
+#ifdef ARIXV_ENABLE_RAW_RESIDUAL
 // A packed decision stream with no entropy coding. Keeping the BitEncoder /
 // BitDecoder-shaped interface lets this exercise the exact same structural
 // traversal as M2 while removing range arithmetic and adaptive updates from
 // the hot path.
+#if defined(ARIXV_ENCODER) && (ARIXV_ENCODER != 0)
 class RawResidualEncoder {
  public:
   static constexpr bool kEncoding = true;
@@ -901,6 +888,7 @@ class RawResidualEncoder {
   std::vector<uint8_t>& out_;
   int bit_offset_ = 0;
 };
+#endif
 
 class RawResidualDecoder {
  public:
@@ -981,6 +969,7 @@ class RawResidualDecoder {
   bool exhausted_ = false;
   bool malformed_ = false;
 };
+#endif
 
 template <class Bits>
 uint32_t CodeDirect32(Bits& bits, uint32_t hint) {
@@ -1891,7 +1880,7 @@ uint32_t CodeValueEnum(Bits& bits, ModelState& model,
   // field.kind is a value-enum kind here (the cursor yields kValueEnum only
   // for those), so its ordinal is valid.
   const size_t key =
-      static_cast<size_t>(GetValueEnumOrdinals().ordinal[field.kind]) * 16 +
+      static_cast<size_t>(GetValueEnumOrdinal(field.kind)) * 16 +
       Slot16(field.slot);
   ValueEnumModel& ctx = EnsureIndexContext(model.arena, model.value_enums[key],
                                            kind.num_enumerants);
@@ -2314,7 +2303,7 @@ ARIXV_NOINLINE void CodeString(Bits& bits, ModelState& model,
       uint8_t prev = 0;
       // Match state: the history position predicted to repeat next (0 =
       // none) and how many predictions in a row have held.
-      uint32_t match = 0;
+      size_t match = 0;
       uint32_t match_len = 0;
       if (remaining > 0) {
         // Ensure the 4 KB match table is allocated before the first byte-tree
@@ -2765,7 +2754,6 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
 
 template <class Bits, class IO>
 Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
-  model.tracker.Reserve(word_count);
 #ifdef ARIXV_ENABLE_STATS
   // Stats tagging: encoder accumulates entropy per category; decoder no-op.
   const bool stats = StatsEnabled();
@@ -3236,10 +3224,12 @@ bool IsSpirvModelEligible(const uint8_t* data, size_t size) {
   return magic == kSpirvMagic || magic == kSpirvMagicSwapped;
 }
 
+#if defined(ARIXV_ENCODER) && (ARIXV_ENCODER != 0)
 void EncodeModule(const uint8_t* data, size_t size,
                   std::vector<uint8_t>& out_payload) {
   // Heap-allocated: ModelState's inline models are too large for the stack.
   const auto model = std::make_unique<ModelState>();
+  model->tracker.Reserve(size / 4);
   RangeEncoder range(out_payload);
   BitEncoder bits(range);
   EncodeIO io(data, size);
@@ -3251,15 +3241,19 @@ void EncodeModule(const uint8_t* data, size_t size,
   bits.Flush();
 }
 
+#ifdef ARIXV_ENABLE_RAW_RESIDUAL
 void EncodeModuleRawResidual(const uint8_t* data, size_t size,
                              std::vector<uint8_t>& out_payload) {
   const auto model = std::make_unique<ModelState>();
+  model->tracker.Reserve(size / 4);
   RawResidualEncoder bits(out_payload);
   EncodeIO io(data, size);
   const Status status = CodeModule(*model, bits, io, size / 4);
   (void)status;
   bits.Flush();
 }
+#endif
+#endif
 
 #ifdef ARIXV_MEMSTATS
 // Diagnostics build only: per-member heap and inline sizes of the model,
@@ -3307,13 +3301,15 @@ void RecordModelMemory(const ModelState& m) {
 #endif
 
 Status DecodeModule(const uint8_t* payload, size_t payload_size,
-                    size_t expected_original_size, std::vector<uint8_t>& out) {
-  if (expected_original_size < 20 || (expected_original_size % 4) != 0) {
+                    size_t expected_original_size, uint8_t* out) {
+  if (expected_original_size < 20 || (expected_original_size % 4) != 0 ||
+      out == nullptr) {
     return Status::kBadContainer;
   }
-  out.clear();
   // Heap-allocated: ModelState's inline models are too large for the stack.
   const auto model = std::make_unique<ModelState>();
+  model->tracker.Reserve(
+      CappedDecodeReserve(payload_size, expected_original_size) / 4);
   RangeDecoder range(payload, payload_size);
   BitDecoder bits(range);
   DecodeIO io(out, expected_original_size);
@@ -3323,45 +3319,43 @@ Status DecodeModule(const uint8_t* payload, size_t payload_size,
   RecordModelMemory(*model);
 #endif
   if (status != Status::kOk) {
-    out.clear();
     return status;
   }
   if (!io.Complete()) {
-    out.clear();
     return Status::kTruncated;
   }
   if (!bits.ConsumedExactly()) {
-    out.clear();
     return Status::kBadContainer;
   }
   return Status::kOk;
 }
 
+#ifdef ARIXV_ENABLE_RAW_RESIDUAL
 Status DecodeModuleRawResidual(const uint8_t* payload, size_t payload_size,
-                               size_t expected_original_size,
-                               std::vector<uint8_t>& out) {
-  if (expected_original_size < 20 || (expected_original_size % 4) != 0) {
+                               size_t expected_original_size, uint8_t* out) {
+  if (expected_original_size < 20 || (expected_original_size % 4) != 0 ||
+      out == nullptr) {
     return Status::kBadContainer;
   }
-  out.clear();
   const auto model = std::make_unique<ModelState>();
+  model->tracker.Reserve(
+      CappedDecodeReserve(payload_size, expected_original_size) / 4);
   RawResidualDecoder bits(payload, payload_size);
   DecodeIO io(out, expected_original_size);
   const Status status =
       CodeModule(*model, bits, io, expected_original_size / 4);
   if (status != Status::kOk) {
-    out.clear();
     return status;
   }
   if (!io.Complete()) {
-    out.clear();
     return Status::kTruncated;
   }
   if (!bits.AtEndWithZeroPadding()) {
-    out.clear();
     return Status::kBadContainer;
   }
   return Status::kOk;
 }
+#endif
 
+}  // namespace v1
 }  // namespace arixv

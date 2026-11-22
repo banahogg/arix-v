@@ -17,6 +17,10 @@
 #include <new>
 #include <type_traits>
 
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
+
 #include "platform.h"
 
 #ifdef ARIXV_MEMSTATS
@@ -26,6 +30,7 @@
 #endif
 
 namespace arixv {
+inline namespace v1 {
 
 #ifdef ARIXV_MEMSTATS
 // Diagnostics build only: every arena object by type (count, bytes), and the
@@ -51,7 +56,7 @@ class Arena {
     Block* block = head_;
     while (block != nullptr) {
       Block* next = block->next;
-      std::free(block);
+      AlignedFree(block);
       block = next;
     }
   }
@@ -79,6 +84,23 @@ class Arena {
   static constexpr size_t kFirstBlockBytes = size_t{4} << 10;
   static constexpr size_t kMaxBlockBytes = size_t{64} << 10;
 
+  static void* AlignedAlloc(size_t bytes) {
+#if defined(_WIN32)
+    return _aligned_malloc(bytes, kMaxAlign);
+#else
+    void* ptr = nullptr;
+    return posix_memalign(&ptr, kMaxAlign, bytes) == 0 ? ptr : nullptr;
+#endif
+  }
+
+  static void AlignedFree(void* ptr) {
+#if defined(_WIN32)
+    _aligned_free(ptr);
+#else
+    std::free(ptr);
+#endif
+  }
+
   struct alignas(kMaxAlign) Block {
     Block* next;
   };
@@ -98,7 +120,7 @@ class Arena {
 #ifdef ARIXV_MEMSTATS
       g_arena_block_bytes += sizeof(Block) + payload;
 #endif
-      void* raw = std::malloc(sizeof(Block) + payload);
+      void* raw = AlignedAlloc(sizeof(Block) + payload);
       if (raw == nullptr) {
 #if ARIXV_HAS_EXCEPTIONS
         throw std::bad_alloc();
@@ -142,6 +164,7 @@ class ArenaPtr {
   T* p_ = nullptr;
 };
 
+}  // namespace v1
 }  // namespace arixv
 
 #endif  // ARIXV_ARENA_H_

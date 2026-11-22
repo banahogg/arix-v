@@ -19,6 +19,7 @@
 #include "tuning.h"
 
 namespace arixv {
+inline namespace v1 {
 
 // ARIXV_STATS decision counting (encoder-only diagnostics; compiled in only
 // under -DARIXV_ENABLE_STATS so normal library builds have no mutable globals
@@ -564,6 +565,7 @@ uint8_t CodeByte(Coder& coder, ByteModel& model, uint8_t prev, uint8_t b) {
   return static_cast<uint8_t>(tree->CodeValue(coder, model.arena, b));
 }
 
+}  // namespace v1
 }  // namespace arixv
 
 #endif  // ARIXV_PROB_H_

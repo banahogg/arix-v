@@ -13,6 +13,7 @@
 #include <string_view>
 
 namespace arixv {
+inline namespace v1 {
 
 // Collapses the grammar's operand kinds into the categories the codec
 // distinguishes. Specific kinds still matter for context selection; the
@@ -166,6 +167,8 @@ int FindInstructionIndex(uint32_t opcode);  // -1 if unknown
 
 const OperandKindDesc& GetOperandKind(uint16_t kind_index);
 uint16_t NumOperandKinds();
+uint16_t GetValueEnumOrdinal(uint16_t kind_index);
+uint16_t NumValueEnumKinds();
 
 // Slots for a core instruction (indexes resolved against the core tables).
 const OperandSlotDesc* GetOperandSlots(const InstructionDesc& inst);
@@ -259,4 +262,5 @@ uint16_t GetVersionMinorPrior();
 // contiguous from 0.
 uint32_t NumRegisteredGenerators();
 
+}  // namespace v1
 }  // namespace arixv

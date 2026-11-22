@@ -16,6 +16,7 @@
 #include "platform.h"
 
 namespace arixv {
+inline namespace v1 {
 
 class OperandCursor {
  public:
@@ -155,4 +156,5 @@ class OperandCursor {
   uint8_t top_slot_for_context_ = 0;
 };
 
+}  // namespace v1
 }  // namespace arixv

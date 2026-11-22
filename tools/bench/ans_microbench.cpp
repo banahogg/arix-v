@@ -26,7 +26,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "arixv.h"
+#include "arixv/arixv.h"
 #include "prob.h"
 #include "range_coder.h"
 

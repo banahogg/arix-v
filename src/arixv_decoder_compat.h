@@ -18,9 +18,10 @@
 #include <cstdint>
 #include <vector>
 
-#include "arixv.h"
+#include "arixv/arixv.h"
 
 namespace arixv {
+inline namespace v1 {
 
 class Decoder {
  public:
@@ -36,6 +37,7 @@ class Decoder {
   }
 };
 
+}  // namespace v1
 }  // namespace arixv
 
 #endif  // ARIXV_ARIXV_DECODER_COMPAT_H_

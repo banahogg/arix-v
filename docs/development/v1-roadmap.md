@@ -84,7 +84,7 @@ golden vectors, and clean seams.
   grammar array (`gen_grammar_tables.py` / `grammar_tables.cpp`), and MSVC
   `/W3` warnings (`range_coder.h`); all 4 CI jobs passing.
 
-### [ ] 0c. Minimal `src/model.cpp` Seams, Hardening, Golden Suite & CMake Migration
+### [x] 0c. Minimal `src/model.cpp` Seams, Hardening, Golden Suite & CMake Migration
 Keep `src/model.cpp` edits localized to avoid merge friction with Track B while
 closing all build, portability, and determinism gaps before branching:
 

@@ -1,6 +1,6 @@
 #include "operand_cursor.h"
 
-#include <cassert>
+#include "test_util.h"
 
 using arixv::ExtInstSetDesc;
 using arixv::FindEnumerant;
@@ -14,19 +14,19 @@ namespace {
 
 OperandCursor::Field NextOperand(OperandCursor& cursor) {
   OperandCursor::Field field = cursor.Next();
-  assert(field.type == OperandCursor::FieldType::kOperand);
+  CHECK(field.type == OperandCursor::FieldType::kOperand);
   return field;
 }
 
 void ExpectEnd(OperandCursor& cursor) {
-  assert(cursor.Next().type == OperandCursor::FieldType::kEnd);
+  CHECK(cursor.Next().type == OperandCursor::FieldType::kEnd);
 }
 
 void TestOpNop() {
   OperandCursor cursor;
   cursor.Begin(FindInstruction(0), 1, false);
   ExpectEnd(cursor);
-  assert(!cursor.degraded());
+  CHECK(!cursor.degraded());
 }
 
 void TestDecorateEnumParam() {
@@ -34,48 +34,48 @@ void TestDecorateEnumParam() {
   OperandCursor cursor;
   cursor.Begin(FindInstruction(71), 4, false);
   OperandCursor::Field field = NextOperand(cursor);
-  assert(field.category == OperandCategory::kIdRef);
+  CHECK(field.category == OperandCategory::kIdRef);
   cursor.Consume(1, 100);
   field = NextOperand(cursor);
-  assert(field.category == OperandCategory::kValueEnum);
+  CHECK(field.category == OperandCategory::kValueEnum);
   const auto* enumerant = FindEnumerant(GetOperandKind(field.kind),
                                         kDecorationBuiltIn);
-  assert(enumerant != nullptr);
-  assert(enumerant->num_params == 1);
+  CHECK(enumerant != nullptr);
+  CHECK(enumerant->num_params == 1);
   cursor.Consume(1, kDecorationBuiltIn);
   field = NextOperand(cursor);
-  assert(field.is_enum_param);
-  assert(field.kind == arixv::GetEnumParamKinds(*enumerant)[0]);
+  CHECK(field.is_enum_param);
+  CHECK(field.kind == arixv::GetEnumParamKinds(*enumerant)[0]);
   cursor.Consume(1, 0);
   ExpectEnd(cursor);
-  assert(!cursor.degraded());
+  CHECK(!cursor.degraded());
 }
 
 void TestLoadMemoryAccess() {
   OperandCursor cursor;
   cursor.Begin(FindInstruction(61), 4, false);
-  assert(NextOperand(cursor).category == OperandCategory::kIdResultType);
+  CHECK(NextOperand(cursor).category == OperandCategory::kIdResultType);
   cursor.Consume(1, 1);
-  assert(NextOperand(cursor).category == OperandCategory::kIdResult);
+  CHECK(NextOperand(cursor).category == OperandCategory::kIdResult);
   cursor.Consume(1, 2);
-  assert(NextOperand(cursor).category == OperandCategory::kIdRef);
+  CHECK(NextOperand(cursor).category == OperandCategory::kIdRef);
   cursor.Consume(1, 3);
   ExpectEnd(cursor);
-  assert(!cursor.degraded());
+  CHECK(!cursor.degraded());
 
   cursor.Begin(FindInstruction(61), 6, false);
   cursor.Consume(1, 1);
   cursor.Consume(1, 2);
   cursor.Consume(1, 3);
   OperandCursor::Field field = NextOperand(cursor);
-  assert(field.category == OperandCategory::kBitEnum);
+  CHECK(field.category == OperandCategory::kBitEnum);
   cursor.Consume(1, 2);
   field = NextOperand(cursor);
-  assert(field.is_enum_param);
-  assert(field.category == OperandCategory::kLiteralInteger);
+  CHECK(field.is_enum_param);
+  CHECK(field.category == OperandCategory::kLiteralInteger);
   cursor.Consume(1, 16);
   ExpectEnd(cursor);
-  assert(!cursor.degraded());
+  CHECK(!cursor.degraded());
 }
 
 void TestSwitchPairs() {
@@ -84,46 +84,46 @@ void TestSwitchPairs() {
   cursor.Consume(1, 1);
   cursor.Consume(1, 2);
   ExpectEnd(cursor);
-  assert(!cursor.degraded());
+  CHECK(!cursor.degraded());
 
   cursor.Begin(FindInstruction(251), 9, false);
   cursor.Consume(1, 1);
   cursor.Consume(1, 2);
   for (int i = 0; i < 3; ++i) {
     OperandCursor::Field field = NextOperand(cursor);
-    assert(field.in_composite);
-    assert(field.category == OperandCategory::kLiteralInteger);
+    CHECK(field.in_composite);
+    CHECK(field.category == OperandCategory::kLiteralInteger);
     cursor.Consume(1, static_cast<uint32_t>(i));
     field = NextOperand(cursor);
-    assert(field.in_composite);
-    assert(field.category == OperandCategory::kIdRef);
+    CHECK(field.in_composite);
+    CHECK(field.category == OperandCategory::kIdRef);
     cursor.Consume(1, static_cast<uint32_t>(10 + i));
   }
   ExpectEnd(cursor);
-  assert(!cursor.degraded());
+  CHECK(!cursor.degraded());
 }
 
 void TestExtInst() {
   const ExtInstSetDesc* glsl = FindExtInstSet("GLSL.std.450");
-  assert(glsl != nullptr);
+  CHECK(glsl != nullptr);
 
   OperandCursor cursor;
   cursor.Begin(FindInstruction(12), 6, false);
   cursor.Consume(1, 1);
   cursor.Consume(1, 2);
   OperandCursor::Field field = NextOperand(cursor);
-  assert(field.category == OperandCategory::kIdRef);
-  assert(field.slot == 2);
+  CHECK(field.category == OperandCategory::kIdRef);
+  CHECK(field.slot == 2);
   cursor.Consume(1, 50);
   cursor.SetExtInstSet(glsl);
   field = NextOperand(cursor);
-  assert(field.category == OperandCategory::kLiteralExtInstInteger);
+  CHECK(field.category == OperandCategory::kLiteralExtInstInteger);
   cursor.Consume(1, 13);
   field = NextOperand(cursor);
-  assert(field.category == OperandCategory::kIdRef);
+  CHECK(field.category == OperandCategory::kIdRef);
   cursor.Consume(1, 3);
   ExpectEnd(cursor);
-  assert(!cursor.degraded());
+  CHECK(!cursor.degraded());
 
   cursor.Begin(FindInstruction(12), 6, false);
   cursor.Consume(1, 1);
@@ -131,8 +131,8 @@ void TestExtInst() {
   cursor.Consume(1, 50);
   cursor.SetExtInstSet(nullptr);
   cursor.Consume(1, 13);
-  assert(cursor.degraded());
-  assert(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
+  CHECK(cursor.degraded());
+  CHECK(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
   cursor.Consume(1, 3);
   ExpectEnd(cursor);
 }
@@ -143,16 +143,16 @@ void TestSpecConstantOp() {
   cursor.Consume(1, 1);
   cursor.Consume(1, 2);
   OperandCursor::Field field = NextOperand(cursor);
-  assert(field.category == OperandCategory::kLiteralSpecConstantOpInteger);
+  CHECK(field.category == OperandCategory::kLiteralSpecConstantOpInteger);
   cursor.Consume(1, 128);
   field = NextOperand(cursor);
-  assert(field.category == OperandCategory::kIdRef);
+  CHECK(field.category == OperandCategory::kIdRef);
   cursor.Consume(1, 3);
   field = NextOperand(cursor);
-  assert(field.category == OperandCategory::kIdRef);
+  CHECK(field.category == OperandCategory::kIdRef);
   cursor.Consume(1, 4);
   ExpectEnd(cursor);
-  assert(!cursor.degraded());
+  CHECK(!cursor.degraded());
 }
 
 void TestDegradesAndOpaque() {
@@ -162,30 +162,30 @@ void TestDegradesAndOpaque() {
   cursor.Consume(1, 2);
   cursor.Consume(1, 3);
   ExpectEnd(cursor);
-  assert(cursor.degraded());
+  CHECK(cursor.degraded());
 
   cursor.Begin(nullptr, 3, false);
-  assert(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
+  CHECK(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
   cursor.Consume(1, 1);
-  assert(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
+  CHECK(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
   cursor.Consume(1, 2);
   ExpectEnd(cursor);
 
   cursor.Begin(FindInstruction(128), 1, false);
   ExpectEnd(cursor);
-  assert(cursor.degraded());
+  CHECK(cursor.degraded());
 
   cursor.Begin(FindInstruction(128), 3, true);
-  assert(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
+  CHECK(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
   cursor.Consume(1, 1);
-  assert(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
+  CHECK(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
   cursor.Consume(1, 2);
   ExpectEnd(cursor);
 
   cursor.Begin(FindInstruction(61), 4, false);
-  assert(cursor.Next().type == OperandCursor::FieldType::kOperand);
+  CHECK(cursor.Next().type == OperandCursor::FieldType::kOperand);
   cursor.Consume(10, 1);
-  assert(cursor.degraded());
+  CHECK(cursor.degraded());
   ExpectEnd(cursor);
 }
 
@@ -195,41 +195,41 @@ void TestDeferredBudgetAndSetRemaining() {
   {
     OperandCursor cursor;
     cursor.Begin(FindInstruction(71), 1000, false);
-    assert(NextOperand(cursor).category == OperandCategory::kIdRef);
+    CHECK(NextOperand(cursor).category == OperandCategory::kIdRef);
     cursor.Consume(1, 5);
-    assert(NextOperand(cursor).category == OperandCategory::kValueEnum);
+    CHECK(NextOperand(cursor).category == OperandCategory::kValueEnum);
     cursor.Consume(1, 30);  // Location -> 1 LiteralInteger param
     OperandCursor::Field param = NextOperand(cursor);
-    assert(param.is_enum_param);
-    assert(param.category == OperandCategory::kLiteralInteger);
+    CHECK(param.is_enum_param);
+    CHECK(param.category == OperandCategory::kLiteralInteger);
     cursor.Consume(1, 2);
     ExpectEnd(cursor);
-    assert(!cursor.degraded());
+    CHECK(!cursor.degraded());
   }
 
   // Deferred OpExtInst resolving to a known non-fixed ext-inst (DebugPrintf)
   // shrinks remaining mid-walk via SetRemaining.
   {
     const ExtInstSetDesc* dp = FindExtInstSet("NonSemantic.DebugPrintf");
-    assert(dp != nullptr);
+    CHECK(dp != nullptr);
     OperandCursor cursor;
     cursor.Begin(FindInstruction(12), 1000, false);
     cursor.Consume(1, 1);  // result type
     cursor.Consume(1, 2);  // result
     cursor.Consume(1, 3);  // set
     cursor.SetExtInstSet(dp);
-    assert(NextOperand(cursor).category ==
+    CHECK(NextOperand(cursor).category ==
            OperandCategory::kLiteralExtInstInteger);
     // Total 7 words -> 6 operand words; 3 consumed so far -> 3 remaining
     // (ext_num + 2 args).
     cursor.SetRemaining(3);
     cursor.Consume(1, 1);  // DebugPrintf
-    assert(NextOperand(cursor).category == OperandCategory::kIdRef);
+    CHECK(NextOperand(cursor).category == OperandCategory::kIdRef);
     cursor.Consume(1, 10);
-    assert(NextOperand(cursor).category == OperandCategory::kIdRef);
+    CHECK(NextOperand(cursor).category == OperandCategory::kIdRef);
     cursor.Consume(1, 11);
     ExpectEnd(cursor);
-    assert(!cursor.degraded());
+    CHECK(!cursor.degraded());
   }
 
   // Deferred OpExtInst resolving to an unknown set shrinks remaining mid-walk
@@ -243,8 +243,8 @@ void TestDeferredBudgetAndSetRemaining() {
     cursor.SetExtInstSet(nullptr);
     cursor.SetRemaining(2);  // ext_num + 1 opaque operand
     cursor.Consume(1, 77);
-    assert(cursor.degraded());
-    assert(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
+    CHECK(cursor.degraded());
+    CHECK(cursor.Next().type == OperandCursor::FieldType::kOpaqueWord);
     cursor.Consume(1, 99);
     ExpectEnd(cursor);
   }

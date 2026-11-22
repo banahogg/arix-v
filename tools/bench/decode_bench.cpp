@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "arixv.h"
+#include "arixv/arixv.h"
 #include "model.h"
 
 namespace {
@@ -119,10 +119,14 @@ int main(int argc, char** argv) {
       c.encoded = arixv::Encode(c.input.data(), c.input.size());
     }
     std::vector<uint8_t> decoded;
-    const arixv::Status status = raw_residual
-        ? arixv::DecodeModuleRawResidual(c.encoded.data(), c.encoded.size(),
-                                         c.input.size(), decoded)
-        : arixv::Decode(c.encoded.data(), c.encoded.size(), decoded);
+    arixv::Status status = arixv::Status::kOk;
+    if (raw_residual) {
+      decoded.resize(c.input.size());
+      status = arixv::DecodeModuleRawResidual(
+          c.encoded.data(), c.encoded.size(), c.input.size(), decoded.data());
+    } else {
+      status = arixv::Decode(c.encoded.data(), c.encoded.size(), decoded);
+    }
     if (status != arixv::Status::kOk || decoded != c.input) {
       std::cerr << "roundtrip failed for " << path << "\n";
       return 1;
@@ -143,15 +147,19 @@ int main(int argc, char** argv) {
   }
   for (const Case& c : cases) {
     std::vector<uint8_t> decoded;
+    if (raw_residual) {
+      decoded.resize(c.input.size());
+    }
     const auto start = std::chrono::steady_clock::now();
     for (int iter = 0; iter < iters; ++iter) {
-      decoded.clear();
-      const arixv::Status status =
-          raw_residual
-              ? arixv::DecodeModuleRawResidual(c.encoded.data(),
-                                               c.encoded.size(),
-                                               c.input.size(), decoded)
-              : arixv::Decode(c.encoded.data(), c.encoded.size(), decoded);
+      arixv::Status status = arixv::Status::kOk;
+      if (raw_residual) {
+        status = arixv::DecodeModuleRawResidual(
+            c.encoded.data(), c.encoded.size(), c.input.size(), decoded.data());
+      } else {
+        decoded.clear();
+        status = arixv::Decode(c.encoded.data(), c.encoded.size(), decoded);
+      }
       if (status != arixv::Status::kOk ||
           decoded.size() != c.input.size()) {
         std::cerr << "decode failed for " << c.path << "\n";

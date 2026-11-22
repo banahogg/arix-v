@@ -12,6 +12,7 @@
 #include "tuning.h"
 
 namespace arixv {
+inline namespace v1 {
 
 #if ARIXV_KPROB_BITS == 12 && ARIXV_KPROB_SHIFT >= 1 && \
     ARIXV_KPROB_SHIFT <= 5 && ARIXV_KPROB_ADAPT_MIN_SHIFT == 1
@@ -291,7 +292,9 @@ class RangeDecoder {
            static_cast<size_t>(range_ == 0xFFFFFFFFu);
   }
 
-  bool exhausted() const { return exhausted_ || pos_ > size_ + TailSlack(); }
+  bool exhausted() const {
+    return exhausted_ || (pos_ > size_ && pos_ - size_ > TailSlack());
+  }
   // Bytes the encoder actually wrote (reads minus the don't-care tail).
   size_t consumed_size() const {
     const size_t slack = TailSlack();
@@ -339,7 +342,7 @@ class RangeDecoder {
     if (pos < size_) {
       return data_[pos++];
     }
-    if (pos < size_ + kMaxRangeTailSlack) {
+    if (pos - size_ < kMaxRangeTailSlack) {
       ++pos;
       return 0;
     }
@@ -363,6 +366,7 @@ class RangeDecoder {
   bool exhausted_ = false;
 };
 
+}  // namespace v1
 }  // namespace arixv
 
 #endif  // ARIXV_RANGE_CODER_H_

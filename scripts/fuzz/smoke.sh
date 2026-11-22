@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # Short coverage-guided fuzz run: libFuzzer + ASan/UBSan on the round-trip
 # and hostile-decode harnesses, a few minutes in total. Sits between the
-# deterministic `make test` smoke fuzzer and scripts/fuzz/overnight.sh; run it
-# (via `make fuzz-smoke`) after major model or tracker changes and before
-# pushing. Exits non-zero on any crash or sanitizer report.
+# deterministic CTest smoke fuzzer and scripts/fuzz/overnight.sh; run it
+# (via `cmake --preset fuzz-smoke && cmake --build --preset fuzz-smoke --target fuzz-smoke`)
+# after major model or tracker changes and before pushing. Exits non-zero on
+# any crash or sanitizer report.
 #
 # Knobs (environment):
 #   FUZZ_SMOKE_SECONDS  seconds per harness (default 120)
 #   FUZZ_SMOKE_JOBS     parallel fuzzing processes (default: nproc)
 #   ARIXV_CORPUS        SPIR-V seed directory (default corpus/spv)
-#   BUILD_DIR           where the harness binaries live (default build)
+#   BUILD_DIR           where the harness binaries live (default build/fuzz-smoke)
 #   RUN_WRAP            optional process wrapper, e.g. "setarch $(uname -m) -R"
 #
 # The working corpora persist in $BUILD_DIR/fuzz-smoke/*/corpus, so repeated
-# runs start from previously reached coverage; `make clean` resets them.
+# runs start from previously reached coverage; removing $BUILD_DIR resets them.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -21,14 +22,14 @@ cd "$ROOT"
 
 SECS="${FUZZ_SMOKE_SECONDS:-120}"
 JOBS="${FUZZ_SMOKE_JOBS:-$(nproc)}"
-BUILD="${BUILD_DIR:-build}"
+BUILD="${BUILD_DIR:-build/fuzz-smoke}"
 CORPUS="${ARIXV_CORPUS:-corpus/spv}"
 SEED_KB="${FUZZ_SMOKE_SEED_KB:-100000}"
 RUN_WRAP="${RUN_WRAP:-}"
 OUT="$BUILD/fuzz-smoke"
 
 for bin in "$BUILD/fuzz_roundtrip_lf" "$BUILD/fuzz_decode_lf" "$BUILD/arixv"; do
-  [ -x "$bin" ] || { echo "fuzz-smoke: missing $bin (run via make fuzz-smoke)" >&2; exit 2; }
+  [ -x "$bin" ] || { echo "fuzz-smoke: missing $bin (build via cmake --preset fuzz-smoke)" >&2; exit 2; }
 done
 if [ ! -d "$CORPUS" ]; then
   echo "fuzz-smoke: SPIR-V corpus is missing: $CORPUS" >&2

@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "arixv.h"
+#include "arixv/arixv.h"
 
 namespace {
 

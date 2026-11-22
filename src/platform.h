@@ -45,7 +45,8 @@
 #define ARIXV_HAS_SSE2 0
 #endif
 
-#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(ARIXV_NO_SIMD)
+#if ((defined(__aarch64__) && defined(__ARM_NEON)) || defined(_M_ARM64)) && \
+    !defined(ARIXV_NO_SIMD)
 #define ARIXV_HAS_NEON 1
 #else
 #define ARIXV_HAS_NEON 0
@@ -57,7 +58,14 @@
 #define ARIXV_HAS_EXCEPTIONS 0
 #endif
 
+// Encoder support defaults to enabled for standalone / source-copy builds.
+// CMake decoder-only builds set ARIXV_ENCODER=0 to omit encoder-only code.
+#ifndef ARIXV_ENCODER
+#define ARIXV_ENCODER 1
+#endif
+
 namespace arixv {
+inline namespace v1 {
 
 // Count leading zeros in a non-zero 32-bit unsigned integer.
 ARIXV_FORCE_INLINE int Clz32(uint32_t x) {
@@ -97,6 +105,7 @@ ARIXV_FORCE_INLINE int Ctz32(uint32_t x) {
 #endif
 }
 
+}  // namespace v1
 }  // namespace arixv
 
 #endif  // ARIXV_PLATFORM_H_

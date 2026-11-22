@@ -1,5 +1,5 @@
 #include <algorithm>
-#include <cassert>
+#include "test_util.h"
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "arixv.h"
+#include "arixv/arixv.h"
 #include "model.h"
 #include "prob.h"
 #include "tracker.h"
@@ -17,8 +17,8 @@
 namespace {
 
 uint8_t ContainerMode(const std::vector<uint8_t>& encoded) {
-  assert(encoded.size() > arixv::kContainerMagicBytes);
-  assert(std::equal(arixv::kContainerMagic,
+  CHECK(encoded.size() > arixv::kContainerMagicBytes);
+  CHECK(std::equal(arixv::kContainerMagic,
                     arixv::kContainerMagic + arixv::kContainerMagicBytes,
                     encoded.begin()));
   return encoded[arixv::kContainerMagicBytes];
@@ -95,23 +95,23 @@ void RoundTrip(const std::vector<uint8_t>& input, bool force_coded,
   opts.force_coded = force_coded;
   const std::vector<uint8_t> encoded =
       arixv::Encode(input.data(), input.size(), opts);
-  assert(!encoded.empty());
+  CHECK(!encoded.empty());
   if (expected_mode >= 0) {
-    assert(ContainerMode(encoded) == expected_mode);
+    CHECK(ContainerMode(encoded) == expected_mode);
   }
   std::vector<uint8_t> decoded;
-  assert(arixv::Decode(encoded.data(), encoded.size(), decoded) ==
+  CHECK(arixv::Decode(encoded.data(), encoded.size(), decoded) ==
          arixv::Status::kOk);
-  assert(decoded == input);
+  CHECK(decoded == input);
 
   if (arixv::IsSpirvModelEligible(input.data(), input.size())) {
     std::vector<uint8_t> raw;
     arixv::EncodeModuleRawResidual(input.data(), input.size(), raw);
-    std::vector<uint8_t> raw_decoded;
-    assert(arixv::DecodeModuleRawResidual(raw.data(), raw.size(), input.size(),
-                                          raw_decoded) ==
+    std::vector<uint8_t> raw_decoded(input.size());
+    CHECK(arixv::DecodeModuleRawResidual(raw.data(), raw.size(), input.size(),
+                                          raw_decoded.data()) ==
            arixv::Status::kOk);
-    assert(raw_decoded == input);
+    CHECK(raw_decoded == input);
   }
 }
 
@@ -135,7 +135,7 @@ void CorpusMode2RoundTrips() {
   if (files.empty()) {
     return;
   }
-  assert(files.size() >= 1080);
+  CHECK(files.size() >= 1080);
 
   const std::filesystem::path swapped =
       "corpus/spv/119e12dcf8638cd31134f4a10f50be49da9c250b214f7c2dc3c47b994b557de1.spv";
@@ -146,13 +146,13 @@ void CorpusMode2RoundTrips() {
 
   for (const auto& path : files) {
     std::vector<uint8_t> input;
-    assert(ReadFile(path, input));
+    CHECK(ReadFile(path, input));
     RoundTrip(input, false);
   }
 
   std::vector<uint8_t> swapped_input;
-  assert(ReadFile(swapped, swapped_input));
-  assert((swapped_input.size() % 4) != 0);
+  CHECK(ReadFile(swapped, swapped_input));
+  CHECK((swapped_input.size() % 4) != 0);
   RoundTrip(swapped_input, true, arixv::kModeCoded);
 }
 
@@ -194,11 +194,11 @@ void HostileModules() {
       Module({op_memory_model, 0, 1}, 0x00010300u, 0, 1);
   std::vector<uint8_t> encoded =
       arixv::Encode(module.data(), module.size(), opts);
-  assert(!encoded.empty());
-  assert(ContainerMode(encoded) == arixv::kModeSpirv);
+  CHECK(!encoded.empty());
+  CHECK(ContainerMode(encoded) == arixv::kModeSpirv);
   encoded.push_back(0);
   std::vector<uint8_t> decoded;
-  assert(arixv::Decode(encoded.data(), encoded.size(), decoded) ==
+  CHECK(arixv::Decode(encoded.data(), encoded.size(), decoded) ==
          arixv::Status::kBadContainer);
 }
 
@@ -208,27 +208,26 @@ void RawResidualValidation() {
              0x00010300u, 0, 4);
   std::vector<uint8_t> raw;
   arixv::EncodeModuleRawResidual(module.data(), module.size(), raw);
-  assert(!raw.empty());
+  CHECK(!raw.empty());
 
   for (size_t prefix = 0; prefix < raw.size(); ++prefix) {
-    std::vector<uint8_t> decoded;
-    assert(arixv::DecodeModuleRawResidual(raw.data(), prefix, module.size(),
-                                          decoded) != arixv::Status::kOk);
-    assert(decoded.empty());
+    std::vector<uint8_t> decoded(module.size());
+    CHECK(arixv::DecodeModuleRawResidual(raw.data(), prefix, module.size(),
+                                          decoded.data()) !=
+           arixv::Status::kOk);
   }
 
   std::vector<uint8_t> padded = raw;
   padded.push_back(0);
-  std::vector<uint8_t> decoded;
-  assert(arixv::DecodeModuleRawResidual(padded.data(), padded.size(),
-                                        module.size(), decoded) ==
+  std::vector<uint8_t> decoded(module.size());
+  CHECK(arixv::DecodeModuleRawResidual(padded.data(), padded.size(),
+                                        module.size(), decoded.data()) ==
          arixv::Status::kBadContainer);
-  assert(decoded.empty());
 
   // A rejected decode leaves nothing behind for the next call.
-  assert(arixv::DecodeModuleRawResidual(raw.data(), raw.size(), module.size(),
-                                        decoded) == arixv::Status::kOk);
-  assert(decoded == module);
+  CHECK(arixv::DecodeModuleRawResidual(raw.data(), raw.size(), module.size(),
+                                        decoded.data()) == arixv::Status::kOk);
+  CHECK(decoded == module);
 }
 
 void M3FieldModules() {
@@ -366,13 +365,13 @@ void MutatedCorpusRoundTrips() {
   if (files.empty()) {
     return;
   }
-  assert(files.size() >= 10);
+  CHECK(files.size() >= 10);
   files.resize(10);
 
   std::vector<std::vector<uint8_t>> pool;
   for (const auto& path : files) {
     std::vector<uint8_t> input;
-    assert(ReadFile(path, input));
+    CHECK(ReadFile(path, input));
     pool.push_back(std::move(input));
   }
 
@@ -536,8 +535,8 @@ void KindRecencyListTests() {
 
     // Forward reference to an undefined label (%50) and variable (%20) has
     // type_list == 0.
-    assert(tracker.OnIdUse(50).type_list == 0);
-    assert(tracker.OnIdUse(20).type_list == 0);
+    CHECK(tracker.OnIdUse(50).type_list == 0);
+    CHECK(tracker.OnIdUse(20).type_list == 0);
 
     // Types alias recent_types_ via kRecentTypesList.
     feed({Op(19, 2), 1});             // %1 = OpTypeVoid
@@ -548,10 +547,10 @@ void KindRecencyListTests() {
     feed({Op(33, 3), 6, 1}, 1);       // %6 = OpTypeFunction %1
     feed({Op(33, 3), 7, 2}, 2);       // %7 = OpTypeFunction %2
     const auto* t2 = tracker.Find(2);
-    assert(t2 != nullptr && t2->kind == arixv::Tracker::IdKind::kType);
-    assert(t2->type_list == arixv::Tracker::kRecentTypesList);
-    assert(tracker.TypedList(t2->type_list) == &tracker.recent_types());
-    assert(tracker.TypedList(0) == nullptr);
+    CHECK(t2 != nullptr && t2->kind == arixv::Tracker::IdKind::kType);
+    CHECK(t2->type_list == arixv::Tracker::kRecentTypesList);
+    CHECK(tracker.TypedList(t2->type_list) == &tracker.recent_types());
+    CHECK(tracker.TypedList(0) == nullptr);
 
     // Variables of distinct pointer types (%4 vs %5) share one unified
     // kVariable list, without creating per-pointer-type lists.
@@ -559,17 +558,17 @@ void KindRecencyListTests() {
     feed({Op(59, 4), 5, 21, 7});      // %21 = OpVariable %5 Function
     const auto* v20 = tracker.Find(20);
     const auto* v21 = tracker.Find(21);
-    assert(v20 != nullptr && v21 != nullptr);
-    assert(v20->kind == arixv::Tracker::IdKind::kVariable);
-    assert(v21->kind == arixv::Tracker::IdKind::kVariable);
-    assert(v20->type_list != 0 && v20->type_list == v21->type_list);
-    assert(tracker.Find(4)->values_list == 0);
-    assert(tracker.Find(5)->values_list == 0);
+    CHECK(v20 != nullptr && v21 != nullptr);
+    CHECK(v20->kind == arixv::Tracker::IdKind::kVariable);
+    CHECK(v21->kind == arixv::Tracker::IdKind::kVariable);
+    CHECK(v20->type_list != 0 && v20->type_list == v21->type_list);
+    CHECK(tracker.Find(4)->values_list == 0);
+    CHECK(tracker.Find(5)->values_list == 0);
     const arixv::RecencyList* var_list = tracker.TypedList(v20->type_list);
-    assert(var_list != nullptr && var_list->size() == 2);
-    assert(var_list->at(0) == 21 && var_list->at(1) == 20);
-    assert(tracker.OnIdUse(20).type_list == v20->type_list);
-    assert(var_list->at(0) == 20);
+    CHECK(var_list != nullptr && var_list->size() == 2);
+    CHECK(var_list->at(0) == 21 && var_list->at(1) == 20);
+    CHECK(tracker.OnIdUse(20).type_list == v20->type_list);
+    CHECK(var_list->at(0) == 20);
 
     // Functions of distinct return types (%1 void vs %2 float) share one
     // unified kFunction list.
@@ -578,9 +577,9 @@ void KindRecencyListTests() {
     feed({Op(54, 5), 2, 31, 0, 7}, 7);  // %31 = OpFunction %2 None %7
     const auto* f30 = tracker.Find(30);
     const auto* f31 = tracker.Find(31);
-    assert(f30 != nullptr && f31 != nullptr);
-    assert(f30->type_list != 0 && f30->type_list == f31->type_list);
-    assert(f30->type_list != v20->type_list);
+    CHECK(f30 != nullptr && f31 != nullptr);
+    CHECK(f30->type_list != 0 && f30->type_list == f31->type_list);
+    CHECK(f30->type_list != v20->type_list);
 
     // Ext-inst sets share a dedicated kExtInstSet list.
     std::vector<uint32_t> ext1 = {Op(11, 6), 40};
@@ -591,16 +590,16 @@ void KindRecencyListTests() {
     feed(ext2);
     const auto* e40 = tracker.Find(40);
     const auto* e41 = tracker.Find(41);
-    assert(e40 != nullptr && e41 != nullptr);
-    assert(e40->type_list != 0 && e40->type_list == e41->type_list);
-    assert(e40->type_list != v20->type_list &&
+    CHECK(e40 != nullptr && e41 != nullptr);
+    CHECK(e40->type_list != 0 && e40->type_list == e41->type_list);
+    CHECK(e40->type_list != v20->type_list &&
            e40->type_list != f30->type_list);
 
     // Labels keep type_list == 0 (forward-ref and after definition).
     feed({Op(248, 2), 50});  // %50 = OpLabel
     const auto* l50 = tracker.Find(50);
-    assert(l50 != nullptr && l50->kind == arixv::Tracker::IdKind::kLabel);
-    assert(l50->type_list == 0);
+    CHECK(l50 != nullptr && l50->kind == arixv::Tracker::IdKind::kLabel);
+    CHECK(l50->type_list == 0);
 
     // Hostile redefinition: redefining a kType ID (%2) as untyped OpString
     // must clear type_list to 0 (no stale kRecentTypesList handle).
@@ -608,20 +607,20 @@ void KindRecencyListTests() {
     AppendStringWords("x", str_redef);
     feed(str_redef);
     const auto* redef2 = tracker.Find(2);
-    assert(redef2 != nullptr && redef2->kind == arixv::Tracker::IdKind::kValue);
-    assert(redef2->type_list == 0);
-    assert(tracker.OnIdUse(2).type_list == 0);
+    CHECK(redef2 != nullptr && redef2->kind == arixv::Tracker::IdKind::kValue);
+    CHECK(redef2->type_list == 0);
+    CHECK(tracker.OnIdUse(2).type_list == 0);
 
     // Reset() clears kind_lists_ and typed_lists_ cleanly.
     tracker.Reset();
-    assert(tracker.TypedList(1) == nullptr);
-    assert(tracker.TypedList(arixv::Tracker::kRecentTypesList) ==
+    CHECK(tracker.TypedList(1) == nullptr);
+    CHECK(tracker.TypedList(arixv::Tracker::kRecentTypesList) ==
            &tracker.recent_types());
-    assert(tracker.recent_types().size() == 0);
+    CHECK(tracker.recent_types().size() == 0);
     feed({Op(22, 3), 1, 32});
     feed({Op(32, 4), 2, 7, 1}, 1);
     feed({Op(59, 4), 2, 3, 7});
-    assert(tracker.Find(3)->type_list == 1);
+    CHECK(tracker.Find(3)->type_list == 1);
   }
 
   // Round-trip module exercising repeated type operands, multiple ext-inst
@@ -720,20 +719,20 @@ void ColdStartPriorAndBoundaryTests() {
     const uint32_t top_w[4] = {16, 16, 1, 0};
     arixv::SymbolCdf expected_root;
     arixv::SymbolCdfSetPrior<4>(expected_root, top_w);
-    assert(std::memcmp(arixv::kUint32LengthRootPrior.d, expected_root.d,
+    CHECK(std::memcmp(arixv::kUint32LengthRootPrior.d, expected_root.d,
                        sizeof(expected_root.d)) == 0);
 
     const uint32_t leaf32_w[16] = {1, 0, 0, 0, 0, 0, 0, 0,
                                    0, 0, 0, 0, 0, 0, 0, 0};
     arixv::SymbolCdf expected_leaf32;
     arixv::SymbolCdfSetPrior<16>(expected_leaf32, leaf32_w);
-    assert(std::memcmp(arixv::kUint32LengthLeaf32Prior.d, expected_leaf32.d,
+    CHECK(std::memcmp(arixv::kUint32LengthLeaf32Prior.d, expected_leaf32.d,
                        sizeof(expected_leaf32.d)) == 0);
 
     const arixv::BitTree<6> tree32 = arixv::MakeUintLengthTreePrior(0, 32);
     const arixv::UintModel fresh;
     if constexpr (arixv::kUintLengthBits == 6) {
-      assert(std::memcmp(fresh.length.tables.data(), tree32.tables.data(),
+      CHECK(std::memcmp(fresh.length.tables.data(), tree32.tables.data(),
                          sizeof(tree32.tables)) == 0);
     }
 
@@ -744,11 +743,11 @@ void ColdStartPriorAndBoundaryTests() {
     arixv::SymbolCdf exp_r, exp_l0, zero{};
     arixv::SymbolCdfSetPrior<4>(exp_r, exp_top);
     arixv::SymbolCdfSetPrior<16>(exp_l0, exp_leaf0);
-    assert(std::memcmp(exp_tree.tables[0].d, exp_r.d, sizeof(exp_r.d)) == 0);
-    assert(std::memcmp(exp_tree.tables[1].d, exp_l0.d, sizeof(exp_l0.d)) == 0);
-    assert(std::memcmp(exp_tree.tables[2].d, zero.d, sizeof(zero.d)) == 0);
-    assert(std::memcmp(exp_tree.tables[3].d, zero.d, sizeof(zero.d)) == 0);
-    assert(std::memcmp(exp_tree.tables[4].d, zero.d, sizeof(zero.d)) == 0);
+    CHECK(std::memcmp(exp_tree.tables[0].d, exp_r.d, sizeof(exp_r.d)) == 0);
+    CHECK(std::memcmp(exp_tree.tables[1].d, exp_l0.d, sizeof(exp_l0.d)) == 0);
+    CHECK(std::memcmp(exp_tree.tables[2].d, zero.d, sizeof(zero.d)) == 0);
+    CHECK(std::memcmp(exp_tree.tables[3].d, zero.d, sizeof(zero.d)) == 0);
+    CHECK(std::memcmp(exp_tree.tables[4].d, zero.d, sizeof(zero.d)) == 0);
 
     const arixv::BitTree<6> mant_tree = arixv::MakeUintLengthTreePrior(1, 23);
     const uint32_t mant_top[4] = {15, 8, 0, 0};
@@ -760,11 +759,11 @@ void ColdStartPriorAndBoundaryTests() {
     arixv::SymbolCdfSetPrior<4>(mant_r, mant_top);
     arixv::SymbolCdfSetPrior<16>(mant_l0, mant_leaf0);
     arixv::SymbolCdfSetPrior<16>(mant_l1, mant_leaf1);
-    assert(std::memcmp(mant_tree.tables[0].d, mant_r.d, sizeof(mant_r.d)) == 0);
-    assert(std::memcmp(mant_tree.tables[1].d, mant_l0.d, sizeof(mant_l0.d)) == 0);
-    assert(std::memcmp(mant_tree.tables[2].d, mant_l1.d, sizeof(mant_l1.d)) == 0);
-    assert(std::memcmp(mant_tree.tables[3].d, zero.d, sizeof(zero.d)) == 0);
-    assert(std::memcmp(mant_tree.tables[4].d, zero.d, sizeof(zero.d)) == 0);
+    CHECK(std::memcmp(mant_tree.tables[0].d, mant_r.d, sizeof(mant_r.d)) == 0);
+    CHECK(std::memcmp(mant_tree.tables[1].d, mant_l0.d, sizeof(mant_l0.d)) == 0);
+    CHECK(std::memcmp(mant_tree.tables[2].d, mant_l1.d, sizeof(mant_l1.d)) == 0);
+    CHECK(std::memcmp(mant_tree.tables[3].d, zero.d, sizeof(zero.d)) == 0);
+    CHECK(std::memcmp(mant_tree.tables[4].d, zero.d, sizeof(zero.d)) == 0);
   }
 
   // 32-bit and 0 uint boundary values across bit widths 0, 1, 15, 16, 31, 32
@@ -984,7 +983,7 @@ void AdaptiveIdListSourceTests() {
     opts.force_coded = true;
     const std::vector<uint8_t> encoded =
         arixv::Encode(mod.data(), mod.size(), opts);
-    assert(encoded.size() * 2 < mod.size());
+    CHECK(encoded.size() * 2 < mod.size());
   }
 
   // 2. Hostile / non-canonical edge cases for adaptive list-source tracking:
@@ -1072,81 +1071,81 @@ void TypeAlgebraAndVariableStorageClassTests() {
     feed({Op(27, 3), 21, 20}, 20);           // %21 = OpTypeSampledImage %20
     feed({Op(33, 5), 22, 5, 3, 7}, 5);       // %22 = OpTypeFunction float(uint, vec4)
 
-    assert(tracker.bool_type_id() == 2);
-    assert(tracker.ScalarTypeOf(0, 32) == 3);
-    assert(tracker.ScalarTypeOf(1, 32) == 4);
-    assert(tracker.ScalarTypeOf(2, 32) == 5);
-    assert(tracker.ScalarTypeOf(2, 16) == 6);
-    assert(tracker.ScalarTypeOf(2, 64) == 0);
+    CHECK(tracker.bool_type_id() == 2);
+    CHECK(tracker.ScalarTypeOf(0, 32) == 3);
+    CHECK(tracker.ScalarTypeOf(1, 32) == 4);
+    CHECK(tracker.ScalarTypeOf(2, 32) == 5);
+    CHECK(tracker.ScalarTypeOf(2, 16) == 6);
+    CHECK(tracker.ScalarTypeOf(2, 64) == 0);
 
     uint32_t sc = 99;
-    assert(tracker.PointerStorageClass(18, &sc) && sc == 0);
-    assert(tracker.PointerStorageClass(19, &sc) && sc == 7);
-    assert(!tracker.PointerStorageClass(17, &sc));
-    assert(!tracker.PointerStorageClass(999, &sc));
+    CHECK(tracker.PointerStorageClass(18, &sc) && sc == 0);
+    CHECK(tracker.PointerStorageClass(19, &sc) && sc == 7);
+    CHECK(!tracker.PointerStorageClass(17, &sc));
+    CHECK(!tracker.PointerStorageClass(999, &sc));
 
     uint32_t cv = 99;
-    assert(tracker.ConstantIntValue(11, &cv) && cv == 2);
-    assert(tracker.ConstantIntValue(14, &cv) && cv == 0);
-    assert(!tracker.ConstantIntValue(15, &cv));  // float constant
+    CHECK(tracker.ConstantIntValue(11, &cv) && cv == 2);
+    CHECK(tracker.ConstantIntValue(14, &cv) && cv == 0);
+    CHECK(!tracker.ConstantIntValue(15, &cv));  // float constant
 
-    assert(tracker.PointerTypeOf(0, 17) == 18);
-    assert(tracker.PointerTypeOf(7, 5) == 19);
-    assert(tracker.PointerTypeOf(7, 17) == 0);
-    assert(tracker.VectorTypeOf(5, 4) == 7);
-    assert(tracker.VectorTypeOf(2, 4) == 9);
-    assert(tracker.MatrixTypeOf(7, 3) == 10);
-    assert(tracker.ArrayTypeOf(10, 2) == 16);
-    assert(arixv::Tracker::SampledImageTypeOf(*tracker.Find(20)) == 21);
+    CHECK(tracker.PointerTypeOf(0, 17) == 18);
+    CHECK(tracker.PointerTypeOf(7, 5) == 19);
+    CHECK(tracker.PointerTypeOf(7, 17) == 0);
+    CHECK(tracker.VectorTypeOf(5, 4) == 7);
+    CHECK(tracker.VectorTypeOf(2, 4) == 9);
+    CHECK(tracker.MatrixTypeOf(7, 3) == 10);
+    CHECK(tracker.ArrayTypeOf(10, 2) == 16);
+    CHECK(arixv::Tracker::SampledImageTypeOf(*tracker.Find(20)) == 21);
 
     const uint32_t smembers[2] = {5, 16};
-    assert(tracker.StructTypeOf(smembers, 2) == 17);
+    CHECK(tracker.StructTypeOf(smembers, 2) == 17);
     const uint32_t swrong[2] = {16, 5};
-    assert(tracker.StructTypeOf(swrong, 2) == 0);
+    CHECK(tracker.StructTypeOf(swrong, 2) == 0);
 
     // Nested composite walk: struct{float, mat3x4[2]} -> [1]=mat3x4[2] ->
     // [dyn]=mat3x4 -> [dyn]=vec4 -> [dyn]=float.
     const uint32_t id_path[4] = {13, 999, 999, 999};
-    assert(tracker.WalkCompositeByIds(17, id_path, 1) == 16);
-    assert(tracker.WalkCompositeByIds(17, id_path, 2) == 10);
-    assert(tracker.WalkCompositeByIds(17, id_path, 3) == 7);
-    assert(tracker.WalkCompositeByIds(17, id_path, 4) == 5);
+    CHECK(tracker.WalkCompositeByIds(17, id_path, 1) == 16);
+    CHECK(tracker.WalkCompositeByIds(17, id_path, 2) == 10);
+    CHECK(tracker.WalkCompositeByIds(17, id_path, 3) == 7);
+    CHECK(tracker.WalkCompositeByIds(17, id_path, 4) == 5);
     // Out-of-range struct index (2 >= 2) and non-constant struct index (999).
     const uint32_t bad_idx1[1] = {11};
     const uint32_t bad_idx2[1] = {999};
-    assert(tracker.WalkCompositeByIds(17, bad_idx1, 1) == 0);
-    assert(tracker.WalkCompositeByIds(17, bad_idx2, 1) == 0);
+    CHECK(tracker.WalkCompositeByIds(17, bad_idx1, 1) == 0);
+    CHECK(tracker.WalkCompositeByIds(17, bad_idx2, 1) == 0);
     // OpConstantNull int=0 selects member 0 (float).
     const uint32_t null_idx[1] = {14};
-    assert(tracker.WalkCompositeByIds(17, null_idx, 1) == 5);
+    CHECK(tracker.WalkCompositeByIds(17, null_idx, 1) == 5);
 
     const uint32_t lit_path[4] = {1, 0, 2, 3};
-    assert(tracker.WalkCompositeByLiterals(17, lit_path, 1) == 16);
-    assert(tracker.WalkCompositeByLiterals(17, lit_path, 2) == 10);
-    assert(tracker.WalkCompositeByLiterals(17, lit_path, 3) == 7);
-    assert(tracker.WalkCompositeByLiterals(17, lit_path, 4) == 5);
+    CHECK(tracker.WalkCompositeByLiterals(17, lit_path, 1) == 16);
+    CHECK(tracker.WalkCompositeByLiterals(17, lit_path, 2) == 10);
+    CHECK(tracker.WalkCompositeByLiterals(17, lit_path, 3) == 7);
+    CHECK(tracker.WalkCompositeByLiterals(17, lit_path, 4) == 5);
     const uint32_t bad_lit[1] = {2};
-    assert(tracker.WalkCompositeByLiterals(17, bad_lit, 1) == 0);
+    CHECK(tracker.WalkCompositeByLiterals(17, bad_lit, 1) == 0);
 
     // Function parameter tracking: OpFunction -> params 0, 1 -> extra -> OpLabel.
-    assert(tracker.CurrentFunctionParamType() == 0);
+    CHECK(tracker.CurrentFunctionParamType() == 0);
     feed({Op(54, 5), 5, 30, 0, 22}, 22);     // OpFunction %5 %30 None %22
-    assert(tracker.CurrentFunctionParamType() == 3);
+    CHECK(tracker.CurrentFunctionParamType() == 3);
     feed({Op(55, 3), 3, 31});                // param 0
-    assert(tracker.CurrentFunctionParamType() == 7);
+    CHECK(tracker.CurrentFunctionParamType() == 7);
     feed({Op(55, 3), 7, 32});                // param 1
-    assert(tracker.CurrentFunctionParamType() == 0);
+    CHECK(tracker.CurrentFunctionParamType() == 0);
     feed({Op(55, 3), 5, 33});                // extra hostile param
-    assert(tracker.CurrentFunctionParamType() == 0);
+    CHECK(tracker.CurrentFunctionParamType() == 0);
     feed({Op(248, 2), 34});                  // OpLabel clears header state
-    assert(tracker.CurrentFunctionParamType() == 0);
+    CHECK(tracker.CurrentFunctionParamType() == 0);
 
     // Cyclic struct & depth > 32 must terminate cleanly.
     feed({Op(30, 3), 40, 40}, 40);           // %40 = OpTypeStruct %40
     const uint32_t cyc_ids[4] = {12, 12, 12, 12};
-    assert(tracker.WalkCompositeByIds(40, cyc_ids, 4) == 40);
+    CHECK(tracker.WalkCompositeByIds(40, cyc_ids, 4) == 40);
     std::vector<uint32_t> deep_lits(40, 0u);
-    assert(tracker.WalkCompositeByLiterals(40, deep_lits.data(), 40) == 0);
+    CHECK(tracker.WalkCompositeByLiterals(40, deep_lits.data(), 40) == 0);
   }
 
   // Full valid SPIR-V module exercising B4, B5, and every A2 rule.
@@ -1591,11 +1590,11 @@ void DeferredWordCountModules() {
     opts.force_coded = true;
     const std::vector<uint8_t> encoded =
         arixv::Encode(mod.data(), mod.size(), opts);
-    assert(ContainerMode(encoded) == arixv::kModeSpirv);
+    CHECK(ContainerMode(encoded) == arixv::kModeSpirv);
     for (size_t prefix = 0; prefix < encoded.size(); ++prefix) {
       std::vector<uint8_t> out;
       const arixv::Status st = arixv::Decode(encoded.data(), prefix, out);
-      assert(st != arixv::Status::kOk);
+      CHECK(st != arixv::Status::kOk);
     }
     for (size_t i = arixv::kContainerMagicBytes + 1; i < encoded.size(); ++i) {
       std::vector<uint8_t> mutated = encoded;

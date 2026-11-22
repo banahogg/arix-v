@@ -27,6 +27,7 @@
 #include "tuning.h"
 
 namespace arixv {
+inline namespace v1 {
 
 // Logical module sections. A *context input*, advanced
 // monotonically from observed opcodes — never an enforced rule (out-of-order
@@ -362,6 +363,12 @@ class Tracker {
    private:
     void Rehash(size_t slot_count);
 
+    size_t HashSlot(uint32_t id) const {
+      return static_cast<size_t>((id * kIdHashMul) >> shift_);
+    }
+
+    static constexpr uint32_t kIdHashMul = 2654435761u;
+
     // Parallel arrays of capacity_ (a power of two) slots. Only keys_ is
     // zero-initialized: keys_[i] == 0 means empty, and values_[i] is written
     // when a slot is claimed.
@@ -370,6 +377,7 @@ class Tracker {
     size_t capacity_ = 0;
     size_t size_ = 0;                 // occupied non-zero slots
     size_t mask_ = 0;                 // capacity_ - 1 once allocated
+    unsigned shift_ = 32;             // 32 - log2(capacity_)
     bool has_zero_ = false;
     IdInfo zero_info_{};
   };
@@ -445,4 +453,5 @@ uint32_t SpanForField(const OperandCursor::Field& field,
                       const uint32_t* words, uint32_t word_index,
                       uint32_t remaining);
 
+}  // namespace v1
 }  // namespace arixv

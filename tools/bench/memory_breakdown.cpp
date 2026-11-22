@@ -17,10 +17,12 @@
 #include <string>
 #include <vector>
 #include "arena.h"
-#include "arixv.h"
+#include "arixv/arixv.h"
 namespace arixv {
+inline namespace v1 {
 extern std::map<std::string, std::pair<uint64_t, uint64_t>> g_model_members;
 extern uint64_t g_model_decodes;
+}
 }
 extern "C" void* __libc_malloc(size_t);
 static bool g_on = false; static uint64_t g_malloc_bytes = 0;

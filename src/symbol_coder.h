@@ -31,12 +31,17 @@
 #endif
 #if ARIXV_HAS_NEON
 #define ARIXV_SYMBOL_NEON 1
+#if defined(_MSC_VER)
+#include <arm64_neon.h>
+#else
 #include <arm_neon.h>
+#endif
 #else
 #define ARIXV_SYMBOL_NEON 0
 #endif
 
 namespace arixv {
+inline namespace v1 {
 
 constexpr int kSymbolScaleBits = 15;
 constexpr uint32_t kSymbolScale = 1u << kSymbolScaleBits;
@@ -429,7 +434,7 @@ class RansEncoder {
 class RansDecoder {
  public:
   RansDecoder(const uint8_t* data, size_t size)
-      : begin_(data), end_(data + size), p_(data + size) {}
+      : data_(data), size_(size), pos_(size) {}
 
   template <int kN, int kRateCap>
   ARIXV_FORCE_INLINE int DecodeFirst(SymbolCdf& t, uint32_t& x,
@@ -453,7 +458,7 @@ class RansDecoder {
   }
 
   // Subsequent symbol within the same multi-chunk walk: x is already in a
-  // local register and > 0 unless exhausted_ (InitState pins p_ = begin_ on
+  // local register and > 0 unless exhausted_ (InitState pins pos_ = 0 on
   // failure, so ReadWord returns 0 and keeps x == 0 and exhausted_ == true).
   template <int kN, int kRateCap>
   ARIXV_FORCE_INLINE int DecodeNext(SymbolCdf& t, uint32_t& x,
@@ -485,69 +490,73 @@ class RansDecoder {
   }
 
   bool exhausted() const { return exhausted_; }
-  size_t consumed_size() const { return static_cast<size_t>(end_ - p_); }
+  size_t consumed_size() const { return size_ - pos_; }
   // An unused stream has x_ == last_f_ == 0; a used stream must end at the
   // final symbol's frequency (matching the encoder's x = kRansL + lo seed).
   bool FinishedCleanly() const { return !exhausted_ && x_ == last_f_; }
 
  private:
   ARIXV_NOINLINE void InitState() {
-    if (exhausted_ || p_ - begin_ < 3) {
+    if (exhausted_ || pos_ < 3) {
       exhausted_ = true;
-      p_ = begin_;
+      pos_ = 0;
       return;
     }
-    const uint8_t top = *--p_;
+    const uint8_t top = data_[--pos_];
     if ((top & 0x80u) == 0) {
-      p_ -= 2;
-      const uint32_t y = static_cast<uint32_t>(p_[0]) |
-                         (static_cast<uint32_t>(p_[1]) << 8) |
+      pos_ -= 2;
+      const uint8_t* p = data_ + pos_;
+      const uint32_t y = static_cast<uint32_t>(p[0]) |
+                         (static_cast<uint32_t>(p[1]) << 8) |
                          (static_cast<uint32_t>(top) << 16);
       x_ = y + kRansL;
       return;
     }
-    if (p_ - begin_ < 3) {
+    if (pos_ < 3) {
       exhausted_ = true;
-      p_ = begin_;
+      pos_ = 0;
       return;
     }
-    p_ -= 3;
-    const uint32_t y = static_cast<uint32_t>(p_[0]) |
-                       (static_cast<uint32_t>(p_[1]) << 8) |
-                       (static_cast<uint32_t>(p_[2]) << 16) |
+    pos_ -= 3;
+    const uint8_t* p = data_ + pos_;
+    const uint32_t y = static_cast<uint32_t>(p[0]) |
+                       (static_cast<uint32_t>(p[1]) << 8) |
+                       (static_cast<uint32_t>(p[2]) << 16) |
                        (static_cast<uint32_t>(top & 0x7Fu) << 24);
     if (y < (1u << 23) || y >= ((kRansL << 16) - kRansL)) {
       exhausted_ = true;
-      p_ = begin_;
+      pos_ = 0;
       return;
     }
     x_ = y + kRansL;
   }
 
   uint32_t ReadWord() {
-    if (p_ - begin_ < 2) {
+    if (pos_ < 2) {
       exhausted_ = true;
       return 0;
     }
-    p_ -= 2;
+    pos_ -= 2;
+    const uint8_t* p = data_ + pos_;
 #if (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) || \
     defined(_WIN32)
     uint16_t w;
-    std::memcpy(&w, p_, sizeof(w));
+    std::memcpy(&w, p, sizeof(w));
     return w;
 #else
-    return static_cast<uint32_t>(p_[0]) | (static_cast<uint32_t>(p_[1]) << 8);
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8);
 #endif
   }
 
-  const uint8_t* begin_;
-  const uint8_t* end_;
-  const uint8_t* p_;
+  const uint8_t* data_;
+  size_t size_;
+  size_t pos_;
   uint32_t x_ = 0;
   uint32_t last_f_ = 0;
   bool exhausted_ = false;
 };
 
+}  // namespace v1
 }  // namespace arixv
 
 #endif  // ARIXV_SYMBOL_CODER_H_

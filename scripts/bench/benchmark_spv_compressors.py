@@ -498,10 +498,21 @@ def rows_for_intersection(result: ToolResult, intersection: set[Path], files: li
 
 
 def build_arixv() -> Path | None:
-    """Build the main project's TSV bench runner via its Makefile."""
-    exe = ROOT / "build" / "arixv_bench"
+    """Build the main project's TSV bench runner via CMake."""
+    build_dir = ROOT / "build" / "release"
+    exe = build_dir / "arixv_bench"
+    cfg = subprocess.run(
+        ["cmake", "--preset", "release"],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if cfg.returncode != 0:
+        print(f"arixv: cmake configure failed, skipping runner\n{cfg.stderr}", file=sys.stderr)
+        return None
     proc = subprocess.run(
-        ["make", "-C", str(ROOT), "build/arixv_bench"],
+        ["cmake", "--build", "--preset", "release", "--target", "arixv_bench", "-j"],
+        cwd=str(ROOT),
         capture_output=True,
         text=True,
     )

@@ -1,4 +1,4 @@
-#include <cassert>
+#include "test_util.h"
 #include <cstdint>
 #include <random>
 #include <vector>
@@ -22,9 +22,9 @@ void FixedSequence() {
   arixv::RangeDecoder dec(encoded.data(), encoded.size());
   arixv::Prob dprobs[3];
   for (size_t i = 0; i < bits.size(); ++i) {
-    assert(dec.DecodeBit(dprobs[i % 3]) == bits[i]);
+    CHECK(dec.DecodeBit(dprobs[i % 3]) == bits[i]);
   }
-  assert(!dec.exhausted());
+  CHECK(!dec.exhausted());
 }
 
 void EmptyStream() {
@@ -33,14 +33,14 @@ void EmptyStream() {
   enc.Flush();
   // Empty stream (no bits coded) emits 0 bytes; all 4 lookahead bytes are
   // don't-care slack.
-  assert(encoded.empty());
+  CHECK(encoded.empty());
   arixv::RangeDecoder dec(encoded.data(), encoded.size());
-  assert(!dec.exhausted());
-  assert(dec.consumed_size() == 0);
+  CHECK(!dec.exhausted());
+  CHECK(dec.consumed_size() == 0);
   // Attempting to decode a bit from an empty stream must mark exhausted.
   arixv::Prob p;
   (void)dec.DecodeBit(p);
-  assert(dec.exhausted());
+  CHECK(dec.exhausted());
 }
 
 void AdaptiveFlushBoundaries() {
@@ -55,7 +55,7 @@ void AdaptiveFlushBoundaries() {
       arixv::Prob p = arixv::Prob::WithValue(pv);
       enc.EncodeBit(p, bit);
       enc.Flush();
-      assert(encoded.size() >= 1 && encoded.size() <= 2);
+      CHECK(encoded.size() >= 1 && encoded.size() <= 2);
 
       for (uint8_t pad : {uint8_t{0x00}, uint8_t{0x55}, uint8_t{0xAA},
                           uint8_t{0xFF}}) {
@@ -63,9 +63,9 @@ void AdaptiveFlushBoundaries() {
         buf.insert(buf.end(), {pad, pad, pad, pad});
         arixv::RangeDecoder dec(buf.data(), buf.size());
         arixv::Prob dp = arixv::Prob::WithValue(pv);
-        assert(dec.DecodeBit(dp) == bit);
-        assert(!dec.exhausted());
-        assert(dec.consumed_size() == encoded.size());
+        CHECK(dec.DecodeBit(dp) == bit);
+        CHECK(!dec.exhausted());
+        CHECK(dec.consumed_size() == encoded.size());
       }
       // Every strict prefix must either report exhausted or fail to decode
       // the original bit (empty prefix must always report exhausted).
@@ -75,9 +75,9 @@ void AdaptiveFlushBoundaries() {
         arixv::Prob dp = arixv::Prob::WithValue(pv);
         const int got = dec.DecodeBit(dp);
         if (prefix == 0) {
-          assert(dec.exhausted());
+          CHECK(dec.exhausted());
         } else {
-          assert(dec.exhausted() || got != bit);
+          CHECK(dec.exhausted() || got != bit);
         }
       }
     }
@@ -115,10 +115,10 @@ void AdaptiveFlushBoundaries() {
       for (int i = 0; i < n; ++i) {
         const int got =
             direct[i] ? dec.DecodeBitDirect() : dec.DecodeBit(dp);
-        assert(got == bits[i]);
+        CHECK(got == bits[i]);
       }
-      assert(!dec.exhausted());
-      assert(dec.consumed_size() == encoded.size());
+      CHECK(!dec.exhausted());
+      CHECK(dec.consumed_size() == encoded.size());
       if (pad == 0x00) {
         if (dec.TailSlack() == 3) ++saw_wide;
         if (dec.TailSlack() == 2) ++saw_narrow;
@@ -139,10 +139,10 @@ void AdaptiveFlushBoundaries() {
           matched = false;
         }
       }
-      assert(dec.exhausted() || !matched);
+      CHECK(dec.exhausted() || !matched);
     }
   }
-  assert(saw_wide > 0 && saw_narrow > 0);
+  CHECK(saw_wide > 0 && saw_narrow > 0);
 }
 
 void Truncation() {
@@ -161,7 +161,7 @@ void Truncation() {
     for (int i = 0; i < 2000; ++i) {
       (void)dec.DecodeBit(dp);
     }
-    assert(dec.exhausted());
+    CHECK(dec.exhausted());
   }
 }
 
@@ -208,21 +208,21 @@ void RandomizedBits() {
     size_t bit_pos = 0;
     size_t direct_pos = 0;
     for (uint8_t kind : kinds) {
-      assert(dec.DecodeBitDirect() == kind);
+      CHECK(dec.DecodeBitDirect() == kind);
       if (kind == 1) {
         uint32_t value = 0;
         const int nbits = direct_widths[direct_pos];
         for (int b = 0; b < nbits; ++b) {
           value = (value << 1) | static_cast<uint32_t>(dec.DecodeBitDirect());
         }
-        assert(value == direct_values[direct_pos]);
+        CHECK(value == direct_values[direct_pos]);
         ++direct_pos;
       } else {
-        assert(dec.DecodeBit(dprobs[slots_used[bit_pos]]) == bits[bit_pos]);
+        CHECK(dec.DecodeBit(dprobs[slots_used[bit_pos]]) == bits[bit_pos]);
         ++bit_pos;
       }
     }
-    assert(!dec.exhausted());
+    CHECK(!dec.exhausted());
   }
 }
 
@@ -256,12 +256,12 @@ void RandomizedAdaptiveContexts() {
     std::vector<arixv::Prob> dprobs(slots);
     for (int i = 0; i < count; ++i) {
       if (direct_log[i]) {
-        assert(dec.DecodeBitDirect() == bit_log[i]);
+        CHECK(dec.DecodeBitDirect() == bit_log[i]);
       } else {
-        assert(dec.DecodeBit(dprobs[slot_log[i]]) == bit_log[i]);
+        CHECK(dec.DecodeBit(dprobs[slot_log[i]]) == bit_log[i]);
       }
     }
-    assert(!dec.exhausted());
+    CHECK(!dec.exhausted());
   }
 }
 
@@ -279,7 +279,7 @@ void ProbabilityPrimitives() {
   arixv::Arena arena;
   arixv::UintModel uint_model;
   for (uint32_t v : values) {
-    assert(arixv::CodeUint(enc, arena, uint_model, v) == v);
+    CHECK(arixv::CodeUint(enc, arena, uint_model, v) == v);
   }
   arixv::BitTree<1> tree1;
   arixv::BitTree<2> tree2;
@@ -289,14 +289,14 @@ void ProbabilityPrimitives() {
   arixv::BitTree<6> tree6;
   arixv::BitTree<7> tree7;
   arixv::BitTree<8> tree8;
-  assert(tree1.CodeValue(enc, 1) == 1);
-  assert(tree2.CodeValue(enc, 2) == 2);
-  assert(tree3.CodeValue(enc, 5) == 5);
-  assert(tree4.CodeValue(enc, 9) == 9);
-  assert(tree5.CodeValue(enc, 17) == 17);
-  assert(tree6.CodeValue(enc, 33) == 33);
-  assert(tree7.CodeValue(enc, 65) == 65);
-  assert(tree8.CodeValue(enc, 129) == 129);
+  CHECK(tree1.CodeValue(enc, 1) == 1);
+  CHECK(tree2.CodeValue(enc, 2) == 2);
+  CHECK(tree3.CodeValue(enc, 5) == 5);
+  CHECK(tree4.CodeValue(enc, 9) == 9);
+  CHECK(tree5.CodeValue(enc, 17) == 17);
+  CHECK(tree6.CodeValue(enc, 33) == 33);
+  CHECK(tree7.CodeValue(enc, 65) == 65);
+  CHECK(tree8.CodeValue(enc, 129) == 129);
   enc.Flush();
 
   arixv::RangeDecoder range_dec(encoded.data(), encoded.size());
@@ -304,7 +304,7 @@ void ProbabilityPrimitives() {
   arixv::Arena darena;
   arixv::UintModel duint_model;
   for (uint32_t v : values) {
-    assert(arixv::CodeUint(dec, darena, duint_model, 0) == v);
+    CHECK(arixv::CodeUint(dec, darena, duint_model, 0) == v);
   }
   arixv::BitTree<1> dtree1;
   arixv::BitTree<2> dtree2;
@@ -314,16 +314,16 @@ void ProbabilityPrimitives() {
   arixv::BitTree<6> dtree6;
   arixv::BitTree<7> dtree7;
   arixv::BitTree<8> dtree8;
-  assert(dtree1.CodeValue(dec, 0) == 1);
-  assert(dtree2.CodeValue(dec, 0) == 2);
-  assert(dtree3.CodeValue(dec, 0) == 5);
-  assert(dtree4.CodeValue(dec, 0) == 9);
-  assert(dtree5.CodeValue(dec, 0) == 17);
-  assert(dtree6.CodeValue(dec, 0) == 33);
-  assert(dtree7.CodeValue(dec, 0) == 65);
-  assert(dtree8.CodeValue(dec, 0) == 129);
-  assert(!dec.exhausted());
-  assert(dec.ConsumedExactly());
+  CHECK(dtree1.CodeValue(dec, 0) == 1);
+  CHECK(dtree2.CodeValue(dec, 0) == 2);
+  CHECK(dtree3.CodeValue(dec, 0) == 5);
+  CHECK(dtree4.CodeValue(dec, 0) == 9);
+  CHECK(dtree5.CodeValue(dec, 0) == 17);
+  CHECK(dtree6.CodeValue(dec, 0) == 33);
+  CHECK(dtree7.CodeValue(dec, 0) == 65);
+  CHECK(dtree8.CodeValue(dec, 0) == 129);
+  CHECK(!dec.exhausted());
+  CHECK(dec.ConsumedExactly());
 }
 
 void RansMinimalFlushAndHostile() {
@@ -332,11 +332,11 @@ void RansMinimalFlushAndHostile() {
     std::vector<uint8_t> out;
     arixv::RansEncoder enc;
     enc.Flush(out);
-    assert(out.empty());
+    CHECK(out.empty());
     arixv::RansDecoder dec(out.data(), out.size());
-    assert(!dec.exhausted());
-    assert(dec.consumed_size() == 0);
-    assert(dec.FinishedCleanly());
+    CHECK(!dec.exhausted());
+    CHECK(dec.consumed_size() == 0);
+    CHECK(dec.FinishedCleanly());
   }
 
   // 1 symbol across all alphabet sizes and symbol indices, including extreme
@@ -347,19 +347,19 @@ void RansMinimalFlushAndHostile() {
       arixv::RangeEncoder rc(encoded);
       arixv::BitEncoder enc(rc);
       arixv::SymbolCdf ecdf = init_cdf;
-      assert((enc.CodeSymbol<16, arixv::kSymbolRateCap>(ecdf, sym) ==
+      CHECK((enc.CodeSymbol<16, arixv::kSymbolRateCap>(ecdf, sym) ==
               static_cast<uint32_t>(sym)));
       enc.Flush();
       // Empty range stream (0 bytes) + 3-byte rANS state (x = 32768 + lo < 2^16).
-      assert(encoded.size() == 3);
+      CHECK(encoded.size() == 3);
 
       arixv::RangeDecoder rcd(encoded.data(), encoded.size());
       arixv::BitDecoder dec(rcd);
       arixv::SymbolCdf dcdf = init_cdf;
-      assert((dec.CodeSymbol<16, arixv::kSymbolRateCap>(dcdf, 0) ==
+      CHECK((dec.CodeSymbol<16, arixv::kSymbolRateCap>(dcdf, 0) ==
               static_cast<uint32_t>(sym)));
-      assert(!dec.exhausted());
-      assert(dec.ConsumedExactly());
+      CHECK(!dec.exhausted());
+      CHECK(dec.ConsumedExactly());
 
       // Every strict prefix must fail.
       for (size_t prefix = 0; prefix < encoded.size(); ++prefix) {
@@ -368,7 +368,7 @@ void RansMinimalFlushAndHostile() {
         arixv::BitDecoder tdec(trc);
         arixv::SymbolCdf tcdf = init_cdf;
         (void)tdec.CodeSymbol<16, arixv::kSymbolRateCap>(tcdf, 0);
-        assert(tdec.exhausted() || !tdec.ConsumedExactly());
+        CHECK(tdec.exhausted() || !tdec.ConsumedExactly());
       }
     };
 
@@ -426,13 +426,13 @@ void RansMinimalFlushAndHostile() {
     arixv::SymbolCdf dcdf{};
     arixv::Prob dprob;
     for (int i = 0; i < n_bits; ++i) {
-      assert(dec.CodeBit(dprob, false) == bits[i]);
+      CHECK(dec.CodeBit(dprob, false) == bits[i]);
     }
     for (int i = 0; i < n_syms; ++i) {
-      assert((dec.CodeSymbol<16, arixv::kSymbolRateCap>(dcdf, 0) == syms[i]));
+      CHECK((dec.CodeSymbol<16, arixv::kSymbolRateCap>(dcdf, 0) == syms[i]));
     }
-    assert(!dec.exhausted());
-    assert(dec.ConsumedExactly());
+    CHECK(!dec.exhausted());
+    CHECK(dec.ConsumedExactly());
 
     if (trial < 60) {
       for (size_t prefix = 0; prefix < encoded.size(); ++prefix) {
@@ -447,7 +447,7 @@ void RansMinimalFlushAndHostile() {
         for (int i = 0; i < n_syms && !tdec.exhausted(); ++i) {
           (void)tdec.CodeSymbol<16, arixv::kSymbolRateCap>(tcdf, 0);
         }
-        assert(tdec.exhausted() || !tdec.ConsumedExactly());
+        CHECK(tdec.exhausted() || !tdec.ConsumedExactly());
       }
       // Appending an extra byte must fail exact tiling.
       std::vector<uint8_t> padded = encoded;
@@ -462,10 +462,10 @@ void RansMinimalFlushAndHostile() {
       for (int i = 0; i < n_syms && !pdec.exhausted(); ++i) {
         (void)pdec.CodeSymbol<16, arixv::kSymbolRateCap>(pcdf, 0);
       }
-      assert(pdec.exhausted() || !pdec.ConsumedExactly());
+      CHECK(pdec.exhausted() || !pdec.ConsumedExactly());
     }
   }
-  assert(saw_3byte > 0 && saw_4byte > 0);
+  CHECK(saw_3byte > 0 && saw_4byte > 0);
 
   // Hostile rANS inputs: truncated, non-canonical 4-byte, out-of-range 4-byte.
   const std::vector<std::vector<uint8_t>> bad_states = {
@@ -482,14 +482,14 @@ void RansMinimalFlushAndHostile() {
     arixv::RansDecoder dec(bad.data(), bad.size());
     arixv::SymbolCdf cdf{};
     (void)dec.DecodeSymbol<16, arixv::kSymbolRateCap>(cdf);
-    assert(dec.exhausted());
-    assert(!dec.FinishedCleanly());
+    CHECK(dec.exhausted());
+    CHECK(!dec.FinishedCleanly());
     // Repeated call after failure remains exhausted and does not advance past
     // begin_.
     const size_t consumed = dec.consumed_size();
     (void)dec.DecodeSymbol<16, arixv::kSymbolRateCap>(cdf);
-    assert(dec.exhausted());
-    assert(dec.consumed_size() == consumed);
+    CHECK(dec.exhausted());
+    CHECK(dec.consumed_size() == consumed);
   }
 }
 

@@ -11,12 +11,17 @@
 #if ARIXV_RECENCY_SSE2
 #include <emmintrin.h>
 #elif ARIXV_RECENCY_NEON
+#if defined(_MSC_VER)
+#include <arm64_neon.h>
+#else
 #include <arm_neon.h>
+#endif
 #endif
 
 #include "operand_cursor.h"
 
 namespace arixv {
+inline namespace v1 {
 namespace {
 
 static_assert(static_cast<uint8_t>(InstructionTypeClass::kOther) ==
@@ -59,9 +64,6 @@ std::string ReadString(const uint32_t* words, uint32_t word_index,
   return out;
 }
 
-// Fibonacci-style multiplier; odd, so sequential IDs (the common case) walk
-// the table without clustering.
-constexpr uint32_t kIdHashMul = 2654435761u;
 constexpr size_t kIdMapMinSlots = 256;
 // Reserve() allocation cap: 1M slots keep a hostile header's up-front cost in
 // the same ballpark as the bucket array the old unordered_map reserved.
@@ -76,7 +78,7 @@ const Tracker::IdInfo* Tracker::IdMap::Find(uint32_t id) const {
   if (capacity_ == 0) {
     return nullptr;
   }
-  size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
+  size_t i = HashSlot(id);
   for (;;) {
     const uint32_t k = keys_[i];
     if (k == id) {
@@ -100,7 +102,7 @@ Tracker::IdInfo& Tracker::IdMap::Ensure(uint32_t id) {
   if (capacity_ == 0) {
     Rehash(kIdMapMinSlots);
   }
-  size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
+  size_t i = HashSlot(id);
   for (;;) {
     const uint32_t k = keys_[i];
     if (k == id) {
@@ -113,7 +115,7 @@ Tracker::IdInfo& Tracker::IdMap::Ensure(uint32_t id) {
   }
   if ((size_ + 1) * 10 >= capacity_ * 7) {
     Rehash(capacity_ * 2);
-    i = static_cast<size_t>(id * kIdHashMul) & mask_;
+    i = HashSlot(id);
     while (keys_[i] != 0) {
       i = (i + 1) & mask_;
     }
@@ -143,27 +145,33 @@ void Tracker::IdMap::Reserve(size_t expected_ids) {
 }
 
 void Tracker::IdMap::Rehash(size_t slot_count) {
-  const std::unique_ptr<uint32_t[]> old_keys = std::move(keys_);
-  const std::unique_ptr<IdInfo[]> old_values = std::move(values_);
-  const size_t old_capacity = capacity_;
   // Only keys_ is zero-initialized (0 => empty); values_ stays uninitialized
-  // until a slot is claimed.
-  keys_.reset(new uint32_t[slot_count]());
-  values_.reset(new IdInfo[slot_count]);
-  capacity_ = slot_count;
-  mask_ = slot_count - 1;
-  for (size_t from = 0; from < old_capacity; ++from) {
-    const uint32_t id = old_keys[from];
+  // until a slot is claimed. Allocate both before committing state.
+  std::unique_ptr<uint32_t[]> new_keys(new uint32_t[slot_count]());
+  std::unique_ptr<IdInfo[]> new_values(new IdInfo[slot_count]);
+  unsigned log2_slots = 0;
+  for (size_t s = slot_count; s > 1; s >>= 1) {
+    ++log2_slots;
+  }
+  const unsigned new_shift = log2_slots < 32 ? (32u - log2_slots) : 0u;
+  const size_t new_mask = slot_count - 1;
+  for (size_t from = 0; from < capacity_; ++from) {
+    const uint32_t id = keys_[from];
     if (id == 0) {
       continue;
     }
-    size_t i = static_cast<size_t>(id * kIdHashMul) & mask_;
-    while (keys_[i] != 0) {
-      i = (i + 1) & mask_;
+    size_t i = static_cast<size_t>((id * kIdHashMul) >> new_shift);
+    while (new_keys[i] != 0) {
+      i = (i + 1) & new_mask;
     }
-    keys_[i] = id;
-    values_[i] = old_values[from];
+    new_keys[i] = id;
+    new_values[i] = values_[from];
   }
+  keys_ = std::move(new_keys);
+  values_ = std::move(new_values);
+  capacity_ = slot_count;
+  mask_ = new_mask;
+  shift_ = new_shift;
 }
 
 uint32_t RecencyList::MatchMask(uint32_t id) const {
@@ -837,4 +845,5 @@ uint32_t SpanForField(const OperandCursor::Field& field,
   }
 }
 
+}  // namespace v1
 }  // namespace arixv
