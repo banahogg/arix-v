@@ -13,10 +13,19 @@
 #include <vector>
 
 #include "arixv/arixv.h"
+#include "platform.h"
 #include "prob.h"
 
 namespace arixv {
 inline namespace v1 {
+
+inline constexpr uint8_t kContainerMagic[] = {
+    static_cast<uint8_t>(ARIXV_MAGIC_0),
+    static_cast<uint8_t>(ARIXV_MAGIC_1),
+    static_cast<uint8_t>(ARIXV_MAGIC_2),
+    static_cast<uint8_t>(ARIXV_MAGIC_3),
+};
+inline constexpr size_t kContainerMagicBytes = sizeof(kContainerMagic);
 
 inline constexpr uint32_t kSizeOneByteLimit = 192u;
 inline constexpr uint32_t kSizeTwoByteLimit =
@@ -28,6 +37,20 @@ inline constexpr uint32_t kSizeFourByteLimit =
 inline constexpr uint32_t kSpirvHeaderBytes = 20u;
 inline constexpr uint32_t kMaxSpirvBodyWords =
     (std::numeric_limits<uint32_t>::max() - kSpirvHeaderBytes) / 4u;
+
+// Maximum representable span on this platform.
+inline constexpr size_t kMaxPlatformSpan =
+    static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max());
+
+// Platform maximum addressable uncompressed size:
+//   - 64-bit: UINT32_MAX (4 GiB - 1, matching the ARX2 format limit)
+//   - 32-bit ILP32: PTRDIFF_MAX - 16 (~2 GiB), keeping input + stored/flush
+//     overhead strictly within PTRDIFF_MAX.
+inline constexpr size_t kPlatformMaxUncompressedSize =
+    (kMaxPlatformSpan - 16u) <
+            static_cast<size_t>(std::numeric_limits<uint32_t>::max())
+        ? (kMaxPlatformSpan - 16u)
+        : static_cast<size_t>(std::numeric_limits<uint32_t>::max());
 
 inline size_t CompactUint32Size(uint32_t value) {
   if (value < kSizeOneByteLimit) return 1;
@@ -90,7 +113,7 @@ void CodeBytePayload(Coder& coder, ByteModel& model, const uint8_t* input,
     // `size` comes from the untrusted header. Once the coded stream is
     // exhausted, every further byte is decoded from past-the-end zero bytes;
     // stop rather than synthesizing up to the attacker-declared size. The
-    // exhaustion check in the caller then reports kTruncated.
+    // exhaustion check in the caller then reports ARIXV_STATUS_TRUNCATED.
     if constexpr (!Coder::kEncoding) {
       if (coder.exhausted()) {
         break;
@@ -102,6 +125,14 @@ void CodeBytePayload(Coder& coder, ByteModel& model, const uint8_t* input,
     prev = b;
   }
 }
+
+#if defined(ARIXV_ENCODER) && (ARIXV_ENCODER != 0)
+// Internal encoder helper (never exported from shared libraries): allows tests,
+// fuzzers, and CLI `--force-coded` to force coded mode without weakening the
+// public `arixv_encode_bound()` guarantee.
+arixv_status EncodeInternal(const uint8_t* data, size_t size, bool force_coded,
+                            std::vector<uint8_t>& out);
+#endif
 
 }  // namespace v1
 }  // namespace arixv

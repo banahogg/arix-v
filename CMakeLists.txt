@@ -34,7 +34,7 @@ set(ARIXV_ENCODER_SOURCES
 )
 
 function(arixv_apply_compile_options target)
-  target_compile_features(${target} PUBLIC cxx_std_17)
+  target_compile_features(${target} PRIVATE cxx_std_17)
   set_target_properties(${target} PROPERTIES
     CXX_EXTENSIONS OFF
     CXX_VISIBILITY_PRESET hidden
@@ -61,9 +61,9 @@ endfunction()
 set(ARIXV_INSTALL_TARGETS)
 
 if(BUILD_SHARED_LIBS)
-  # Single shared library exporting only ARIXV_API symbols so consumers linking
-  # both arixv::decoder and arixv::encoder into one executable share one DSO/DLL
-  # with zero duplicate exports and zero hidden internal C++ symbol exposure.
+  # Single shared library exporting only ARIXV_API C symbols so consumers
+  # linking both arixv::decoder and arixv::encoder into one executable share
+  # one DSO/DLL with zero duplicate exports and zero C++ ABI exposure.
   set(_shared_sources ${ARIXV_DECODER_SOURCES})
   if(ARIXV_BUILD_ENCODER)
     list(APPEND _shared_sources ${ARIXV_ENCODER_SOURCES})
@@ -85,12 +85,24 @@ if(BUILD_SHARED_LIBS)
       ARIXV_BUILDING
       ARIXV_ENCODER=$<BOOL:${ARIXV_BUILD_ENCODER}>
   )
+  if(NOT ARIXV_BUILD_ENCODER)
+    target_compile_definitions(arixv_shared PUBLIC ARIXV_ENCODER=0)
+  endif()
   set_target_properties(arixv_shared PROPERTIES
     OUTPUT_NAME arixv
     EXPORT_NAME shared
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}
   )
+  if(UNIX AND NOT APPLE)
+    set(_arixv_version_script "${CMAKE_CURRENT_SOURCE_DIR}/cmake/arixv.map")
+    target_link_options(arixv_shared PRIVATE
+      "-Wl,--version-script=${_arixv_version_script}"
+    )
+    set_property(TARGET arixv_shared APPEND PROPERTY
+      LINK_DEPENDS "${_arixv_version_script}"
+    )
+  endif()
 
   add_library(arixv_decoder INTERFACE)
   target_link_libraries(arixv_decoder INTERFACE arixv_shared)
@@ -102,6 +114,7 @@ if(BUILD_SHARED_LIBS)
   if(ARIXV_BUILD_ENCODER)
     add_library(arixv_encoder INTERFACE)
     target_link_libraries(arixv_encoder INTERFACE arixv_shared)
+    target_compile_definitions(arixv_encoder INTERFACE ARIXV_ENCODER=1)
     set_target_properties(arixv_encoder PROPERTIES EXPORT_NAME encoder)
     add_library(arixv::encoder ALIAS arixv_encoder)
     list(APPEND ARIXV_INSTALL_TARGETS arixv_encoder)
@@ -121,6 +134,34 @@ else()
       ARIXV_BUILDING
       ARIXV_ENCODER=$<BOOL:${ARIXV_BUILD_ENCODER}>
   )
+  if(NOT ARIXV_BUILD_ENCODER)
+    target_compile_definitions(arixv_decoder PUBLIC ARIXV_ENCODER=0)
+  endif()
+  # When a pure-C parent consumes static ARIX-V via FetchContent/add_subdirectory
+  # without enabling CXX in its own directory scope, CMake links the parent
+  # executable with the C linker driver. Propagating only the extra C++ runtime
+  # libraries/directories for C-linked build-interface consumers resolves C++
+  # runtime symbols cleanly without affecting C++ consumers or installed exports.
+  set(_arixv_cxx_libs ${CMAKE_CXX_IMPLICIT_LINK_LIBRARIES})
+  if(CMAKE_C_IMPLICIT_LINK_LIBRARIES)
+    list(REMOVE_ITEM _arixv_cxx_libs ${CMAKE_C_IMPLICIT_LINK_LIBRARIES})
+  endif()
+  if(_arixv_cxx_libs)
+    target_link_libraries(arixv_decoder
+      PUBLIC
+        $<BUILD_INTERFACE:$<$<LINK_LANGUAGE:C>:${_arixv_cxx_libs}>>
+    )
+  endif()
+  set(_arixv_cxx_dirs ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES})
+  if(CMAKE_C_IMPLICIT_LINK_DIRECTORIES)
+    list(REMOVE_ITEM _arixv_cxx_dirs ${CMAKE_C_IMPLICIT_LINK_DIRECTORIES})
+  endif()
+  if(_arixv_cxx_dirs)
+    target_link_directories(arixv_decoder
+      PUBLIC
+        $<BUILD_INTERFACE:$<$<LINK_LANGUAGE:C>:${_arixv_cxx_dirs}>>
+    )
+  endif()
   set_target_properties(arixv_decoder PROPERTIES EXPORT_NAME decoder)
   add_library(arixv::decoder ALIAS arixv_decoder)
   list(APPEND ARIXV_INSTALL_TARGETS arixv_decoder)
@@ -136,9 +177,10 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
     target_compile_definitions(arixv_encoder
+      PUBLIC
+        ARIXV_ENCODER=1
       PRIVATE
         ARIXV_BUILDING
-        ARIXV_ENCODER=1
     )
     target_link_libraries(arixv_encoder PUBLIC arixv_decoder)
     set_target_properties(arixv_encoder PROPERTIES EXPORT_NAME encoder)
@@ -147,8 +189,8 @@ else()
   endif()
 endif()
 
-# Helper to build isolated private static libraries for white-box tests and
-# diagnostic tools with distinct compile definitions (zero ODR risk).
+# Helper to build isolated private static libraries for white-box tests, CLI
+# internal flags (--force-coded), and diagnostic tools (zero ODR risk).
 function(arixv_add_internal_lib target)
   add_library(${target} STATIC ${ARIXV_DECODER_SOURCES} ${ARIXV_ENCODER_SOURCES})
   arixv_apply_compile_options(${target})
@@ -166,13 +208,17 @@ function(arixv_add_internal_lib target)
   )
 endfunction()
 
+if(ARIXV_BUILD_ENCODER AND (ARIXV_BUILD_CLI OR ARIXV_BUILD_TOOLS OR ARIXV_BUILD_TESTS))
+  arixv_add_internal_lib(arixv_internal)
+endif()
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 if(ARIXV_BUILD_CLI AND ARIXV_BUILD_ENCODER)
   add_executable(arixv_cli cli/main.cpp)
   arixv_apply_compile_options(arixv_cli)
-  target_link_libraries(arixv_cli PRIVATE arixv::encoder arixv::decoder)
+  target_link_libraries(arixv_cli PRIVATE arixv_internal)
   set_target_properties(arixv_cli PROPERTIES OUTPUT_NAME arixv)
 endif()
 
@@ -194,7 +240,7 @@ if(ARIXV_BUILD_TOOLS AND ARIXV_BUILD_ENCODER)
 
   add_executable(fuzz_roundtrip tools/fuzz/fuzz_roundtrip.cpp)
   arixv_apply_compile_options(fuzz_roundtrip)
-  target_link_libraries(fuzz_roundtrip PRIVATE arixv::encoder arixv::decoder)
+  target_link_libraries(fuzz_roundtrip PRIVATE arixv_internal)
 endif()
 
 if(ARIXV_BUILD_DIAGNOSTICS AND ARIXV_BUILD_ENCODER)
@@ -220,10 +266,14 @@ if(ARIXV_BUILD_LIBFUZZER AND ARIXV_BUILD_ENCODER)
   target_include_directories(arixv_internal_lf
     PUBLIC
       ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
-  target_compile_definitions(arixv_internal_lf PRIVATE ARIXV_BUILDING ARIXV_ENCODER=1)
+  target_compile_definitions(arixv_internal_lf
+    PUBLIC
+      ARIXV_ENCODER=1
+    PRIVATE
+      ARIXV_BUILDING
+  )
   target_compile_options(arixv_internal_lf PRIVATE ${_lf_flags})
 
   foreach(_lf_target fuzz_roundtrip_lf fuzz_decode_lf)
@@ -306,7 +356,9 @@ if(ARIXV_BUILD_TESTS)
   add_test(NAME operand_cursor_test COMMAND operand_cursor_test)
 
   if(ARIXV_BUILD_ENCODER)
-    arixv_add_internal_lib(arixv_internal)
+    if(NOT TARGET arixv_internal)
+      arixv_add_internal_lib(arixv_internal)
+    endif()
 
     add_executable(arixv_test tests/arixv_test.cpp)
     arixv_apply_compile_options(arixv_test)

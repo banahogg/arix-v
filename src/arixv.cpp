@@ -3,12 +3,13 @@
 
 #include "arixv/arixv.h"
 
-#include <algorithm>
 #include <cstdint>
-#include <vector>
+#include <cstring>
+#include <new>
 
 #include "container.h"
 #include "model.h"
+#include "platform.h"
 #include "prob.h"
 #include "range_coder.h"
 #include "tuning.h"
@@ -17,54 +18,60 @@ namespace arixv {
 inline namespace v1 {
 namespace {
 
-bool HasContainerMagic(const uint8_t* data, size_t size) {
-  return size >= kContainerMagicBytes &&
-         std::equal(kContainerMagic, kContainerMagic + kContainerMagicBytes,
-                    data);
-}
+constexpr uint32_t kHeaderInfoV1Size =
+    static_cast<uint32_t>(sizeof(arixv_header_info));
+constexpr uint32_t kDecodeOptionsV1Size =
+    static_cast<uint32_t>(sizeof(arixv_decode_options));
 
-Status ReadCompactUint32(const uint8_t* data, size_t size, size_t* pos,
-                         uint32_t* value) {
+struct ParsedHeader {
+  uint32_t magic = 0;
+  uint32_t mode = 0;
+  uint64_t original_size = 0;
+  size_t payload_offset = 0;
+};
+
+arixv_status ReadCompactUint32(const uint8_t* data, size_t size, size_t* pos,
+                               uint32_t* value) {
   if (*pos >= size) {
-    return Status::kTruncated;
+    return ARIXV_STATUS_TRUNCATED;
   }
   const uint8_t b0 = data[(*pos)++];
   if (b0 < 0xC0u) {
     *value = b0;
-    return Status::kOk;
+    return ARIXV_STATUS_OK;
   }
   if (b0 <= 0xFBu) {
     if (*pos >= size) {
-      return Status::kTruncated;
+      return ARIXV_STATUS_TRUNCATED;
     }
     const uint8_t b1 = data[(*pos)++];
     *value = kSizeOneByteLimit + (static_cast<uint32_t>(b0 - 0xC0u) << 8) + b1;
-    return Status::kOk;
+    return ARIXV_STATUS_OK;
   }
   if (b0 == 0xFCu) {
     if (size - *pos < 2) {
-      return Status::kTruncated;
+      return ARIXV_STATUS_TRUNCATED;
     }
     const uint32_t v = static_cast<uint32_t>(data[*pos]) |
                        (static_cast<uint32_t>(data[*pos + 1]) << 8);
     *pos += 2;
     *value = kSizeTwoByteLimit + v;
-    return Status::kOk;
+    return ARIXV_STATUS_OK;
   }
   if (b0 == 0xFDu) {
     if (size - *pos < 3) {
-      return Status::kTruncated;
+      return ARIXV_STATUS_TRUNCATED;
     }
     const uint32_t v = static_cast<uint32_t>(data[*pos]) |
                        (static_cast<uint32_t>(data[*pos + 1]) << 8) |
                        (static_cast<uint32_t>(data[*pos + 2]) << 16);
     *pos += 3;
     *value = kSizeThreeByteLimit + v;
-    return Status::kOk;
+    return ARIXV_STATUS_OK;
   }
   if (b0 == 0xFEu) {
     if (size - *pos < 4) {
-      return Status::kTruncated;
+      return ARIXV_STATUS_TRUNCATED;
     }
     const uint32_t v = static_cast<uint32_t>(data[*pos]) |
                        (static_cast<uint32_t>(data[*pos + 1]) << 8) |
@@ -72,101 +79,219 @@ Status ReadCompactUint32(const uint8_t* data, size_t size, size_t* pos,
                        (static_cast<uint32_t>(data[*pos + 3]) << 24);
     *pos += 4;
     if (v < kSizeFourByteLimit) {
-      return Status::kBadContainer;
+      return ARIXV_STATUS_BAD_CONTAINER;
     }
     *value = v;
-    return Status::kOk;
+    return ARIXV_STATUS_OK;
   }
-  return Status::kBadContainer;
+  return ARIXV_STATUS_BAD_CONTAINER;
 }
 
-}  // namespace
-
-Status Decode(const uint8_t* data, size_t size, std::vector<uint8_t>& out,
-              size_t max_output) {
-  out.clear();
-  if (!HasContainerMagic(data, size)) {
-    return Status::kBadContainer;
+arixv_status ParseHeader(const uint8_t* data, size_t size, ParsedHeader* out) {
+  if (size > kMaxPlatformSpan) {
+    return ARIXV_STATUS_INVALID_ARGUMENT;
+  }
+  if (size < kContainerMagicBytes) {
+    return ARIXV_STATUS_BAD_CONTAINER;
+  }
+  if (data[0] != kContainerMagic[0] || data[1] != kContainerMagic[1] ||
+      data[2] != kContainerMagic[2]) {
+    return ARIXV_STATUS_BAD_CONTAINER;
+  }
+  if (data[3] != kContainerMagic[3]) {
+    return ARIXV_STATUS_UNSUPPORTED_FORMAT;
   }
 
   size_t pos = kContainerMagicBytes;
   if (pos >= size) {
-    return Status::kTruncated;
+    return ARIXV_STATUS_TRUNCATED;
   }
   const uint8_t mode = data[pos++];
   if (mode != kModeStored && mode != kModeCoded && mode != kModeSpirv) {
-    return Status::kBadContainer;
+    return ARIXV_STATUS_BAD_CONTAINER;
   }
 
   uint32_t encoded_size = 0;
-  Status status = ReadCompactUint32(data, size, &pos, &encoded_size);
-  if (status != Status::kOk) {
-    return status;
+  const arixv_status size_status =
+      ReadCompactUint32(data, size, &pos, &encoded_size);
+  if (size_status != ARIXV_STATUS_OK) {
+    return size_status;
   }
 
-  uint32_t original_size = encoded_size;
+  uint64_t original_size = encoded_size;
   if (mode == kModeSpirv) {
     if (encoded_size > kMaxSpirvBodyWords) {
-      return Status::kBadContainer;
+      return ARIXV_STATUS_BAD_CONTAINER;
     }
-    original_size = kSpirvHeaderBytes + encoded_size * 4u;
-  }
-  if (original_size > max_output) {
-    return Status::kTooLarge;
+    original_size = static_cast<uint64_t>(kSpirvHeaderBytes) +
+                    static_cast<uint64_t>(encoded_size) * 4u;
   }
 
-  if (mode == kModeStored) {
-    const size_t payload_size = size - pos;
-    if (payload_size < original_size) {
-      return Status::kTruncated;
-    }
-    if (payload_size != original_size) {
-      return Status::kBadContainer;
-    }
-    out.assign(data + pos, data + size);
-    return Status::kOk;
-  }
-
-  if (mode == kModeSpirv) {
-    out.resize(original_size);
-    const Status mod_status =
-        DecodeModule(data + pos, size - pos, original_size, out.data());
-    if (mod_status != Status::kOk) {
-      out.clear();
-    }
-    return mod_status;
-  }
-
-  out.reserve(CappedDecodeReserve(size - pos, original_size));
-  RangeDecoder range(data + pos, size - pos);
-  BitDecoder coder(range);
-  ByteModel byte_model;
-  CodeBytePayload(coder, byte_model, nullptr, original_size,
-                  [&out](uint8_t b) { out.push_back(b); });
-  if (coder.exhausted()) {
-    out.clear();
-    return coder.range_exhausted() ? Status::kTruncated : Status::kBadContainer;
-  }
-  if (!coder.ConsumedExactly()) {
-    out.clear();
-    return Status::kBadContainer;
-  }
-  return Status::kOk;
+  out->magic = static_cast<uint32_t>(data[0]) |
+               (static_cast<uint32_t>(data[1]) << 8) |
+               (static_cast<uint32_t>(data[2]) << 16) |
+               (static_cast<uint32_t>(data[3]) << 24);
+  out->mode = mode;
+  out->original_size = original_size;
+  out->payload_offset = pos;
+  return ARIXV_STATUS_OK;
 }
 
-const char* StatusToString(Status status) {
+arixv_status DecodeImpl(const void* in, size_t in_size, void* out,
+                        size_t* out_size, const arixv_decode_options* opts) {
+  if (in == nullptr || out_size == nullptr) {
+    return ARIXV_STATUS_INVALID_ARGUMENT;
+  }
+  if (opts != nullptr) {
+    if (opts->struct_size < kDecodeOptionsV1Size ||
+        opts->struct_size > sizeof(arixv_decode_options)) {
+      return ARIXV_STATUS_INVALID_ARGUMENT;
+    }
+    if (opts->flags != 0) {
+      return ARIXV_STATUS_INVALID_ARGUMENT;
+    }
+  }
+
+  const auto* data = static_cast<const uint8_t*>(in);
+  ParsedHeader hdr;
+  const arixv_status hdr_status = ParseHeader(data, in_size, &hdr);
+  if (hdr_status != ARIXV_STATUS_OK) {
+    return hdr_status;
+  }
+  if (hdr.original_size > kPlatformMaxUncompressedSize) {
+    return ARIXV_STATUS_TOO_LARGE;
+  }
+  const size_t required = static_cast<size_t>(hdr.original_size);
+
+  if (out == nullptr) {
+    *out_size = required;
+    return ARIXV_STATUS_OK;
+  }
+  if (*out_size < required) {
+    *out_size = required;
+    return ARIXV_STATUS_BUFFER_TOO_SMALL;
+  }
+
+  const uint8_t* payload = data + hdr.payload_offset;
+  const size_t payload_size = in_size - hdr.payload_offset;
+
+  if (hdr.mode == kModeStored) {
+    if (payload_size < required) {
+      return ARIXV_STATUS_TRUNCATED;
+    }
+    if (payload_size != required) {
+      return ARIXV_STATUS_BAD_CONTAINER;
+    }
+    if (required > 0) {
+      std::memcpy(out, payload, required);
+    }
+    *out_size = required;
+    return ARIXV_STATUS_OK;
+  }
+
+  if (hdr.mode == kModeSpirv) {
+    const arixv_status status =
+        DecodeModule(payload, payload_size, required,
+                     static_cast<uint8_t*>(out));
+    if (status != ARIXV_STATUS_OK) {
+      return status;
+    }
+    *out_size = required;
+    return ARIXV_STATUS_OK;
+  }
+
+  // Raw byte-coded mode (kModeCoded): decode directly into caller's `out`.
+  auto* dst = static_cast<uint8_t*>(out);
+  size_t written = 0;
+  RangeDecoder range(payload, payload_size);
+  BitDecoder coder(range);
+  ByteModel byte_model;
+  CodeBytePayload(coder, byte_model, nullptr, required,
+                  [dst, &written](uint8_t b) { dst[written++] = b; });
+  if (coder.exhausted()) {
+    return coder.range_exhausted() ? ARIXV_STATUS_TRUNCATED
+                                   : ARIXV_STATUS_BAD_CONTAINER;
+  }
+  if (written != required) {
+    return ARIXV_STATUS_TRUNCATED;
+  }
+  if (!coder.ConsumedExactly()) {
+    return ARIXV_STATUS_BAD_CONTAINER;
+  }
+  *out_size = required;
+  return ARIXV_STATUS_OK;
+}
+
+}  // namespace
+}  // namespace v1
+}  // namespace arixv
+
+extern "C" {
+
+uint32_t arixv_version(void) ARIXV_NOEXCEPT {
+  return (static_cast<uint32_t>(ARIXV_VERSION_MAJOR) << 16) |
+         (static_cast<uint32_t>(ARIXV_VERSION_MINOR) << 8) |
+         static_cast<uint32_t>(ARIXV_VERSION_PATCH);
+}
+
+const char* arixv_status_string(arixv_status status) ARIXV_NOEXCEPT {
   switch (status) {
-    case Status::kOk:
+    case ARIXV_STATUS_OK:
       return "ok";
-    case Status::kBadContainer:
+    case ARIXV_STATUS_BAD_CONTAINER:
       return "bad container";
-    case Status::kTruncated:
+    case ARIXV_STATUS_UNSUPPORTED_FORMAT:
+      return "unsupported format";
+    case ARIXV_STATUS_TRUNCATED:
       return "truncated";
-    case Status::kTooLarge:
-      return "output larger than max_output";
+    case ARIXV_STATUS_BUFFER_TOO_SMALL:
+      return "buffer too small";
+    case ARIXV_STATUS_INVALID_ARGUMENT:
+      return "invalid argument";
+    case ARIXV_STATUS_OUT_OF_MEMORY:
+      return "out of memory";
+    case ARIXV_STATUS_TOO_LARGE:
+      return "output too large for platform";
   }
   return "unknown status";
 }
 
-}  // namespace v1
-}  // namespace arixv
+arixv_status arixv_inspect(const void* in, size_t in_size,
+                           arixv_header_info* out_info) ARIXV_NOEXCEPT {
+  if (in == nullptr || out_info == nullptr) {
+    return ARIXV_STATUS_INVALID_ARGUMENT;
+  }
+  if (out_info->struct_size < arixv::v1::kHeaderInfoV1Size ||
+      out_info->struct_size > sizeof(arixv_header_info)) {
+    return ARIXV_STATUS_INVALID_ARGUMENT;
+  }
+  arixv::v1::ParsedHeader hdr;
+  const arixv_status status =
+      arixv::v1::ParseHeader(static_cast<const uint8_t*>(in), in_size, &hdr);
+  if (status != ARIXV_STATUS_OK) {
+    return status;
+  }
+  out_info->magic = hdr.magic;
+  out_info->mode = hdr.mode;
+  out_info->reserved = 0;
+  out_info->uncompressed_size = hdr.original_size;
+  return ARIXV_STATUS_OK;
+}
+
+arixv_status arixv_decode(const void* in, size_t in_size, void* out,
+                          size_t* out_size,
+                          const arixv_decode_options* opts) ARIXV_NOEXCEPT {
+#if ARIXV_HAS_EXCEPTIONS
+  try {
+    return arixv::v1::DecodeImpl(in, in_size, out, out_size, opts);
+  } catch (const std::bad_alloc&) {
+    return ARIXV_STATUS_OUT_OF_MEMORY;
+  } catch (...) {
+    return ARIXV_STATUS_OUT_OF_MEMORY;
+  }
+#else
+  return arixv::v1::DecodeImpl(in, in_size, out, out_size, opts);
+#endif
+}
+
+}  // extern "C"

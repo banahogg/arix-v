@@ -34,19 +34,24 @@ static std::string Short(std::string s) {
   return s;
 }
 int main(int argc, char** argv) {
-  std::vector<std::vector<uint8_t>> enc; size_t out_bytes = 0;
+  std::vector<std::vector<uint8_t>> enc; size_t out_bytes = 0, max_out = 1;
   for (int i = 1; i < argc; ++i) {
     std::ifstream f(argv[i], std::ios::binary);
     std::vector<uint8_t> d((std::istreambuf_iterator<char>(f)), {});
     if (d.size() % 4 || d.size() < 20) continue;
     out_bytes += d.size();
-    enc.push_back(arixv::Encode(d.data(), d.size()));
+    if (d.size() > max_out) max_out = d.size();
+    std::vector<uint8_t> buf(arixv_encode_bound(d.size(), nullptr));
+    size_t sz = buf.size();
+    if (arixv_encode(d.data(), d.size(), buf.data(), &sz, nullptr) != ARIXV_STATUS_OK) continue;
+    buf.resize(sz);
+    enc.push_back(std::move(buf));
   }
   arixv::g_arena_objects.clear(); arixv::g_arena_block_bytes = 0;
   arixv::g_model_members.clear(); arixv::g_model_decodes = 0;
-  std::vector<uint8_t> out; out.reserve(1 << 25);
+  std::vector<uint8_t> out(max_out);
   g_on = true;
-  for (auto& e : enc) (void)arixv::Decode(e.data(), e.size(), out);
+  for (auto& e : enc) { size_t sz = out.size(); (void)arixv_decode(e.data(), e.size(), out.data(), &sz, nullptr); }
   g_on = false;
   const double n = arixv::g_model_decodes;
   std::printf("decodes=%.0f  avg output=%.0f B  malloc-level heap/decode=%.0f B  arena blocks/decode=%.0f B\n",

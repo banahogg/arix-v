@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "arixv/arixv.h"
+#include "container.h"
 #include "model.h"
 
 namespace {
@@ -116,18 +117,37 @@ int main(int argc, char** argv) {
       arixv::EncodeModuleRawResidual(c.input.data(), c.input.size(),
                                      c.encoded);
     } else {
-      c.encoded = arixv::Encode(c.input.data(), c.input.size());
+      const size_t bound = arixv_encode_bound(c.input.size(), nullptr);
+      if (bound == 0) {
+        std::cerr << "encode bound failed for " << path << "\n";
+        return 1;
+      }
+      c.encoded.resize(bound);
+      size_t enc_size = c.encoded.size();
+      if (arixv_encode(c.input.data(), c.input.size(), c.encoded.data(),
+                       &enc_size, nullptr) != ARIXV_STATUS_OK) {
+        std::cerr << "encode failed for " << path << "\n";
+        return 1;
+      }
+      c.encoded.resize(enc_size);
     }
-    std::vector<uint8_t> decoded;
-    arixv::Status status = arixv::Status::kOk;
+    std::vector<uint8_t> decoded(c.input.size());
+    uint8_t empty_sink = 0;
+    void* dst = decoded.empty() ? static_cast<void*>(&empty_sink)
+                                : static_cast<void*>(decoded.data());
+    arixv_status status = ARIXV_STATUS_OK;
     if (raw_residual) {
-      decoded.resize(c.input.size());
       status = arixv::DecodeModuleRawResidual(
           c.encoded.data(), c.encoded.size(), c.input.size(), decoded.data());
     } else {
-      status = arixv::Decode(c.encoded.data(), c.encoded.size(), decoded);
+      size_t out_size = decoded.size();
+      status = arixv_decode(c.encoded.data(), c.encoded.size(), dst, &out_size,
+                            nullptr);
+      if (status == ARIXV_STATUS_OK && out_size != c.input.size()) {
+        status = ARIXV_STATUS_BAD_CONTAINER;
+      }
     }
-    if (status != arixv::Status::kOk || decoded != c.input) {
+    if (status != ARIXV_STATUS_OK || decoded != c.input) {
       std::cerr << "roundtrip failed for " << path << "\n";
       return 1;
     }
@@ -146,22 +166,25 @@ int main(int argc, char** argv) {
     std::cout << "path\tinput_bytes\tencoded_bytes\tdecode_ns_per_iter\n";
   }
   for (const Case& c : cases) {
-    std::vector<uint8_t> decoded;
-    if (raw_residual) {
-      decoded.resize(c.input.size());
-    }
+    std::vector<uint8_t> decoded(c.input.size());
+    uint8_t empty_sink = 0;
+    void* dst = decoded.empty() ? static_cast<void*>(&empty_sink)
+                                : static_cast<void*>(decoded.data());
     const auto start = std::chrono::steady_clock::now();
     for (int iter = 0; iter < iters; ++iter) {
-      arixv::Status status = arixv::Status::kOk;
+      arixv_status status = ARIXV_STATUS_OK;
       if (raw_residual) {
         status = arixv::DecodeModuleRawResidual(
             c.encoded.data(), c.encoded.size(), c.input.size(), decoded.data());
       } else {
-        decoded.clear();
-        status = arixv::Decode(c.encoded.data(), c.encoded.size(), decoded);
+        size_t out_size = decoded.size();
+        status = arixv_decode(c.encoded.data(), c.encoded.size(), dst,
+                              &out_size, nullptr);
+        if (status == ARIXV_STATUS_OK && out_size != c.input.size()) {
+          status = ARIXV_STATUS_BAD_CONTAINER;
+        }
       }
-      if (status != arixv::Status::kOk ||
-          decoded.size() != c.input.size()) {
+      if (status != ARIXV_STATUS_OK) {
         std::cerr << "decode failed for " << c.path << "\n";
         return 1;
       }

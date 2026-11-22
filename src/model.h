@@ -26,9 +26,9 @@ void EncodeModule(const uint8_t* data, size_t size,
 #endif
 
 // Each call builds and frees its own model. Writes exactly
-// `expected_original_size` bytes into caller-provided `out` on kOk.
-Status DecodeModule(const uint8_t* payload, size_t payload_size,
-                    size_t expected_original_size, uint8_t* out);
+// `expected_original_size` bytes into caller-provided `out` on ARIXV_STATUS_OK.
+arixv_status DecodeModule(const uint8_t* payload, size_t payload_size,
+                          size_t expected_original_size, uint8_t* out);
 
 #ifdef ARIXV_ENABLE_RAW_RESIDUAL
 // Experimental entropy-free residual path used to measure the decode ceiling
@@ -41,8 +41,10 @@ void EncodeModuleRawResidual(const uint8_t* data, size_t size,
                              std::vector<uint8_t>& out_payload);
 #endif
 
-Status DecodeModuleRawResidual(const uint8_t* payload, size_t payload_size,
-                               size_t expected_original_size, uint8_t* out);
+arixv_status DecodeModuleRawResidual(const uint8_t* payload,
+                                     size_t payload_size,
+                                     size_t expected_original_size,
+                                     uint8_t* out);
 #endif
 
 }  // namespace v1

@@ -43,17 +43,17 @@ compression research** to proceed in parallel without fighting merge conflicts.
 Phase 0: Shared Infrastructure (on main, before branching)
    ├─ [x] 0a. GitHub Actions CI (Linux GCC/Clang, ASan/UBSan, macOS AArch64 NEON, Windows MSVC)
    ├─ [x] 0b. Concrete rough edges (MSVC intrinsics, Encode thread-safety, heap ModelState, -fno-exceptions)
-   └─ [ ] 0c. model.cpp seams, hardening, golden vectors & CMakeLists.txt (drop Makefile; unify CI)
+   └─ [x] 0c. model.cpp seams, hardening, golden vectors & CMakeLists.txt (drop Makefile; unify CI)
           │
           ├──────────────────────────────────────────┐
           ▼                                          ▼
 Track A: 1.0 Productization                 Track B: Multi-Module Research
 (include/arixv/, arixv*.cpp,                (separate branch; prototype & oracle
  grammar_tables, cli/, tests/, README)       for cross-shader compression)
-   1. Thin C-only public API & zero-copy decode
-   2. Decoder-only binary size trimming
-   3. CLI usability
-   4. Format spec, README refresh & v1.0 freeze
+   [x] 1. Thin C-only public API & zero-copy decode
+   [ ] 2. Decoder-only binary size trimming
+   [ ] 3. CLI usability
+   [ ] 4. Format spec, README refresh & v1.0 freeze
 ```
 
 ---

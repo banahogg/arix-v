@@ -82,30 +82,47 @@ int main(int argc, char** argv) {
       return 1;
     }
 
+    const size_t bound = arixv_encode_bound(input.size(), nullptr);
+    if (bound == 0) {
+      std::cerr << "encode bound failed for " << path << "\n";
+      return 1;
+    }
+    std::vector<uint8_t> encoded(bound);
+    size_t encoded_size = encoded.size();
     const auto start = std::chrono::steady_clock::now();
-    const std::vector<uint8_t> encoded = arixv::Encode(input.data(), input.size());
+    const arixv_status enc_status = arixv_encode(
+        input.data(), input.size(), encoded.data(), &encoded_size, nullptr);
     const auto end = std::chrono::steady_clock::now();
+    if (enc_status != ARIXV_STATUS_OK) {
+      std::cerr << "encode failed for " << path << "\n";
+      return 1;
+    }
+    encoded.resize(encoded_size);
     const auto ns =
         std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
             .count();
 
-    std::vector<uint8_t> decoded;
-    const arixv::Status status =
-        arixv::Decode(encoded.data(), encoded.size(), decoded);
-    if (status != arixv::Status::kOk || decoded != input) {
+    std::vector<uint8_t> decoded(input.size());
+    uint8_t empty_sink = 0;
+    void* dst = decoded.empty() ? static_cast<void*>(&empty_sink)
+                                : static_cast<void*>(decoded.data());
+    size_t decoded_size = decoded.size();
+    const arixv_status status = arixv_decode(
+        encoded.data(), encoded.size(), dst, &decoded_size, nullptr);
+    if (status != ARIXV_STATUS_OK || decoded_size != input.size() ||
+        decoded != input) {
       std::cerr << "decode verify failed for " << path << "\n";
       return 1;
     }
 
     int64_t decode_total_ns = 0;
     for (int iter = 0; iter < decode_iters; ++iter) {
-      decoded.clear();
+      size_t out_size = decoded.size();
       const auto decode_start = std::chrono::steady_clock::now();
-      const arixv::Status iter_status =
-          arixv::Decode(encoded.data(), encoded.size(), decoded);
+      const arixv_status iter_status = arixv_decode(
+          encoded.data(), encoded.size(), dst, &out_size, nullptr);
       const auto decode_end = std::chrono::steady_clock::now();
-      if (iter_status != arixv::Status::kOk ||
-          decoded.size() != input.size()) {
+      if (iter_status != ARIXV_STATUS_OK || out_size != input.size()) {
         std::cerr << "decode failed for " << path << "\n";
         return 1;
       }

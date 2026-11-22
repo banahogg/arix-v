@@ -60,9 +60,11 @@ jobs:
       matrix:
         include:
           - name: gcc
+            cc: gcc
             cxx: g++
             run_tsan: true
           - name: clang
+            cc: clang
             cxx: clang++
             run_tsan: false
     steps:
@@ -103,51 +105,70 @@ jobs:
           cmake --build build/dec -j
           ctest --test-dir build/dec --output-on-failure
 
-      - name: Build, test, and verify shared library + consumer smoke tests
+      - name: Build, test, and verify shared library + C11/C++17 consumer smoke tests
         env:
+          CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
         run: |
-          # Static install + find_package consumer (decoder + encoder)
+          # Static install + find_package consumers (C11 & C++17; decoder, encoder, both)
           cmake --install build/rel --prefix "$PWD/build/install-static"
-          cmake -S tests/consumer -B build/consumer-static \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$PWD/build/install-static" \
-            -DARIXV_CONSUMER_MODE=find_package \
-            -DARIXV_CONSUMER_LINK_ENCODER=ON
-          cmake --build build/consumer-static -j
-          ./build/consumer-static/consumer_smoke
+          for lang in C CXX; do
+            for tgt in decoder encoder both; do
+              bdir="build/consumer-static-${lang}-${tgt}"
+              cmake -S tests/consumer -B "$bdir" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH="$PWD/build/install-static" \
+                -DARIXV_CONSUMER_LANG="$lang" \
+                -DARIXV_CONSUMER_MODE=find_package \
+                -DARIXV_CONSUMER_TARGETS="$tgt"
+              cmake --build "$bdir" -j
+              "./$bdir/consumer_smoke"
+            done
+          done
 
-          # Shared build + CTest + install + find_package consumer (decoder + encoder)
+          # Shared build + CTest + verify ONLY C arixv_* symbols are exported
           cmake -S . -B build/shared -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=ON
           cmake --build build/shared -j
           ctest --test-dir build/shared --output-on-failure
+          exported=$(nm -D --defined-only build/shared/libarixv.so | awk '{print $3}' | sort)
+          expected=$(printf '%s\n' arixv_decode arixv_encode arixv_encode_bound arixv_inspect arixv_status_string arixv_version)
+          if [ "$exported" != "$expected" ]; then
+            echo "ERROR: Unexpected exported symbols in libarixv.so:"
+            echo "$exported"
+            exit 1
+          fi
+
+          # Shared install + find_package consumers (C11 & C++17; decoder, encoder, both)
           cmake --install build/shared --prefix "$PWD/build/install-shared"
-          cmake -S tests/consumer -B build/consumer-shared \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$PWD/build/install-shared" \
-            -DARIXV_CONSUMER_MODE=find_package \
-            -DARIXV_CONSUMER_LINK_ENCODER=ON
-          cmake --build build/consumer-shared -j
-          ./build/consumer-shared/consumer_smoke
+          for lang in C CXX; do
+            for tgt in decoder encoder both; do
+              bdir="build/consumer-shared-${lang}-${tgt}"
+              cmake -S tests/consumer -B "$bdir" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH="$PWD/build/install-shared" \
+                -DARIXV_CONSUMER_LANG="$lang" \
+                -DARIXV_CONSUMER_MODE=find_package \
+                -DARIXV_CONSUMER_TARGETS="$tgt"
+              cmake --build "$bdir" -j
+              "./$bdir/consumer_smoke"
+            done
+          done
 
-          # FetchContent consumer (decoder-only default)
-          cmake -S tests/consumer -B build/consumer-fc-dec \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DARIXV_CONSUMER_MODE=fetchcontent \
-            -DARIXV_CONSUMER_SOURCE_DIR="$PWD" \
-            -DARIXV_CONSUMER_LINK_ENCODER=OFF
-          cmake --build build/consumer-fc-dec -j
-          ./build/consumer-fc-dec/consumer_smoke
-
-          # FetchContent consumer (decoder + encoder)
-          cmake -S tests/consumer -B build/consumer-fc-full \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DARIXV_CONSUMER_MODE=fetchcontent \
-            -DARIXV_CONSUMER_SOURCE_DIR="$PWD" \
-            -DARIXV_CONSUMER_LINK_ENCODER=ON
-          cmake --build build/consumer-fc-full -j
-          ./build/consumer-fc-full/consumer_smoke
+          # FetchContent consumers (C11 & C++17; decoder-only and decoder+encoder)
+          for lang in C CXX; do
+            for tgt in decoder both; do
+              bdir="build/consumer-fc-${lang}-${tgt}"
+              cmake -S tests/consumer -B "$bdir" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DARIXV_CONSUMER_LANG="$lang" \
+                -DARIXV_CONSUMER_MODE=fetchcontent \
+                -DARIXV_CONSUMER_SOURCE_DIR="$PWD" \
+                -DARIXV_CONSUMER_TARGETS="$tgt"
+              cmake --build "$bdir" -j
+              "./$bdir/consumer_smoke"
+            done
+          done
 
       - name: Build and test (ASan + UBSan)
         env:
@@ -227,20 +248,24 @@ jobs:
           cmake --build build/scalar -j
           ctest --test-dir build/scalar --output-on-failure
 
-      - name: Build and test (shared + find_package consumer)
+      - name: Build and test (shared + C11/C++17 find_package consumers)
         run: |
           cmake -S . -B build/shared -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=ON
           cmake --build build/shared -j
           ctest --test-dir build/shared --output-on-failure
           cmake --install build/shared --prefix "$PWD/build/install-shared"
-          cmake -S tests/consumer -B build/consumer-shared \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$PWD/build/install-shared" \
-            -DARIXV_CONSUMER_MODE=find_package \
-            -DARIXV_CONSUMER_LINK_ENCODER=ON
-          cmake --build build/consumer-shared -j
-          ./build/consumer-shared/consumer_smoke
+          for lang in C CXX; do
+            bdir="build/consumer-shared-${lang}"
+            cmake -S tests/consumer -B "$bdir" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_PREFIX_PATH="$PWD/build/install-shared" \
+              -DARIXV_CONSUMER_LANG="$lang" \
+              -DARIXV_CONSUMER_MODE=find_package \
+              -DARIXV_CONSUMER_TARGETS=both
+            cmake --build "$bdir" -j
+            "./$bdir/consumer_smoke"
+          done
 
   windows-msvc:
     name: Windows (MSVC x64)
@@ -248,34 +273,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build and test (Release SSE2 + static consumer)
+      - name: Build and test (Release SSE2 + C11/C++17 static consumers)
         shell: pwsh
         run: |
           cmake -S . -B build/rel -A x64
           cmake --build build/rel --config Release --parallel
           ctest --test-dir build/rel -C Release --output-on-failure
           cmake --install build/rel --config Release --prefix "$PWD/build/install-static"
-          cmake -S tests/consumer -B build/consumer-static -A x64 `
-            -DCMAKE_PREFIX_PATH="$PWD/build/install-static" `
-            -DARIXV_CONSUMER_MODE=find_package `
-            -DARIXV_CONSUMER_LINK_ENCODER=ON
-          cmake --build build/consumer-static --config Release --parallel
-          .\build\consumer-static\Release\consumer_smoke.exe
+          foreach ($lang in @("C", "CXX")) {
+            $bdir = "build/consumer-static-$lang"
+            cmake -S tests/consumer -B $bdir -A x64 `
+              -DCMAKE_PREFIX_PATH="$PWD/build/install-static" `
+              -DARIXV_CONSUMER_LANG="$lang" `
+              -DARIXV_CONSUMER_MODE=find_package `
+              -DARIXV_CONSUMER_TARGETS=both
+            cmake --build $bdir --config Release --parallel
+            & ".\$bdir\Release\consumer_smoke.exe"
+          }
 
-      - name: Build and test (Shared DLL + consumer)
+      - name: Build and test (Shared DLL + C11/C++17 consumers)
         shell: pwsh
         run: |
           cmake -S . -B build/shared -A x64 -DBUILD_SHARED_LIBS=ON
           cmake --build build/shared --config Release --parallel
           ctest --test-dir build/shared -C Release --output-on-failure
           cmake --install build/shared --config Release --prefix "$PWD/build/install-shared"
-          cmake -S tests/consumer -B build/consumer-shared -A x64 `
-            -DCMAKE_PREFIX_PATH="$PWD/build/install-shared" `
-            -DARIXV_CONSUMER_MODE=find_package `
-            -DARIXV_CONSUMER_LINK_ENCODER=ON
-          cmake --build build/consumer-shared --config Release --parallel
           $env:PATH = "$PWD\build\install-shared\bin;$env:PATH"
-          .\build\consumer-shared\Release\consumer_smoke.exe
+          foreach ($lang in @("C", "CXX")) {
+            $bdir = "build/consumer-shared-$lang"
+            cmake -S tests/consumer -B $bdir -A x64 `
+              -DCMAKE_PREFIX_PATH="$PWD/build/install-shared" `
+              -DARIXV_CONSUMER_LANG="$lang" `
+              -DARIXV_CONSUMER_MODE=find_package `
+              -DARIXV_CONSUMER_TARGETS=both
+            cmake --build $bdir --config Release --parallel
+            & ".\$bdir\Release\consumer_smoke.exe"
+          }
 
       - name: Build and test (scalar / ARIXV_NO_SIMD)
         shell: pwsh

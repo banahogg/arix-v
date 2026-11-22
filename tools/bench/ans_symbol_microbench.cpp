@@ -548,8 +548,11 @@ int main(int argc, char** argv) {
       return 1;
     }
     raw.clear();
+    std::vector<uint8_t> scratch(arixv_encode_bound(input.size(), nullptr));
+    size_t scratch_size = scratch.size();
     arixv::g_tree_trace = &raw;
-    (void)arixv::Encode(input.data(), input.size());
+    (void)arixv_encode(input.data(), input.size(), scratch.data(),
+                       &scratch_size, nullptr);
     arixv::g_tree_trace = nullptr;
     Module m;
     std::unordered_map<const void*, uint32_t> ids;

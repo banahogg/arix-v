@@ -2753,7 +2753,8 @@ uint32_t CodeWordCount(ModelState& model, Bits& bits, uint16_t inst_index,
 }
 
 template <class Bits, class IO>
-Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
+arixv_status CodeModule(ModelState& model, Bits& bits, IO& io,
+                        size_t word_count) {
 #ifdef ARIXV_ENABLE_STATS
   // Stats tagging: encoder accumulates entropy per category; decoder no-op.
   const bool stats = StatsEnabled();
@@ -3190,12 +3191,12 @@ Status CodeModule(ModelState& model, Bits& bits, IO& io, size_t word_count) {
   if (bits.exhausted()) {
     if constexpr (std::is_same_v<Bits, BitDecoder>) {
       if (!bits.range_exhausted()) {
-        return Status::kBadContainer;
+        return ARIXV_STATUS_BAD_CONTAINER;
       }
     }
-    return Status::kTruncated;
+    return ARIXV_STATUS_TRUNCATED;
   }
-  return Status::kOk;
+  return ARIXV_STATUS_OK;
 }
 
 }  // namespace
@@ -3233,7 +3234,7 @@ void EncodeModule(const uint8_t* data, size_t size,
   RangeEncoder range(out_payload);
   BitEncoder bits(range);
   EncodeIO io(data, size);
-  const Status status = CodeModule(*model, bits, io, size / 4);
+  const arixv_status status = CodeModule(*model, bits, io, size / 4);
   (void)status;
 #ifdef ARIXV_ENABLE_STATS
   g_stat_cat = -1;
@@ -3248,7 +3249,7 @@ void EncodeModuleRawResidual(const uint8_t* data, size_t size,
   model->tracker.Reserve(size / 4);
   RawResidualEncoder bits(out_payload);
   EncodeIO io(data, size);
-  const Status status = CodeModule(*model, bits, io, size / 4);
+  const arixv_status status = CodeModule(*model, bits, io, size / 4);
   (void)status;
   bits.Flush();
 }
@@ -3300,11 +3301,11 @@ void RecordModelMemory(const ModelState& m) {
 }  // namespace
 #endif
 
-Status DecodeModule(const uint8_t* payload, size_t payload_size,
-                    size_t expected_original_size, uint8_t* out) {
+arixv_status DecodeModule(const uint8_t* payload, size_t payload_size,
+                          size_t expected_original_size, uint8_t* out) {
   if (expected_original_size < 20 || (expected_original_size % 4) != 0 ||
       out == nullptr) {
-    return Status::kBadContainer;
+    return ARIXV_STATUS_BAD_CONTAINER;
   }
   // Heap-allocated: ModelState's inline models are too large for the stack.
   const auto model = std::make_unique<ModelState>();
@@ -3313,47 +3314,49 @@ Status DecodeModule(const uint8_t* payload, size_t payload_size,
   RangeDecoder range(payload, payload_size);
   BitDecoder bits(range);
   DecodeIO io(out, expected_original_size);
-  const Status status =
+  const arixv_status status =
       CodeModule(*model, bits, io, expected_original_size / 4);
 #ifdef ARIXV_MEMSTATS
   RecordModelMemory(*model);
 #endif
-  if (status != Status::kOk) {
+  if (status != ARIXV_STATUS_OK) {
     return status;
   }
   if (!io.Complete()) {
-    return Status::kTruncated;
+    return ARIXV_STATUS_TRUNCATED;
   }
   if (!bits.ConsumedExactly()) {
-    return Status::kBadContainer;
+    return ARIXV_STATUS_BAD_CONTAINER;
   }
-  return Status::kOk;
+  return ARIXV_STATUS_OK;
 }
 
 #ifdef ARIXV_ENABLE_RAW_RESIDUAL
-Status DecodeModuleRawResidual(const uint8_t* payload, size_t payload_size,
-                               size_t expected_original_size, uint8_t* out) {
+arixv_status DecodeModuleRawResidual(const uint8_t* payload,
+                                     size_t payload_size,
+                                     size_t expected_original_size,
+                                     uint8_t* out) {
   if (expected_original_size < 20 || (expected_original_size % 4) != 0 ||
       out == nullptr) {
-    return Status::kBadContainer;
+    return ARIXV_STATUS_BAD_CONTAINER;
   }
   const auto model = std::make_unique<ModelState>();
   model->tracker.Reserve(
       CappedDecodeReserve(payload_size, expected_original_size) / 4);
   RawResidualDecoder bits(payload, payload_size);
   DecodeIO io(out, expected_original_size);
-  const Status status =
+  const arixv_status status =
       CodeModule(*model, bits, io, expected_original_size / 4);
-  if (status != Status::kOk) {
+  if (status != ARIXV_STATUS_OK) {
     return status;
   }
   if (!io.Complete()) {
-    return Status::kTruncated;
+    return ARIXV_STATUS_TRUNCATED;
   }
   if (!bits.AtEndWithZeroPadding()) {
-    return Status::kBadContainer;
+    return ARIXV_STATUS_BAD_CONTAINER;
   }
-  return Status::kOk;
+  return ARIXV_STATUS_OK;
 }
 #endif
 

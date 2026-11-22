@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "arixv/arixv.h"
+#include "container.h"
 #include "model.h"
 #include "prob.h"
 #include "tracker.h"
@@ -22,6 +23,46 @@ uint8_t ContainerMode(const std::vector<uint8_t>& encoded) {
                     arixv::kContainerMagic + arixv::kContainerMagicBytes,
                     encoded.begin()));
   return encoded[arixv::kContainerMagicBytes];
+}
+
+std::vector<uint8_t> EncodeBytes(const std::vector<uint8_t>& input,
+                                 bool force_coded) {
+  std::vector<uint8_t> out;
+  if (force_coded) {
+    CHECK(arixv::EncodeInternal(input.data(), input.size(), true, out) ==
+          ARIXV_STATUS_OK);
+    return out;
+  }
+  const size_t bound = arixv_encode_bound(input.size(), nullptr);
+  CHECK(bound >= 6);
+  out.resize(bound);
+  size_t out_size = out.size();
+  CHECK(arixv_encode(input.data(), input.size(), out.data(), &out_size,
+                     nullptr) == ARIXV_STATUS_OK);
+  out.resize(out_size);
+  return out;
+}
+
+arixv_status DecodeBytes(const uint8_t* data, size_t size,
+                         std::vector<uint8_t>& out) {
+  out.clear();
+  size_t required = 0;
+  arixv_status st = arixv_decode(data, size, nullptr, &required, nullptr);
+  if (st != ARIXV_STATUS_OK) {
+    return st;
+  }
+  out.resize(required);
+  uint8_t empty_sink = 0;
+  void* dst = required == 0 ? static_cast<void*>(&empty_sink)
+                            : static_cast<void*>(out.data());
+  size_t out_size = required;
+  st = arixv_decode(data, size, dst, &out_size, nullptr);
+  if (st == ARIXV_STATUS_OK) {
+    out.resize(out_size);
+  } else {
+    out.clear();
+  }
+  return st;
 }
 
 bool ReadFile(const std::filesystem::path& path, std::vector<uint8_t>& data) {
@@ -91,17 +132,14 @@ void AppendStringWords(const std::string& text, std::vector<uint32_t>& out,
 
 void RoundTrip(const std::vector<uint8_t>& input, bool force_coded,
                int expected_mode = -1) {
-  arixv::EncodeOptions opts;
-  opts.force_coded = force_coded;
-  const std::vector<uint8_t> encoded =
-      arixv::Encode(input.data(), input.size(), opts);
+  const std::vector<uint8_t> encoded = EncodeBytes(input, force_coded);
   CHECK(!encoded.empty());
   if (expected_mode >= 0) {
     CHECK(ContainerMode(encoded) == expected_mode);
   }
   std::vector<uint8_t> decoded;
-  CHECK(arixv::Decode(encoded.data(), encoded.size(), decoded) ==
-         arixv::Status::kOk);
+  CHECK(DecodeBytes(encoded.data(), encoded.size(), decoded) ==
+        ARIXV_STATUS_OK);
   CHECK(decoded == input);
 
   if (arixv::IsSpirvModelEligible(input.data(), input.size())) {
@@ -110,7 +148,7 @@ void RoundTrip(const std::vector<uint8_t>& input, bool force_coded,
     std::vector<uint8_t> raw_decoded(input.size());
     CHECK(arixv::DecodeModuleRawResidual(raw.data(), raw.size(), input.size(),
                                           raw_decoded.data()) ==
-           arixv::Status::kOk);
+          ARIXV_STATUS_OK);
     CHECK(raw_decoded == input);
   }
 }
@@ -188,18 +226,15 @@ void HostileModules() {
   RoundTrip(Module({op_type_int, 2, 32, 1}, 0x00010300u, 0, 3), true,
             arixv::kModeSpirv);
 
-  arixv::EncodeOptions opts;
-  opts.force_coded = true;
   const std::vector<uint8_t> module =
       Module({op_memory_model, 0, 1}, 0x00010300u, 0, 1);
-  std::vector<uint8_t> encoded =
-      arixv::Encode(module.data(), module.size(), opts);
+  std::vector<uint8_t> encoded = EncodeBytes(module, true);
   CHECK(!encoded.empty());
   CHECK(ContainerMode(encoded) == arixv::kModeSpirv);
   encoded.push_back(0);
   std::vector<uint8_t> decoded;
-  CHECK(arixv::Decode(encoded.data(), encoded.size(), decoded) ==
-         arixv::Status::kBadContainer);
+  CHECK(DecodeBytes(encoded.data(), encoded.size(), decoded) ==
+        ARIXV_STATUS_BAD_CONTAINER);
 }
 
 void RawResidualValidation() {
@@ -214,7 +249,7 @@ void RawResidualValidation() {
     std::vector<uint8_t> decoded(module.size());
     CHECK(arixv::DecodeModuleRawResidual(raw.data(), prefix, module.size(),
                                           decoded.data()) !=
-           arixv::Status::kOk);
+          ARIXV_STATUS_OK);
   }
 
   std::vector<uint8_t> padded = raw;
@@ -222,11 +257,11 @@ void RawResidualValidation() {
   std::vector<uint8_t> decoded(module.size());
   CHECK(arixv::DecodeModuleRawResidual(padded.data(), padded.size(),
                                         module.size(), decoded.data()) ==
-         arixv::Status::kBadContainer);
+        ARIXV_STATUS_BAD_CONTAINER);
 
   // A rejected decode leaves nothing behind for the next call.
   CHECK(arixv::DecodeModuleRawResidual(raw.data(), raw.size(), module.size(),
-                                        decoded.data()) == arixv::Status::kOk);
+                                        decoded.data()) == ARIXV_STATUS_OK);
   CHECK(decoded == module);
 }
 
@@ -979,10 +1014,7 @@ void AdaptiveIdListSourceTests() {
 
     // Sanity check: adaptive typed-list selection should compress this
     // repetitive polymorphic shader well below its uncompressed size.
-    arixv::EncodeOptions opts;
-    opts.force_coded = true;
-    const std::vector<uint8_t> encoded =
-        arixv::Encode(mod.data(), mod.size(), opts);
+    const std::vector<uint8_t> encoded = EncodeBytes(mod, true);
     CHECK(encoded.size() * 2 < mod.size());
   }
 
@@ -1586,21 +1618,18 @@ void DeferredWordCountModules() {
         Op(12, 6), 3, 7, 1, 14, 6,
     });
     const std::vector<uint8_t> mod = Module(body, 0x00010300u, 0, 10);
-    arixv::EncodeOptions opts;
-    opts.force_coded = true;
-    const std::vector<uint8_t> encoded =
-        arixv::Encode(mod.data(), mod.size(), opts);
+    const std::vector<uint8_t> encoded = EncodeBytes(mod, true);
     CHECK(ContainerMode(encoded) == arixv::kModeSpirv);
     for (size_t prefix = 0; prefix < encoded.size(); ++prefix) {
       std::vector<uint8_t> out;
-      const arixv::Status st = arixv::Decode(encoded.data(), prefix, out);
-      CHECK(st != arixv::Status::kOk);
+      const arixv_status st = DecodeBytes(encoded.data(), prefix, out);
+      CHECK(st != ARIXV_STATUS_OK);
     }
     for (size_t i = arixv::kContainerMagicBytes + 1; i < encoded.size(); ++i) {
       std::vector<uint8_t> mutated = encoded;
       mutated[i] ^= 0x55u;
       std::vector<uint8_t> out;
-      (void)arixv::Decode(mutated.data(), mutated.size(), out);
+      (void)DecodeBytes(mutated.data(), mutated.size(), out);
     }
   }
 

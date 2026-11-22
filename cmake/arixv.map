@@ -1,0 +1,6 @@
+{
+  global:
+    arixv_*;
+  local:
+    *;
+};

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "arixv/arixv.h"
+#include "container.h"
 
 namespace {
 
@@ -30,12 +31,71 @@ std::vector<uint8_t> ReadFile(const std::string& path) {
 
 uint64_t g_failures = 0;
 
+arixv_status EncodeHelper(const std::vector<uint8_t>& input, bool force_coded,
+                          std::vector<uint8_t>& out) {
+  if (force_coded) {
+    return arixv::EncodeInternal(input.data(), input.size(), true, out);
+  }
+  const size_t bound = arixv_encode_bound(input.size(), nullptr);
+  if (bound == 0) {
+    return ARIXV_STATUS_INVALID_ARGUMENT;
+  }
+  out.resize(bound);
+  size_t out_size = out.size();
+  const arixv_status st =
+      arixv_encode(input.data(), input.size(), out.data(), &out_size, nullptr);
+  if (st == ARIXV_STATUS_OK) {
+    out.resize(out_size);
+  }
+  return st;
+}
+
+arixv_status DecodeHelper(const std::vector<uint8_t>& encoded,
+                          std::vector<uint8_t>& out, size_t max_output) {
+  out.clear();
+  size_t required = 0;
+  arixv_status st =
+      arixv_decode(encoded.data(), encoded.size(), nullptr, &required, nullptr);
+  if (st != ARIXV_STATUS_OK) {
+    return st;
+  }
+  if (required > max_output) {
+    uint8_t probe = 0;
+    size_t cap = max_output;
+    const arixv_status small_st =
+        arixv_decode(encoded.data(), encoded.size(), &probe, &cap, nullptr);
+    if (small_st != ARIXV_STATUS_BUFFER_TOO_SMALL || cap != required) {
+      std::fprintf(stderr,
+                   "FAIL: expected BUFFER_TOO_SMALL for oversized payload\n");
+      ++g_failures;
+    }
+    return ARIXV_STATUS_TOO_LARGE;
+  }
+  out.resize(required);
+  uint8_t empty_sink = 0;
+  void* dst = required == 0 ? static_cast<void*>(&empty_sink)
+                            : static_cast<void*>(out.data());
+  size_t out_size = required;
+  st = arixv_decode(encoded.data(), encoded.size(), dst, &out_size, nullptr);
+  if (st == ARIXV_STATUS_OK) {
+    out.resize(out_size);
+  } else {
+    out.clear();
+  }
+  return st;
+}
+
 void CheckRoundTrip(const std::vector<uint8_t>& input, bool force_coded,
                     const char* label, uint64_t iter) {
-  arixv::EncodeOptions opts;
-  opts.force_coded = force_coded;
-  const std::vector<uint8_t> encoded =
-      arixv::Encode(input.data(), input.size(), opts);
+  std::vector<uint8_t> encoded;
+  const arixv_status enc_st = EncodeHelper(input, force_coded, encoded);
+  if (enc_st != ARIXV_STATUS_OK) {
+    std::fprintf(stderr, "FAIL[%s#%llu]: encode failed (status=%s)\n", label,
+                 static_cast<unsigned long long>(iter),
+                 arixv_status_string(enc_st));
+    ++g_failures;
+    return;
+  }
   if (!force_coded && encoded.size() > input.size() + 10) {
     std::fprintf(stderr,
                  "FAIL[%s#%llu]: expansion bound violated (%zu -> %zu)\n",
@@ -45,9 +105,8 @@ void CheckRoundTrip(const std::vector<uint8_t>& input, bool force_coded,
     return;
   }
   std::vector<uint8_t> decoded;
-  const arixv::Status st =
-      arixv::Decode(encoded.data(), encoded.size(), decoded);
-  if (st != arixv::Status::kOk || decoded != input) {
+  const arixv_status st = DecodeHelper(encoded, decoded, size_t{1} << 28);
+  if (st != ARIXV_STATUS_OK || decoded != input) {
     std::fprintf(stderr, "FAIL[%s#%llu]: round-trip mismatch (status=%d, %zu "
                          "bytes in, %zu out, force_coded=%d)\n",
                  label, static_cast<unsigned long long>(iter),
@@ -58,14 +117,23 @@ void CheckRoundTrip(const std::vector<uint8_t>& input, bool force_coded,
 }
 
 void CheckDecodeSafety(const std::vector<uint8_t>& blob) {
+  arixv_header_info info{};
+  info.struct_size = sizeof(info);
+  const arixv_status inspect_st =
+      arixv_inspect(blob.data(), blob.size(), &info);
   std::vector<uint8_t> out;
   // Small cap so hostile size declarations must be rejected, not allocated.
-  const arixv::Status st = arixv::Decode(blob.data(), blob.size(), out,
-                                           1u << 24);
-  if (st == arixv::Status::kOk && out.size() > (1u << 24)) {
-    std::fprintf(stderr, "FAIL: decode exceeded max_output (%zu bytes)\n",
-                 out.size());
-    ++g_failures;
+  const arixv_status st = DecodeHelper(blob, out, 1u << 24);
+  if (st == ARIXV_STATUS_OK) {
+    if (out.size() > (1u << 24)) {
+      std::fprintf(stderr, "FAIL: decode exceeded max_output (%zu bytes)\n",
+                   out.size());
+      ++g_failures;
+    }
+    if (inspect_st != ARIXV_STATUS_OK || info.uncompressed_size != out.size()) {
+      std::fprintf(stderr, "FAIL: inspect/decode size mismatch\n");
+      ++g_failures;
+    }
   }
 }
 
@@ -141,7 +209,7 @@ int main(int argc, char** argv) {
     // Decode-safety: random blobs and mutated *encodings*.
     std::vector<uint8_t> blob;
     if ((rng() & 1) && !input.empty()) {
-      blob = arixv::Encode(input.data(), input.size());
+      (void)EncodeHelper(input, false, blob);
       for (int flips = static_cast<int>(rng() % 16) + 1; flips-- > 0;) {
         blob[rng() % blob.size()] ^= static_cast<uint8_t>(1u << (rng() % 8));
       }

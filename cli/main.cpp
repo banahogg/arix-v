@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "arixv/arixv.h"
+#include "container.h"
 
 namespace {
 
@@ -38,6 +39,45 @@ bool WriteFile(const std::string& path, const std::vector<uint8_t>& data) {
   return static_cast<bool>(out);
 }
 
+arixv_status EncodeBuffer(const std::vector<uint8_t>& input, bool force_coded,
+                          std::vector<uint8_t>& out) {
+  if (force_coded) {
+    return arixv::EncodeInternal(input.data(), input.size(), true, out);
+  }
+  const size_t bound = arixv_encode_bound(input.size(), nullptr);
+  if (bound == 0) {
+    return ARIXV_STATUS_INVALID_ARGUMENT;
+  }
+  out.resize(bound);
+  size_t out_size = out.size();
+  const arixv_status status =
+      arixv_encode(input.data(), input.size(), out.data(), &out_size, nullptr);
+  if (status == ARIXV_STATUS_OK) {
+    out.resize(out_size);
+  }
+  return status;
+}
+
+arixv_status DecodeBuffer(const std::vector<uint8_t>& input,
+                          std::vector<uint8_t>& out) {
+  size_t required = 0;
+  arixv_status status =
+      arixv_decode(input.data(), input.size(), nullptr, &required, nullptr);
+  if (status != ARIXV_STATUS_OK) {
+    return status;
+  }
+  out.resize(required);
+  uint8_t empty_sink = 0;
+  void* dst = required == 0 ? static_cast<void*>(&empty_sink)
+                            : static_cast<void*>(out.data());
+  size_t out_size = required;
+  status = arixv_decode(input.data(), input.size(), dst, &out_size, nullptr);
+  if (status == ARIXV_STATUS_OK) {
+    out.resize(out_size);
+  }
+  return status;
+}
+
 void Usage(const char* argv0) {
   std::cerr << "usage: " << argv0 << " c [--force-coded] <in> <out>\n"
             << "       " << argv0 << " d <in> <out>\n"
@@ -54,12 +94,12 @@ int main(int argc, char** argv) {
   }
 
   const std::string cmd = argv[1];
-  arixv::EncodeOptions opts;
+  bool force_coded = false;
   std::vector<std::string> args;
   for (int i = 2; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--force-coded") {
-      opts.force_coded = true;
+      force_coded = true;
     } else {
       args.push_back(arg);
     }
@@ -75,10 +115,10 @@ int main(int argc, char** argv) {
       std::cerr << "failed to read " << args[0] << "\n";
       return 1;
     }
-    const std::vector<uint8_t> encoded =
-        arixv::Encode(input.data(), input.size(), opts);
-    if (encoded.empty() && !input.empty()) {
-      std::cerr << "encode failed: input too large\n";
+    std::vector<uint8_t> encoded;
+    const arixv_status status = EncodeBuffer(input, force_coded, encoded);
+    if (status != ARIXV_STATUS_OK) {
+      std::cerr << "encode failed: " << arixv_status_string(status) << "\n";
       return 1;
     }
     if (!WriteFile(args[1], encoded)) {
@@ -99,10 +139,9 @@ int main(int argc, char** argv) {
       std::cerr << "failed to read " << args[0] << "\n";
       return 1;
     }
-    const arixv::Status status =
-        arixv::Decode(input.data(), input.size(), decoded);
-    if (status != arixv::Status::kOk) {
-      std::cerr << "decode failed: " << arixv::StatusToString(status) << "\n";
+    const arixv_status status = DecodeBuffer(input, decoded);
+    if (status != ARIXV_STATUS_OK) {
+      std::cerr << "decode failed: " << arixv_status_string(status) << "\n";
       return 1;
     }
     if (!WriteFile(args[1], decoded)) {
@@ -124,9 +163,8 @@ int main(int argc, char** argv) {
       bool ok = ReadFile(path, input);
       std::vector<uint8_t> encoded;
       if (ok) {
-        encoded = arixv::Encode(input.data(), input.size(), opts);
-        ok = arixv::Decode(encoded.data(), encoded.size(), decoded) ==
-                 arixv::Status::kOk &&
+        ok = EncodeBuffer(input, force_coded, encoded) == ARIXV_STATUS_OK &&
+             DecodeBuffer(encoded, decoded) == ARIXV_STATUS_OK &&
              decoded == input;
       }
       std::cout << path << "\t" << (ok ? "OK" : "FAIL") << "\t"

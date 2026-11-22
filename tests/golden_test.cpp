@@ -182,25 +182,56 @@ int main(int argc, char** argv) {
   // Sanity-check SHA-256 implementation against NIST empty-string vector.
   CHECK(Sha256Hex(nullptr, 0) ==
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  CHECK(arixv_version() ==
+        ((static_cast<uint32_t>(ARIXV_VERSION_MAJOR) << 16) |
+         (static_cast<uint32_t>(ARIXV_VERSION_MINOR) << 8) |
+         static_cast<uint32_t>(ARIXV_VERSION_PATCH)));
+
+  const uint32_t expected_magic =
+      static_cast<uint32_t>(static_cast<uint8_t>(ARIXV_MAGIC_0)) |
+      (static_cast<uint32_t>(static_cast<uint8_t>(ARIXV_MAGIC_1)) << 8) |
+      (static_cast<uint32_t>(static_cast<uint8_t>(ARIXV_MAGIC_2)) << 16) |
+      (static_cast<uint32_t>(static_cast<uint8_t>(ARIXV_MAGIC_3)) << 24);
 
   for (const GoldenVector& vec : kVectors) {
     const std::filesystem::path path = dir / vec.filename;
     std::vector<uint8_t> encoded;
     CHECK(ReadFile(path, encoded));
     CHECK(encoded.size() == vec.enc_size);
-    CHECK(encoded.size() > arixv::kContainerMagicBytes);
-    CHECK(encoded[arixv::kContainerMagicBytes] == vec.expected_mode);
     CHECK(Sha256Hex(encoded.data(), encoded.size()) == vec.enc_sha256);
 
-    std::vector<uint8_t> decoded;
-    CHECK(arixv::Decode(encoded.data(), encoded.size(), decoded) ==
-          arixv::Status::kOk);
-    CHECK(decoded.size() == vec.orig_size);
+    arixv_header_info info{};
+    info.struct_size = sizeof(info);
+    CHECK(arixv_inspect(encoded.data(), encoded.size(), &info) ==
+          ARIXV_STATUS_OK);
+    CHECK(info.magic == expected_magic);
+    CHECK(info.mode == vec.expected_mode);
+    CHECK(info.reserved == 0);
+    CHECK(info.uncompressed_size == vec.orig_size);
+
+    size_t queried_size = 0;
+    CHECK(arixv_decode(encoded.data(), encoded.size(), nullptr, &queried_size,
+                       nullptr) == ARIXV_STATUS_OK);
+    CHECK(queried_size == vec.orig_size);
+
+    std::vector<uint8_t> decoded(queried_size);
+    uint8_t empty_sink = 0;
+    void* dst = queried_size == 0 ? static_cast<void*>(&empty_sink)
+                                  : static_cast<void*>(decoded.data());
+    size_t decoded_size = queried_size;
+    CHECK(arixv_decode(encoded.data(), encoded.size(), dst, &decoded_size,
+                       nullptr) == ARIXV_STATUS_OK);
+    CHECK(decoded_size == vec.orig_size);
     CHECK(Sha256Hex(decoded.data(), decoded.size()) == vec.orig_sha256);
 
 #if ARIXV_ENCODER
-    const std::vector<uint8_t> reencoded =
-        arixv::Encode(decoded.data(), decoded.size());
+    const size_t bound = arixv_encode_bound(decoded.size(), nullptr);
+    CHECK(bound >= 6);
+    std::vector<uint8_t> reencoded(bound);
+    size_t reencoded_size = reencoded.size();
+    CHECK(arixv_encode(decoded.data(), decoded.size(), reencoded.data(),
+                       &reencoded_size, nullptr) == ARIXV_STATUS_OK);
+    reencoded.resize(reencoded_size);
     CHECK(reencoded.size() == vec.enc_size);
     CHECK(reencoded == encoded);
     CHECK(Sha256Hex(reencoded.data(), reencoded.size()) == vec.enc_sha256);
