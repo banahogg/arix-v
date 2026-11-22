@@ -255,9 +255,7 @@ void OperandCursor::ConsumeSlow(const Field& field, uint32_t words,
         if (!ext_inst) {
           degraded_ = true;
         } else {
-          slots_ = ext_set_->operand_slots
-                       ? ext_set_->operand_slots + ext_inst->first_operand
-                       : nullptr;
+          slots_ = GetExtOperandSlots(*ext_set_, *ext_inst);
           num_slots_ = ext_inst->num_operands;
           slot_pos_ = 0;
           composite_pos_ = -1;

@@ -95,7 +95,27 @@ decoder accepts only an exact magic match. Any change that can alter encoded
 bytes must choose a new four-byte magic; ARIX-V makes no compatibility promise
 between different magic values.
 
-The CLI and Makefile are intended for offline compression and development.
+### Decoder binary footprint
+
+`arixv::decoder` carries zero unused grammar name strings (diagnostic names are
+generated separately in `src/grammar_names.cpp` for test/analysis targets only)
+and stores all SPIR-V grammar tables as pure position-independent `.rodata`
+with zero `.data.rel.ro` entries.
+
+Measured on Linux x86_64 (GCC 15, `ARIXV_BUILD_ENCODER=OFF`):
+
+| Build | `.text` | `.rodata` | `.data.rel.ro` | Total (`size`) | Stripped `.so` |
+|---|---|---|---|---|---|
+| Shared `-O3` (`Release`) | 93.2 KB | 83.9 KB | 0 B | 188.9 KB | 194.9 KB |
+| Shared `-O3` + LTO | — | — | 0 B | 182.6 KB | 186.7 KB |
+| Shared `-Os` (`MinSizeRel`) | 44.4 KB | 84.1 KB | 0 B | 142.2 KB | 149.9 KB |
+| Shared `-Os` + LTO | — | — | 0 B | 135.4 KB | 145.8 KB |
+
+Static links with `-Wl,--gc-sections` against `arixv::decoder` match these
+totals even when the project was configured with `ARIXV_BUILD_ENCODER=ON`
+(~178 KB at `-O3`, ~143 KB at `-Os`).
+
+The CLI and build scripts are intended for offline compression and development.
 Benchmarks, fuzzers, and scripts are development tools; none are required by
 an integrating application.
 

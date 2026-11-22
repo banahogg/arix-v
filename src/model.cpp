@@ -2113,13 +2113,14 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
     }
     return CodeUint(bits, model.arena, EnsureUint(model.arena, model.ext_inst_unknown), hint);
   }
+  const InstructionDesc* const set_insts = GetExtInstructions(*set);
   const InstructionDesc* inst =
       Bits::kEncoding ? FindExtInstruction(*set, hint) : nullptr;
   uint32_t index = 0;
   bool known = false;
   if (inst) {
     for (uint16_t i = 0; i < set->num_instructions && i < 256; ++i) {
-      if (&set->instructions[i] == inst) {
+      if (&set_insts[i] == inst) {
         index = i;
         known = true;
         break;
@@ -2130,7 +2131,7 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
     if (bits.CodeBit(model.schema_zero, known)) {
       index = bits.CodeBitsDirect(index, 8);
       if (!Bits::kEncoding && index < set->num_instructions) {
-        return set->instructions[index].opcode;
+        return set_insts[index].opcode;
       }
       return Bits::kEncoding ? hint : 0;
     }
@@ -2143,7 +2144,7 @@ uint32_t CodeExtInstNumber(Bits& bits, ModelState& model,
     index = ctx.index.CodeValue(bits, model.arena, index,
                                 IndexLeafPrior{set->num_instructions});
     if (!Bits::kEncoding && index < set->num_instructions) {
-      return set->instructions[index].opcode;
+      return set_insts[index].opcode;
     }
     return Bits::kEncoding ? hint : 0;
   }

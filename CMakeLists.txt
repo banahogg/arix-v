@@ -98,10 +98,13 @@ if(BUILD_SHARED_LIBS)
     set(_arixv_version_script "${CMAKE_CURRENT_SOURCE_DIR}/cmake/arixv.map")
     target_link_options(arixv_shared PRIVATE
       "-Wl,--version-script=${_arixv_version_script}"
+      "-Wl,--gc-sections"
     )
     set_property(TARGET arixv_shared APPEND PROPERTY
       LINK_DEPENDS "${_arixv_version_script}"
     )
+  elseif(APPLE)
+    target_link_options(arixv_shared PRIVATE "-Wl,-dead_strip")
   endif()
 
   add_library(arixv_decoder INTERFACE)
@@ -335,6 +338,7 @@ if(ARIXV_BUILD_TESTS)
   add_executable(grammar_tables_test
     tests/grammar_tables_test.cpp
     src/grammar_tables.cpp
+    src/grammar_names.cpp
   )
   arixv_apply_compile_options(grammar_tables_test)
   target_include_directories(grammar_tables_test PRIVATE

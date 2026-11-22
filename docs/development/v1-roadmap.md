@@ -51,7 +51,7 @@ Track A: 1.0 Productization                 Track B: Multi-Module Research
 (include/arixv/, arixv*.cpp,                (separate branch; prototype & oracle
  grammar_tables, cli/, tests/, README)       for cross-shader compression)
    [x] 1. Thin C-only public API & zero-copy decode
-   [ ] 2. Decoder-only binary size trimming
+   [x] 2. Decoder-only binary size trimming
    [ ] 3. CLI usability
    [ ] 4. Format spec, README refresh & v1.0 freeze
 ```

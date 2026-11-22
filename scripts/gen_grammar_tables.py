@@ -16,6 +16,7 @@ from typing import Iterable
 ROOT = Path(__file__).resolve().parents[1]
 GRAMMAR_DIR = ROOT / "grammar-deps" / "spirv-headers" / "include" / "spirv" / "unified1"
 OUT = ROOT / "src" / "grammar_tables.cpp"
+OUT_NAMES = ROOT / "src" / "grammar_names.cpp"
 
 
 # Keep this as the one place to add another supported extended instruction set.
@@ -595,13 +596,13 @@ def emit_instruction(instruction: Instruction) -> str:
     num_operands = getattr(instruction, "num_operands")
     return (
         "{"
-        f"{cpp_string(instruction.name)}, {instruction.opcode}, {first_operand}, "
+        f"{instruction.opcode}, {first_operand}, "
         f"{instruction.min_word_count}, "
         f"static_cast<uint16_t>({emit_flags(instruction.flags)}), "
-        f"{num_operands}, {str(instruction.has_result).lower()}, "
-        f"{str(instruction.has_result_type).lower()}, {instruction.instruction_class}, "
+        f"{num_operands}, {instruction.instruction_class}, "
         f"{instruction.result_bucket}, {instruction.type_class}, {instruction.section}, "
-        f"{str(instruction.fixed_word_count).lower()}, {instruction.aux_word}"
+        f"{instruction.aux_word}, {int(instruction.has_result)}, "
+        f"{int(instruction.has_result_type)}, {int(instruction.fixed_word_count)}"
         "}"
     )
 
@@ -757,6 +758,7 @@ def main() -> None:
             )
         )
 
+    checked_uint("operand kind count", len(operand_kind_records), 255)
     for i, record in enumerate(operand_kind_records):
         checked_uint(f"operand kind {i} first_enumerant", record[2], 65535)
         checked_uint(f"operand kind {i} num_enumerants", record[3], 65535)
@@ -784,21 +786,90 @@ def main() -> None:
             checked_uint(f"instruction {instruction.name} min_word_count", instruction.min_word_count, 65535)
             checked_uint(f"instruction {instruction.name} aux_word", instruction.aux_word, 255)
 
+    # String-model knowledge: names the grammar itself spells out.
+    def collect_extensions(node: object, out: set[str]) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "extensions" and isinstance(value, list):
+                    out.update(str(v) for v in value)
+                else:
+                    collect_extensions(value, out)
+        elif isinstance(node, list):
+            for value in node:
+                collect_extensions(value, out)
+
+    extension_names: set[str] = set()
+    collect_extensions(core, extension_names)
+    grammar_strings = sorted(extension_names | {s.name for s in ext_sets})
+    # Every enumerant name of every core operand kind, in grammar order, first
+    # occurrence only: a rule with no selection among kinds.
+    enumerant_names: list[str] = []
+    seen_enumerants: set[str] = set()
+    for kind in core["operand_kinds"]:
+        for e in kind.get("enumerants", []):
+            name = str(e["enumerant"])
+            if name not in seen_enumerants:
+                seen_enumerants.add(name)
+                enumerant_names.append(name)
+    for name in grammar_strings + enumerant_names:
+        if not re.fullmatch(r"[A-Za-z0-9_.]+", name):
+            raise SystemExit(f"unexpected characters in grammar string {name!r}")
+    checked_uint("grammar string count", len(grammar_strings), 65535)
+
+    primer = b"".join(n.encode() + b"\0" for n in enumerant_names + grammar_strings)
+    primer_offset = sum(len(n) + 1 for n in enumerant_names)
+    grammar_string_offsets: list[int] = []
+    grammar_string_offset_map: dict[str, int] = {}
+    for name in grammar_strings:
+        checked_uint(f"grammar string {name} offset", primer_offset, 65535)
+        if primer[primer_offset : primer_offset + len(name) + 1] != name.encode() + b"\0":
+            raise SystemExit(f"primer offset mismatch for {name!r}")
+        grammar_string_offsets.append(primer_offset)
+        grammar_string_offset_map[name] = primer_offset
+        primer_offset += len(name) + 1
+
+    # Flatten extended-instruction tables into contiguous arrays so
+    # ExtInstSetDesc stores compact 16-bit offsets with zero pointer relocations.
+    ext_instructions_flat: list[Instruction] = []
+    ext_operand_slots_flat: list[OperandSlot] = []
+    ext_set_records: list[tuple[int, int, int, int]] = []
+    for ext_set in ext_sets:
+        first_inst = len(ext_instructions_flat)
+        first_slot = len(ext_operand_slots_flat)
+        ext_instructions_flat.extend(ext_set.instructions)
+        ext_operand_slots_flat.extend(ext_set.operand_slots)
+        checked_uint(f"ext set {ext_set.name} first_instruction", first_inst, 65535)
+        checked_uint(f"ext set {ext_set.name} num_instructions", len(ext_set.instructions), 65535)
+        checked_uint(f"ext set {ext_set.name} first_operand_slot", first_slot, 65535)
+        ext_set_records.append(
+            (
+                grammar_string_offset_map[ext_set.name],
+                first_inst,
+                len(ext_set.instructions),
+                first_slot,
+            )
+        )
+    checked_uint("total ext instructions", len(ext_instructions_flat), 65535)
+    checked_uint("total ext operand slots", len(ext_operand_slots_flat), 65535)
+
     well_known = [core_scope[name] for name in WELL_KNOWN_KIND_NAMES]
 
-    lines: list[str] = []
-    lines.append("// Copyright (c) 2026, Eric Werness")
-    lines.append("// SPDX-License-Identifier: BSD-2-Clause")
-    lines.append("//")
-    lines.append("// Derived from the Khronos SPIRV-Headers unified grammar JSON files:")
-    lines.append("// Copyright (c) 2015-2024 The Khronos Group Inc.")
-    lines.append("// The Khronos permission notice is reproduced in THIRD_PARTY.md and must")
-    lines.append("// accompany copies of this file.")
-    lines.append("")
-    lines.append("// GENERATED by scripts/gen_grammar_tables.py — do not edit by hand.")
-    lines.append("// Change the generator and rerun it instead; the check-generated")
-    lines.append("// test fails if this file and the generator disagree.")
-    lines.append("")
+    header_banner = [
+        "// Copyright (c) 2026, Eric Werness",
+        "// SPDX-License-Identifier: BSD-2-Clause",
+        "//",
+        "// Derived from the Khronos SPIRV-Headers unified grammar JSON files:",
+        "// Copyright (c) 2015-2024 The Khronos Group Inc.",
+        "// The Khronos permission notice is reproduced in THIRD_PARTY.md and must",
+        "// accompany copies of this file.",
+        "",
+        "// GENERATED by scripts/gen_grammar_tables.py — do not edit by hand.",
+        "// Change the generator and rerun it instead; the check-generated",
+        "// test fails if this file and the generator disagree.",
+        "",
+    ]
+
+    lines: list[str] = list(header_banner)
     lines.append('#include "grammar_tables.h"')
     lines.append("")
     lines.append("#include <cstddef>")
@@ -812,11 +883,7 @@ def main() -> None:
     for i, name in enumerate(instruction_classes):
         lines.append(f"  {enum_constant_name(name)} = {i},")
     lines.append("};")
-    lines.append("")
-    lines.append("constexpr const char* kInstructionClassNames[] = {")
-    for name in instruction_classes:
-        lines.append(f"  {cpp_string(name)},")
-    lines.append("};")
+    lines.append(f"constexpr uint8_t kNumInstructionClasses = {len(instruction_classes)};")
     lines.append("")
     lines.append("constexpr uint16_t kEnumParamKinds[] = {")
     for value in enum_param_kinds:
@@ -834,11 +901,11 @@ def main() -> None:
     lines.append("};")
     lines.append("")
     lines.append("constexpr OperandKindDesc kOperandKinds[] = {")
-    for name, category, first_enumerant, num_enumerants, first_component, num_components in operand_kind_records:
+    for _name, category, first_enumerant, num_enumerants, first_component, num_components in operand_kind_records:
         lines.append(
             "  {"
-            f"{cpp_string(name)}, OperandCategory::{category}, {first_enumerant}, "
-            f"{num_enumerants}, {first_component}, {num_components}"
+            f"{first_enumerant}, {num_enumerants}, {first_component}, "
+            f"OperandCategory::{category}, {num_components}"
             "},"
         )
     lines.append("};")
@@ -867,34 +934,41 @@ def main() -> None:
         lines.append(f"  {emit_instruction(instruction)},")
     lines.append("};")
     lines.append("")
-    for ext_set in ext_sets:
-        if ext_set.operand_slots:
-            lines.append(f"constexpr OperandSlotDesc k{ext_set.ident}OperandSlots[] = {{")
-            for slot in ext_set.operand_slots:
-                lines.append(f"  {emit_operand_slot(slot)},")
-            lines.append("};")
-            lines.append("")
-        if ext_set.instructions:
-            lines.append(f"constexpr InstructionDesc k{ext_set.ident}Instructions[] = {{")
-            for instruction in ext_set.instructions:
-                lines.append(f"  {emit_instruction(instruction)},")
-            lines.append("};")
-            lines.append("")
+    lines.append("constexpr OperandSlotDesc kExtOperandSlots[] = {")
+    for slot in ext_operand_slots_flat:
+        lines.append(f"  {emit_operand_slot(slot)},")
+    lines.append("};")
+    lines.append("")
+    lines.append("constexpr InstructionDesc kExtInstructions[] = {")
+    for instruction in ext_instructions_flat:
+        lines.append(f"  {emit_instruction(instruction)},")
+    lines.append("};")
+    lines.append("")
     lines.append("constexpr ExtInstSetDesc kExtInstSets[] = {")
-    for ext_set in ext_sets:
-        insts_expr = f"k{ext_set.ident}Instructions" if ext_set.instructions else "nullptr"
-        slots_expr = f"k{ext_set.ident}OperandSlots" if ext_set.operand_slots else "nullptr"
+    for name_offset, first_inst, num_inst, first_slot in ext_set_records:
         lines.append(
-            "  {"
-            f"{cpp_string(ext_set.name)}, {insts_expr}, "
-            f"{len(ext_set.instructions)}, {slots_expr}"
-            "},"
+            f"  {{{name_offset}, {first_inst}, {num_inst}, {first_slot}}},"
         )
     lines.append("};")
     lines.append("")
     lines.append("constexpr WellKnownKinds kWellKnownKinds = {")
     for value in well_known:
         lines.append(f"  {value},")
+    lines.append("};")
+    lines.append("")
+    lines.append("// String match-model primer: every core enumerant name (grammar order,")
+    lines.append("// first occurrence), then every sorted grammar string (extensions and")
+    lines.append("// extended-instruction-set names), each NUL-terminated.")
+    lines.append("constexpr char kStringPrimer[] =")
+    for name in enumerant_names + grammar_strings:
+        lines.append(f'    "{name}\\0"')
+    lines.append("    ;")
+    lines.append("")
+    lines.append("// Byte offsets into kStringPrimer for the sorted grammar strings")
+    lines.append("// (zero pointer relocations and zero duplicate string storage).")
+    lines.append("constexpr uint16_t kGrammarStringOffsets[] = {")
+    for i in range(0, len(grammar_string_offsets), 12):
+        lines.append("    " + ", ".join(str(x) for x in grammar_string_offsets[i:i + 12]) + ",")
     lines.append("};")
     lines.append("")
     lines.append("template <typename T, size_t N>")
@@ -904,15 +978,8 @@ def main() -> None:
     lines.append("")
     lines.append("}  // namespace")
     lines.append("")
-    lines.append("const char* InstructionClassName(uint8_t instruction_class) {")
-    lines.append("  if (instruction_class >= ArraySize(kInstructionClassNames)) {")
-    lines.append("    return nullptr;")
-    lines.append("  }")
-    lines.append("  return kInstructionClassNames[instruction_class];")
-    lines.append("}")
-    lines.append("")
     lines.append("uint8_t NumInstructionClasses() {")
-    lines.append("  return static_cast<uint8_t>(ArraySize(kInstructionClassNames));")
+    lines.append("  return kNumInstructionClasses;")
     lines.append("}")
     lines.append("")
     lines.append("const InstructionDesc* FindInstruction(uint32_t opcode) {")
@@ -1001,11 +1068,15 @@ def main() -> None:
     lines.append("  return kEnumerants[kind.first_enumerant + index];")
     lines.append("}")
     lines.append("")
+    lines.append("const char* GetExtInstSetName(const ExtInstSetDesc& set) {")
+    lines.append("  return kStringPrimer + set.name_offset;")
+    lines.append("}")
+    lines.append("")
     lines.append("const ExtInstSetDesc* FindExtInstSet(std::string_view import_name) {")
     lines.append("  const ExtInstSetDesc* best_prefix = nullptr;")
     lines.append("  size_t best_prefix_len = 0;")
     lines.append("  for (const ExtInstSetDesc& set : kExtInstSets) {")
-    lines.append("    const std::string_view name(set.name);")
+    lines.append("    const std::string_view name(kStringPrimer + set.name_offset);")
     lines.append("    if (import_name == name) {")
     lines.append("      return &set;")
     lines.append("    }")
@@ -1032,13 +1103,17 @@ def main() -> None:
     lines.append("  return -1;")
     lines.append("}")
     lines.append("")
+    lines.append("const InstructionDesc* GetExtInstructions(const ExtInstSetDesc& set) {")
+    lines.append("  return kExtInstructions + set.first_instruction;")
+    lines.append("}")
+    lines.append("")
     lines.append("const InstructionDesc* FindExtInstruction(const ExtInstSetDesc& set,")
     lines.append("                                          uint32_t ext_opcode) {")
-    lines.append("  size_t lo = 0;")
-    lines.append("  size_t hi = set.num_instructions;")
+    lines.append("  size_t lo = set.first_instruction;")
+    lines.append("  size_t hi = lo + set.num_instructions;")
     lines.append("  while (lo < hi) {")
     lines.append("    const size_t mid = lo + (hi - lo) / 2;")
-    lines.append("    const InstructionDesc& inst = set.instructions[mid];")
+    lines.append("    const InstructionDesc& inst = kExtInstructions[mid];")
     lines.append("    if (inst.opcode == ext_opcode) {")
     lines.append("      return &inst;")
     lines.append("    }")
@@ -1051,55 +1126,18 @@ def main() -> None:
     lines.append("  return nullptr;")
     lines.append("}")
     lines.append("")
-    # String-model knowledge: names the grammar itself spells out.
-    def collect_extensions(node: object, out: set[str]) -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if key == "extensions" and isinstance(value, list):
-                    out.update(str(v) for v in value)
-                else:
-                    collect_extensions(value, out)
-        elif isinstance(node, list):
-            for value in node:
-                collect_extensions(value, out)
-
-    extension_names: set[str] = set()
-    collect_extensions(core, extension_names)
-    grammar_strings = sorted(extension_names | {s.name for s in ext_sets})
-    # Every enumerant name of every core operand kind, in grammar order, first
-    # occurrence only: a rule with no selection among kinds.
-    enumerant_names: list[str] = []
-    seen_enumerants: set[str] = set()
-    for kind in core["operand_kinds"]:
-        for e in kind.get("enumerants", []):
-            name = str(e["enumerant"])
-            if name not in seen_enumerants:
-                seen_enumerants.add(name)
-                enumerant_names.append(name)
-    for name in grammar_strings + enumerant_names:
-        if not re.fullmatch(r"[A-Za-z0-9_.]+", name):
-            raise SystemExit(f"unexpected characters in grammar string {name!r}")
-    checked_uint("grammar string count", len(grammar_strings), 65535)
-    lines.append("// Every extension name the core grammar lists plus every generated")
-    lines.append("// extended-instruction-set name, sorted: whole-string dictionary for")
-    lines.append("// OpExtension / OpExtInstImport-style literals.")
-    lines.append("constexpr const char* kGrammarStrings[] = {")
-    for name in grammar_strings:
-        lines.append(f'    "{name}",')
-    lines.append("};")
-    lines.append("")
-    lines.append("// String match-model primer: every core enumerant name (grammar order,")
-    lines.append("// first occurrence), then the dictionary above, each NUL-terminated.")
-    lines.append("constexpr char kStringPrimer[] =")
-    for name in enumerant_names + grammar_strings:
-        lines.append(f'    "{name}\\0"')
-    lines.append("    ;")
+    lines.append("const OperandSlotDesc* GetExtOperandSlots(const ExtInstSetDesc& set,")
+    lines.append("                                          const InstructionDesc& inst) {")
+    lines.append("  if (inst.num_operands == 0) {")
+    lines.append("    return nullptr;")
+    lines.append("  }")
+    lines.append("  return kExtOperandSlots + set.first_operand_slot + inst.first_operand;")
+    lines.append("}")
     lines.append("")
     # The primed order-2 match table, so decoders need no runtime (or
     # process-wide) initialization. Must match StringMatchHash in model.cpp
     # (tests/arixv_test.cpp rebuilds it from the primer and compares).
     match_bits = 10
-    primer = b"".join(n.encode() + b"\0" for n in enumerant_names + grammar_strings)
     table = [0] * (1 << match_bits)
     for v in range(2, len(primer)):
         key = (primer[v - 2] << 8) | primer[v - 1]
@@ -1118,11 +1156,11 @@ def main() -> None:
     lines.append("}")
     lines.append("")
     lines.append("uint16_t NumGrammarStrings() {")
-    lines.append("  return static_cast<uint16_t>(ArraySize(kGrammarStrings));")
+    lines.append("  return static_cast<uint16_t>(ArraySize(kGrammarStringOffsets));")
     lines.append("}")
     lines.append("")
     lines.append("const char* GetGrammarString(uint16_t index) {")
-    lines.append("  return kGrammarStrings[index];")
+    lines.append("  return kStringPrimer + kGrammarStringOffsets[index];")
     lines.append("}")
     lines.append("")
     lines.append("std::string_view GetStringPrimer() {")
@@ -1286,18 +1324,121 @@ def main() -> None:
     lines.append("}  // namespace arixv")
     lines.append("")
 
+    # Parallel diagnostic name tables (compiled only into diagnostic/test targets).
+    name_lines: list[str] = list(header_banner)
+    name_lines.append('#include "grammar_names.h"')
+    name_lines.append("")
+    name_lines.append("#include <cstddef>")
+    name_lines.append("")
+    name_lines.append("namespace arixv {")
+    name_lines.append("inline namespace v1 {")
+    name_lines.append("namespace {")
+    name_lines.append("")
+    name_lines.append("constexpr const char* kInstructionClassNames[] = {")
+    for name in instruction_classes:
+        name_lines.append(f"  {cpp_string(name)},")
+    name_lines.append("};")
+    name_lines.append("")
+    name_lines.append("constexpr const char* kOperandKindNames[] = {")
+    for name, *_rest in operand_kind_records:
+        name_lines.append(f"  {cpp_string(name)},")
+    name_lines.append("};")
+    name_lines.append("")
+    name_lines.append("constexpr const char* kCoreInstructionNames[] = {")
+    for instruction in core_instructions:
+        name_lines.append(f"  {cpp_string(instruction.name)},")
+    name_lines.append("};")
+    name_lines.append("")
+    name_lines.append("struct ExtInstructionNameEntry {")
+    name_lines.append("  uint16_t opcode;")
+    name_lines.append("  const char* name;")
+    name_lines.append("};")
+    name_lines.append("")
+    name_lines.append("constexpr ExtInstructionNameEntry kExtInstructionNames[] = {")
+    for instruction in ext_instructions_flat:
+        name_lines.append(f"  {{{instruction.opcode}, {cpp_string(instruction.name)}}},")
+    name_lines.append("};")
+    name_lines.append("")
+    name_lines.append("template <typename T, size_t N>")
+    name_lines.append("constexpr size_t ArraySize(const T (&)[N]) {")
+    name_lines.append("  return N;")
+    name_lines.append("}")
+    name_lines.append("")
+    name_lines.append("}  // namespace")
+    name_lines.append("")
+    name_lines.append("const char* InstructionClassName(uint8_t instruction_class) {")
+    name_lines.append("  if (instruction_class >= ArraySize(kInstructionClassNames)) {")
+    name_lines.append("    return nullptr;")
+    name_lines.append("  }")
+    name_lines.append("  return kInstructionClassNames[instruction_class];")
+    name_lines.append("}")
+    name_lines.append("")
+    name_lines.append("const char* CoreInstructionName(uint16_t index) {")
+    name_lines.append("  if (index >= ArraySize(kCoreInstructionNames)) {")
+    name_lines.append("    return nullptr;")
+    name_lines.append("  }")
+    name_lines.append("  return kCoreInstructionNames[index];")
+    name_lines.append("}")
+    name_lines.append("")
+    name_lines.append("const char* FindInstructionName(uint32_t opcode) {")
+    name_lines.append("  const int index = FindInstructionIndex(opcode);")
+    name_lines.append("  if (index < 0) {")
+    name_lines.append("    return nullptr;")
+    name_lines.append("  }")
+    name_lines.append("  return CoreInstructionName(static_cast<uint16_t>(index));")
+    name_lines.append("}")
+    name_lines.append("")
+    name_lines.append("const char* OperandKindName(uint16_t kind_index) {")
+    name_lines.append("  if (kind_index >= ArraySize(kOperandKindNames)) {")
+    name_lines.append("    return nullptr;")
+    name_lines.append("  }")
+    name_lines.append("  return kOperandKindNames[kind_index];")
+    name_lines.append("}")
+    name_lines.append("")
+    name_lines.append("const char* ExtInstructionName(const ExtInstSetDesc& set,")
+    name_lines.append("                               uint32_t ext_opcode) {")
+    name_lines.append("  size_t lo = set.first_instruction;")
+    name_lines.append("  size_t hi = lo + set.num_instructions;")
+    name_lines.append("  while (lo < hi) {")
+    name_lines.append("    const size_t mid = lo + (hi - lo) / 2;")
+    name_lines.append("    const ExtInstructionNameEntry& entry = kExtInstructionNames[mid];")
+    name_lines.append("    if (entry.opcode == ext_opcode) {")
+    name_lines.append("      return entry.name;")
+    name_lines.append("    }")
+    name_lines.append("    if (entry.opcode < ext_opcode) {")
+    name_lines.append("      lo = mid + 1;")
+    name_lines.append("    } else {")
+    name_lines.append("      hi = mid;")
+    name_lines.append("    }")
+    name_lines.append("  }")
+    name_lines.append("  return nullptr;")
+    name_lines.append("}")
+    name_lines.append("")
+    name_lines.append("}  // namespace v1")
+    name_lines.append("}  // namespace arixv")
+    name_lines.append("")
+
     generated = "\n".join(lines)
+    generated_names = "\n".join(name_lines)
     if "--check" in sys.argv[1:]:
-        if OUT.read_text(encoding="utf-8") != generated:
-            print(
-                f"{OUT.relative_to(ROOT)} is out of sync with the generator; "
-                "rerun scripts/gen_grammar_tables.py",
-                file=sys.stderr,
-            )
+        mismatch = False
+        for path, expected in ((OUT, generated), (OUT_NAMES, generated_names)):
+            if not path.exists() or path.read_text(encoding="utf-8") != expected:
+                print(
+                    f"{path.relative_to(ROOT)} is out of sync with the generator; "
+                    "rerun scripts/gen_grammar_tables.py",
+                    file=sys.stderr,
+                )
+                mismatch = True
+        if mismatch:
             sys.exit(1)
-        print(f"{OUT.relative_to(ROOT)} matches the generator")
+        print(
+            f"{OUT.relative_to(ROOT)} and {OUT_NAMES.relative_to(ROOT)} "
+            "match the generator"
+        )
         return
     OUT.write_text(generated, encoding="utf-8")
+    OUT_NAMES.write_text(generated_names, encoding="utf-8")
 
     print(f"core_instructions={len(core_instructions)}")
     print(f"operand_kinds={len(kinds)}")

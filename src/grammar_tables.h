@@ -93,42 +93,36 @@ struct EnumerantDesc {
 };
 
 struct OperandKindDesc {
-  const char* name;
-  OperandCategory category;
   // Enums: enumerants sorted ascending by value (aliases deduped, first name
   // in grammar order kept). Empty otherwise.
   uint16_t first_enumerant;
   uint16_t num_enumerants;
   // Composites: component kind indices into kOperandKinds. Empty otherwise.
   uint16_t first_component;
+  OperandCategory category;
   uint8_t num_components;
 };
+static_assert(sizeof(OperandKindDesc) == 8, "OperandKindDesc layout changed");
 
 // One slot of an instruction's operand layout (result and result-type appear
 // as slots too, in grammar order).
 struct OperandSlotDesc {
-  uint16_t kind;  // index into kOperandKinds
+  uint8_t kind;  // index into kOperandKinds
   Quantifier quantifier;
 };
+static_assert(sizeof(OperandSlotDesc) == 2, "OperandSlotDesc layout changed");
 
 struct InstructionDesc {
-  const char* name;
   uint16_t opcode;  // core opcode, or extended-instruction number
   uint16_t first_operand;  // index into the owning table's operand slot array
   // Minimum legal word count: 1 (opcode word) + one word per required slot.
   uint16_t min_word_count;
   uint16_t flags;   // InstructionFlags
   uint8_t num_operands;
-  bool has_result;
-  bool has_result_type;
   uint8_t instruction_class;  // InstructionClass (core) / 0 (ext inst sets)
   uint8_t result_bucket;      // result-ID delta context bucket
   InstructionTypeClass type_class;
   uint8_t section;  // Section value; kept as uint8_t to avoid tracker coupling.
-  // True iff every slot is quantifier kOne with a guaranteed one-word kind
-  // (Ids, LiteralInteger/ExtInstInteger, enums whose enumerants all have zero
-  // params) — i.e. word count is exactly min_word_count for valid input.
-  bool fixed_word_count;
   // Fixed word index of the operand the tracker reads at instruction end:
   // the type width (kInstTypeWidth), component/pointee/return type
   // (kInstTypeComponent/kInstTypePointer/kInstTypeFunction), or first word
@@ -138,7 +132,16 @@ struct InstructionDesc {
   // that the result type sits at word 1 with the result ID directly after
   // it, so aux_word < min_word_count and result positions are fixed.
   uint8_t aux_word;
+  // Packed boolean flags so InstructionDesc fits in 16 bytes with zero
+  // pointer relocations.
+  uint8_t has_result : 1;
+  uint8_t has_result_type : 1;
+  // True iff every slot is quantifier kOne with a guaranteed one-word kind
+  // (Ids, LiteralInteger/ExtInstInteger, enums whose enumerants all have zero
+  // params) — i.e. word count is exactly min_word_count for valid input.
+  uint8_t fixed_word_count : 1;
 };
+static_assert(sizeof(InstructionDesc) == 16, "InstructionDesc layout changed");
 
 inline bool HasInstructionFlag(const InstructionDesc* desc,
                                InstructionFlags flag) {
@@ -147,10 +150,9 @@ inline bool HasInstructionFlag(const InstructionDesc* desc,
 
 // InstructionClass values are generated from the distinct "class" strings in
 // the core grammar (e.g. Type-Declaring, Constant-Creation, Annotation,
-// Control-Flow ...) as an enum in grammar_tables.cpp's companion section of
-// this header's generated twin; exposed here as an opaque small integer plus
-// name lookup, so the model can use it as a context input without hardcoding.
-const char* InstructionClassName(uint8_t instruction_class);
+// Control-Flow ...); exposed here as an opaque small integer so the model can
+// use it as a context input without hardcoding. Diagnostic names live in
+// grammar_names.h.
 uint8_t NumInstructionClasses();
 
 // --- Core grammar lookups ------------------------------------------------
@@ -186,11 +188,15 @@ const EnumerantDesc& GetEnumerant(const OperandKindDesc& kind,
 // --- Extended instruction sets -------------------------------------------
 
 struct ExtInstSetDesc {
-  const char* name;  // canonical OpExtInstImport literal, e.g. "GLSL.std.450"
-  const InstructionDesc* instructions;  // sorted by ext opcode
+  uint16_t name_offset;         // byte offset into kStringPrimer (NUL-terminated)
+  uint16_t first_instruction;   // index into kExtInstructions
   uint16_t num_instructions;
-  const OperandSlotDesc* operand_slots;  // slot pool for this set
+  uint16_t first_operand_slot;  // index into kExtOperandSlots
 };
+static_assert(sizeof(ExtInstSetDesc) == 8, "ExtInstSetDesc layout changed");
+
+// Canonical OpExtInstImport literal, e.g. "GLSL.std.450".
+const char* GetExtInstSetName(const ExtInstSetDesc& set);
 
 // Exact match on the canonical name, then prefix match for versioned set
 // names (e.g. "NonSemantic.ClspvReflection.5"); nullptr if unknown.
@@ -198,8 +204,11 @@ const ExtInstSetDesc* FindExtInstSet(std::string_view import_name);
 uint16_t NumExtInstSets();
 int FindExtInstSetIndex(const ExtInstSetDesc* set);  // -1 if not generated
 
+const InstructionDesc* GetExtInstructions(const ExtInstSetDesc& set);
 const InstructionDesc* FindExtInstruction(const ExtInstSetDesc& set,
                                           uint32_t ext_opcode);
+const OperandSlotDesc* GetExtOperandSlots(const ExtInstSetDesc& set,
+                                          const InstructionDesc& inst);
 
 // --- Grammar strings ----------------------------------------------------
 

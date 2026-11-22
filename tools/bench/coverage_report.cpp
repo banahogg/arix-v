@@ -1,3 +1,4 @@
+#include "grammar_names.h"
 #include "grammar_tables.h"
 #include "operand_cursor.h"
 
@@ -21,6 +22,8 @@ using arixv::FindEnumerant;
 using arixv::FindExtInstruction;
 using arixv::FindExtInstSet;
 using arixv::FindInstruction;
+using arixv::FindInstructionName;
+using arixv::GetExtInstSetName;
 using arixv::GetOperandKind;
 using arixv::OperandCategory;
 using arixv::OperandCursor;
@@ -228,7 +231,9 @@ bool IsIdReference(OperandCategory category) {
 
 std::string OpName(const arixv::InstructionDesc* inst, uint32_t opcode) {
   if (inst) {
-    return inst->name;
+    if (const char* name = FindInstructionName(opcode)) {
+      return name;
+    }
   }
   std::ostringstream out;
   out << "opcode " << opcode;
@@ -353,7 +358,7 @@ void ScanModule(const std::vector<uint32_t>& words, Report* report) {
                      field.category ==
                          OperandCategory::kLiteralExtInstInteger) {
             if (current_ext_set) {
-              ++report->ext_set_hist[current_ext_set->name];
+              ++report->ext_set_hist[GetExtInstSetName(*current_ext_set)];
               if (FindExtInstruction(*current_ext_set, value0) == nullptr) {
                 ++report->unknown_ext_numbers;
               }

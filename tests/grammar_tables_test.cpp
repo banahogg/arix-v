@@ -1,3 +1,4 @@
+#include "grammar_names.h"
 #include "grammar_tables.h"
 
 #include <cstring>
@@ -16,9 +17,8 @@ int Fail(std::string_view message) {
 
 const arixv::OperandKindDesc* FindKindByName(std::string_view name) {
   for (uint16_t i = 0; i < arixv::NumOperandKinds(); ++i) {
-    const arixv::OperandKindDesc& kind = arixv::GetOperandKind(i);
-    if (kind.name == name) {
-      return &kind;
+    if (arixv::OperandKindName(i) == name) {
+      return &arixv::GetOperandKind(i);
     }
   }
   return nullptr;
@@ -180,11 +180,19 @@ int main() {
   if (sin == nullptr) {
     return Fail("GLSL Sin not found");
   }
-  const arixv::OperandSlotDesc* sin_operands = glsl->operand_slots + sin->first_operand;
+  const arixv::OperandSlotDesc* sin_operands =
+      arixv::GetExtOperandSlots(*glsl, *sin);
   if (sin->num_operands != 1 ||
       arixv::GetOperandKind(sin_operands[0].kind).category !=
           arixv::OperandCategory::kIdRef) {
     return Fail("GLSL Sin does not have exactly one IdRef operand");
+  }
+  if (std::string_view(arixv::GetExtInstSetName(*glsl)) != "GLSL.std.450" ||
+      std::string_view(arixv::ExtInstructionName(*glsl, 13)) != "Sin" ||
+      std::string_view(arixv::ExtInstructionName(*glsl, 14)) != "Cos" ||
+      std::string_view(arixv::FindInstructionName(57)) != "OpFunctionCall" ||
+      arixv::InstructionClassName(0) == nullptr) {
+    return Fail("diagnostic grammar name lookup mismatch");
   }
 
   if (arixv::FindExtInstSet("NonSemantic.ClspvReflection.5") == nullptr) {
