@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  linux:
+    name: Linux (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gcc
+            cxx: g++
+            use_default_flags: true
+          - name: clang
+            cxx: clang++
+            use_default_flags: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache pinned grammar sources
+        uses: actions/cache@v4
+        with:
+          path: grammar-deps
+          key: grammar-deps-${{ hashFiles('deps/grammar-sources.lock.json') }}
+
+      - name: Fetch pinned grammar sources
+        run: |
+          python3 scripts/fetch_pinned_repos.py \
+            --lock deps/grammar-sources.lock.json \
+            --dest grammar-deps
+
+      - name: Verify generated grammar tables
+        run: |
+          python3 scripts/gen_grammar_tables.py \
+            --grammar-dir grammar-deps/spirv-headers/include/spirv/unified1 \
+            --check
+
+      - name: Build and test (default / SIMD)
+        run: |
+          if [ "${{ matrix.use_default_flags }}" = "true" ]; then
+            make -j"$(nproc)" CXX="${{ matrix.cxx }}" all test
+          else
+            make -j"$(nproc)" CXX="${{ matrix.cxx }}" \
+              CXXFLAGS="-O3 -std=c++17 -Wall -Wextra" all test
+          fi
+
+      - name: Build and test (scalar / ARIXV_NO_SIMD)
+        run: |
+          make -j"$(nproc)" BUILD_DIR=build-scalar CXX="${{ matrix.cxx }}" \
+            CXXFLAGS="-O2 -std=c++17 -Wall -Wextra -DARIXV_NO_SIMD" test
+
+      - name: Build and test (ASan + UBSan)
+        run: |
+          make -j"$(nproc)" CXX="${{ matrix.cxx }}" asan
+
+  macos-arm64:
+    name: macOS AArch64 (NEON + scalar)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify AArch64 NEON target
+        run: |
+          clang++ -dM -E -x c++ /dev/null | grep -E '__aarch64__|__ARM_NEON'
+
+      - name: Build and test (NEON)
+        run: |
+          make -j"$(sysctl -n hw.ncpu)" CXX=clang++ \
+            CXXFLAGS="-O2 -std=c++17 -Wall -Wextra" all test
+
+      - name: Build and test (scalar / ARIXV_NO_SIMD)
+        run: |
+          make -j"$(sysctl -n hw.ncpu)" BUILD_DIR=build-scalar CXX=clang++ \
+            CXXFLAGS="-O2 -std=c++17 -Wall -Wextra -DARIXV_NO_SIMD" test
+
+  windows-msvc:
+    name: Windows (MSVC x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test (MSVC x64)
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSINSTALLDIR=%%i"
+          if not defined VSINSTALLDIR (
+            echo Visual Studio C++ build tools not found
+            exit /b 1
+          )
+          call "%VSINSTALLDIR%\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64 || exit /b 1
+          mkdir build\msvc 2>nul
+          set "LIB_SRCS=src\arixv.cpp src\model.cpp src\tracker.cpp src\operand_cursor.cpp src\grammar_tables.cpp"
+          set "CL_FLAGS=/nologo /O2 /std:c++17 /EHsc /W3 /Isrc /Fo:build\msvc\"
+          cl %CL_FLAGS% /c %LIB_SRCS% || exit /b 1
+          set "LIB_OBJS=build\msvc\arixv.obj build\msvc\model.obj build\msvc\tracker.obj build\msvc\operand_cursor.obj build\msvc\grammar_tables.obj"
+          cl %CL_FLAGS% cli\main.cpp %LIB_OBJS% /Fe:build\msvc\arixv.exe || exit /b 1
+          cl %CL_FLAGS% tests\range_coder_test.cpp /Fe:build\msvc\range_coder_test.exe || exit /b 1
+          cl %CL_FLAGS% tests\arixv_test.cpp %LIB_OBJS% /Fe:build\msvc\arixv_test.exe || exit /b 1
+          cl %CL_FLAGS% tests\model_test.cpp %LIB_OBJS% /Fe:build\msvc\model_test.exe || exit /b 1
+          cl %CL_FLAGS% tests\operand_cursor_test.cpp build\msvc\operand_cursor.obj build\msvc\grammar_tables.obj /Fe:build\msvc\operand_cursor_test.exe || exit /b 1
+          cl %CL_FLAGS% tests\grammar_tables_test.cpp build\msvc\grammar_tables.obj /Fe:build\msvc\grammar_tables_test.exe || exit /b 1
+          cl %CL_FLAGS% tools\fuzz\fuzz_roundtrip.cpp %LIB_OBJS% /Fe:build\msvc\fuzz_roundtrip.exe || exit /b 1
+          build\msvc\range_coder_test.exe || exit /b 1
+          build\msvc\arixv_test.exe || exit /b 1
+          build\msvc\model_test.exe || exit /b 1
+          build\msvc\operand_cursor_test.exe || exit /b 1
+          build\msvc\grammar_tables_test.exe || exit /b 1
+          build\msvc\fuzz_roundtrip.exe --iters=500 || exit /b 1
