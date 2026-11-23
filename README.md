@@ -95,10 +95,11 @@ library that links `arixv::decoder` via `FetchContent`, configure with
 
 ### Direct Source-Copy Integration (No Build System Required)
 
-Copy `include/arixv/arixv.h` and `src/` into your project and compile the five
+Copy `include/arixv/arixv.h` and `src/` into your project and compile the six
 decoder translation units with C++17 (`-Iinclude -Isrc`):
 
 - `src/arixv.cpp`
+- `src/arixv_pack.cpp`
 - `src/model.cpp`
 - `src/tracker.cpp`
 - `src/operand_cursor.cpp`
@@ -106,8 +107,9 @@ decoder translation units with C++17 (`-Iinclude -Isrc`):
 
 `ARIXV_ENCODER` defaults to `0` (opt-in), so decoder-only builds need no extra
 `-D` flags and only expose the decoder declarations in `arixv/arixv.h`. To
-include the encoder as well, also compile `src/arixv_encode.cpp` and define
-`-DARIXV_ENCODER=1`. Do **not** compile `src/grammar_names.cpp` into runtime
+include the encoder as well, also compile `src/arixv_encode.cpp` and
+`src/arixv_pack_encode.cpp` and define `-DARIXV_ENCODER=1`. To leave out
+shader packs, skip both `arixv_pack*.cpp` files and define `-DARIXV_PACK=0`. Do **not** compile `src/grammar_names.cpp` into runtime
 binaries — it contains diagnostic-only name tables for tests and analysis tools.
 
 When linking static ARIX-V object files into a pure-C executable outside CMake,
@@ -197,6 +199,40 @@ if (arixv_inspect(blob, blob_size, &info) == ARIXV_STATUS_OK) {
 }
 ```
 
+### Shader Packs (1.1)
+
+A pack (`ARXP`, [`docs/format-arxp.md`](docs/format-arxp.md)) codes many
+modules together so they can borrow from each other: much smaller than one
+blob per shader for sets of related shaders. It decodes in at most two stages
+of independent blocks that your job system schedules; the library starts no
+threads and every call is stateless.
+
+```c
+arixv_pack_info info = {0};
+info.struct_size = sizeof(info);
+if (arixv_pack_inspect(pack, pack_size, &info) != ARIXV_STATUS_OK) return fail();
+/* Budget info.module_count, info.total_output_size and info.scratch_size. */
+arixv_pack_module_info* mods = malloc(info.module_count * sizeof *mods);
+arixv_pack_inspect_modules(pack, pack_size, mods, info.module_count);
+/* outs[i] = uint32_t-aligned storage of mods[i].size bytes; caps[i] = mods[i].size */
+arixv_pack_outputs outputs = {sizeof(outputs), info.module_count, outs, caps};
+
+/* Single thread: */
+arixv_status st = arixv_pack_decode(pack, pack_size, &outputs, NULL);
+
+/* Or on a job system: reset scratch, run every stage-1 block, then every
+ * stage-2 block; blocks within a stage are independent jobs. */
+arixv_pack_reset_scratch(pack, pack_size, scratch, info.scratch_size);
+/* job b: arixv_pack_decode_stage1(pack, pack_size, b, &outputs, scratch, info.scratch_size, NULL) */
+/* then job b: arixv_pack_decode_stage2(pack, pack_size, b, &outputs, scratch, info.scratch_size, NULL) */
+```
+
+`mods[i].stage` and `mods[i].block_index` say which job produces module `i`.
+Encoding takes the modules in order plus a decode-width hint (`parallelism`)
+and an optional size/latency dial (`latency_budget_pct`); see
+`arixv_pack_encode` in the header and the integration notes in
+[`docs/development/multi-module-pack-api.md`](docs/development/multi-module-pack-api.md).
+
 ## CLI Usage
 
 Build the CLI with the `release` preset (or `release-lto` for an LTO build) and
@@ -224,6 +260,13 @@ build/release/arixv info build/shaders/*.arixv
 # Round-trip verification and version info
 build/release/arixv roundtrip shaders/*.spv
 build/release/arixv --version
+
+# Shader packs: code many modules together, then unpack them in order
+# (<dir>/00000.spv, 00001.spv, ...); info reports blocks and sizes.
+build/release/arixv pack -v build/shaders.arxp shaders/*.spv
+build/release/arixv pack --parallelism 1 build/solid.arxp shaders/*.spv
+build/release/arixv unpack build/shaders.arxp build/unpacked
+build/release/arixv info build/shaders.arxp
 ```
 
 By default `d` / `decompress` caps decoded output at 512 MiB (`--max-size 0`
@@ -250,6 +293,15 @@ Measured on Linux x86_64 (`g++` 15.2.0, `ARIXV_BUILD_ENCODER=OFF`,
 Static links with `-Wl,--gc-sections` against `arixv::decoder` achieve a
 comparable footprint even when configured with `ARIXV_BUILD_ENCODER=ON`.
 
+The table is for 1.0. The 1.1 pack decoder adds about 109 KB of `.text`
+(shared `-O3`: 94.7 KB → 204.0 KB; stripped `.so` 199.1 KB → 322.0 KB),
+mostly a second and third instantiation of the model step for copied
+instructions. Static links that never call `arixv_pack_*` drop it with
+`--gc-sections`; shared builds that don't need packs can configure
+`-DARIXV_BUILD_PACK=OFF`, which restores the 1.0 decoder exactly (94.7 KB
+`.text`, the 1.0 export set) and hides the `arixv_pack_*` declarations from
+consumers (`ARIXV_PACK=0` is propagated).
+
 ## Portability, Exceptions & Format Stability
 
 - **Internal implementation:** C++17 internally behind a stable C99/C11 ABI
@@ -271,6 +323,11 @@ comparable footprint even when configured with `ARIXV_BUILD_ENCODER=ON`.
   constants, backed by an immutable cross-architecture golden fixture suite in
   `tests/golden/`. See [`docs/format-arx2.md`](docs/format-arx2.md) for the
   full specification.
+- **Format stability (`ARXP`):** The pack container is versioned
+  independently (`ARXP` v1, [`docs/format-arxp.md`](docs/format-arxp.md)),
+  reuses the frozen ARX2 model unchanged, and has its own golden vectors in
+  `tests/golden/pack/`. Encoder layout choices may change between releases;
+  every v1 pack decodes with every v1 decoder.
 
 ## Repository Layout
 
@@ -280,7 +337,7 @@ comparable footprint even when configured with `ARIXV_BUILD_ENCODER=ON`.
 - `tests/` — Unit, golden-vector, CLI, and strict C11/C++17 consumer smoke tests.
 - `tools/bench/` and `tools/fuzz/` — Benchmarks, diagnostics, and fuzz harnesses.
 - `scripts/` — Grammar table generator, corpus builder, and benchmark runners.
-- `docs/` — [`format-arx2.md`](docs/format-arx2.md), corpus docs, and development notes.
+- `docs/` — [`format-arx2.md`](docs/format-arx2.md), [`format-arxp.md`](docs/format-arxp.md), corpus docs, and development notes.
 - `deps/` — Pinned upstream source lockfiles (fetched inputs are gitignored).
 
 ## Building and Testing

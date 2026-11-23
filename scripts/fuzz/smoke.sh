@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Short coverage-guided fuzz run: libFuzzer + ASan/UBSan on the round-trip
-# and hostile-decode harnesses, a few minutes in total. Sits between the
+# and hostile-decode harnesses for single modules (ARX2) and shader packs
+# (ARXP), several minutes in total. Sits between the
 # deterministic CTest smoke fuzzer and scripts/fuzz/overnight.sh; run it
 # (via `cmake --preset fuzz-smoke && cmake --build --preset fuzz-smoke --target fuzz-smoke`)
 # after major model or tracker changes and before pushing. Exits non-zero on
@@ -30,6 +31,11 @@ SEED_KB="${FUZZ_SMOKE_SEED_KB:-100000}"
 RUN_WRAP="${RUN_WRAP:-}"
 OUT="$BUILD/fuzz-smoke"
 
+# Pack harnesses are absent in ARIXV_BUILD_PACK=OFF builds; they are skipped.
+PACK=1
+for bin in "$BUILD/fuzz_pack_rt_lf" "$BUILD/fuzz_pack_dec_lf"; do
+  [ -x "$bin" ] || PACK=0
+done
 for bin in "$BUILD/fuzz_roundtrip_lf" "$BUILD/fuzz_decode_lf" "$BUILD/arixv"; do
   [ -x "$bin" ] || { echo "fuzz-smoke: missing $bin (build via cmake --preset fuzz-smoke)" >&2; exit 2; }
 done
@@ -39,7 +45,9 @@ if [ ! -d "$CORPUS" ]; then
   exit 2
 fi
 
-mkdir -p "$OUT"/rt/{seeds,corpus,artifacts} "$OUT"/dec/{seeds,corpus,artifacts}
+for h in rt dec pack-rt pack-dec; do
+  mkdir -p "$OUT/$h"/{seeds,corpus,artifacts}
+done
 
 # Round-trip seeds: corpus modules up to FUZZ_SMOKE_SEED_KB, plus a tiny
 # non-SPIR-V input and a header-only module.
@@ -54,6 +62,27 @@ printf '\x03\x02\x23\x07\x00\x00\x01\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00
 rm -f "$OUT"/dec/seeds/*
 for f in "$OUT"/rt/seeds/*; do
   "$BUILD/arixv" c "$f" "$OUT/dec/seeds/$(basename "$f").arixv" >/dev/null 2>&1 || true
+done
+
+# Pack seeds: small groups of modules. pack-rt takes them concatenated (the
+# harness splits at SPIR-V magic words); pack-dec takes them packed, under a
+# few layouts, so mutation starts inside the pack format.
+rm -f "$OUT"/pack-rt/seeds/* "$OUT"/pack-dec/seeds/*
+seed_files=()
+if [ "$PACK" = 1 ]; then
+  mapfile -t seed_files < <(find "$OUT/rt/seeds" -type f -size -64k | sort)
+fi
+group=0
+for ((i = 0; i + 1 < ${#seed_files[@]} && group < 200; i += 3, group++)); do
+  members=("${seed_files[@]:i:4}")
+  cat "${members[@]}" >"$OUT/pack-rt/seeds/group$group"
+  # shellcheck disable=SC2059
+  printf "$(printf '\\%03o' $((group % 256)))" >>"$OUT/pack-rt/seeds/group$group"
+  for opts in "--parallelism 1" "--parallelism 4" "--parallelism 8 --fast-decode"; do
+    # shellcheck disable=SC2086
+    "$BUILD/arixv" pack $opts "$OUT/pack-dec/seeds/group$group-${opts// /_}.arxp" \
+      "${members[@]}" >/dev/null 2>&1 || true
+  done
 done
 
 export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:abort_on_error=1}"
@@ -92,9 +121,16 @@ run() { # <name> <binary>
 
 run rt "$BUILD/fuzz_roundtrip_lf"
 run dec "$BUILD/fuzz_decode_lf"
+if [ "$PACK" = 1 ]; then
+  run pack-rt "$BUILD/fuzz_pack_rt_lf"
+  run pack-dec "$BUILD/fuzz_pack_dec_lf"
+else
+  echo "note: pack harnesses not built (ARIXV_BUILD_PACK=OFF); skipped"
+fi
 
 if [ "$failed" -ne 0 ]; then
-  echo "fuzz-smoke: FAILED (reproduce: $BUILD/fuzz_<harness>_lf <artifact>)"
+  echo "fuzz-smoke: FAILED (reproduce: $BUILD/fuzz_<harness>_lf <artifact>;"
+  echo "  pack-rt/pack-dec artifacts: $BUILD/fuzz_pack_rt_lf / fuzz_pack_dec_lf)"
   exit 1
 fi
 echo "fuzz-smoke: all harnesses clean"

@@ -111,6 +111,58 @@ int main(void) {
   }
 #endif
 
+  /* Pack API (1.1): the struct-size macros are usable from C, and a foreign
+   * blob is rejected through the pack entry points. */
+#if ARIXV_HAS_PACK_
+  {
+    arixv_pack_info pinfo;
+    arixv_pack_outputs outputs;
+    void* outs[1];
+    size_t caps[1];
+    memset(&pinfo, 0, sizeof(pinfo));
+    pinfo.struct_size = ARIXV_PACK_INFO_V1_SIZE;
+    if (sizeof(arixv_pack_info) != ARIXV_PACK_INFO_V1_SIZE ||
+        sizeof(arixv_pack_outputs) != ARIXV_PACK_OUTPUTS_V1_SIZE ||
+        sizeof(arixv_pack_module_info) != 16u ||
+        arixv_pack_inspect(kMinimalArx2, sizeof(kMinimalArx2), &pinfo) !=
+            ARIXV_STATUS_BAD_CONTAINER) {
+      fprintf(stderr, "consumer_smoke (C11): pack inspect failed\n");
+      return 1;
+    }
+    outs[0] = decoded_words;
+    caps[0] = sizeof(decoded_words);
+    outputs.struct_size = ARIXV_PACK_OUTPUTS_V1_SIZE;
+    outputs.module_count = 1;
+    outputs.outs = outs;
+    outputs.caps = caps;
+    if (arixv_pack_decode(kMinimalArx2, sizeof(kMinimalArx2), &outputs,
+                          NULL) != ARIXV_STATUS_BAD_CONTAINER) {
+      fprintf(stderr, "consumer_smoke (C11): pack decode failed\n");
+      return 1;
+    }
+#if CONSUMER_HAS_ENCODER
+    {
+      const void* mods[2];
+      size_t sizes[2];
+      uint8_t pack[256];
+      size_t pack_size;
+      mods[0] = kMinimalSpv;
+      mods[1] = kMinimalSpv;
+      sizes[0] = sizes[1] = sizeof(kMinimalSpv);
+      pack_size = arixv_pack_encode_bound(sizes, 2, NULL);
+      if (pack_size == 0 || pack_size > sizeof(pack) ||
+          arixv_pack_encode(mods, sizes, 2, pack, &pack_size, NULL) !=
+              ARIXV_STATUS_OK ||
+          arixv_pack_inspect(pack, pack_size, &pinfo) != ARIXV_STATUS_OK ||
+          pinfo.module_count != 2) {
+        fprintf(stderr, "consumer_smoke (C11): pack encode failed\n");
+        return 1;
+      }
+    }
+#endif
+  }
+#endif
+
   if (arixv_status_string(ARIXV_STATUS_OK) == NULL) {
     return 1;
   }

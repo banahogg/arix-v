@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(arixv
-  VERSION 1.0.0
+  VERSION 1.1.0
   DESCRIPTION "Standalone, purely adaptive SPIR-V compressor"
   LANGUAGES CXX
 )
@@ -16,6 +16,10 @@ option(ARIXV_BUILD_TOOLS "Build benchmark and fuzzing tools" ${PROJECT_IS_TOP_LE
 option(ARIXV_BUILD_DIAGNOSTICS "Build diagnostic microbenchmarks (trace/memstats)" OFF)
 option(ARIXV_BUILD_LIBFUZZER "Build Clang libFuzzer harnesses" OFF)
 option(ARIXV_INSTALL "Generate install target" ${PROJECT_IS_TOP_LEVEL})
+option(ARIXV_BUILD_PACK
+  "Build the ARXP shader-pack API (arixv_pack_*); OFF keeps a 1.0-sized decoder" ON)
+option(ARIXV_BUILD_RESEARCH_PACK
+  "Build research-only multi-module pack probe targets (not ARX2; Track B)" OFF)
 
 if(PROJECT_IS_TOP_LEVEL AND WIN32 AND NOT DEFINED CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
@@ -32,6 +36,20 @@ set(ARIXV_DECODER_SOURCES
 set(ARIXV_ENCODER_SOURCES
   src/arixv_encode.cpp
 )
+
+# Shader packs: on by default. When off, the pack sources and codec are left
+# out and ARIXV_PACK=0 is propagated publicly, which hides the arixv_pack_*
+# declarations in the public header.
+if(ARIXV_BUILD_PACK)
+  list(APPEND ARIXV_DECODER_SOURCES src/arixv_pack.cpp)
+  list(APPEND ARIXV_ENCODER_SOURCES src/arixv_pack_encode.cpp)
+  set(ARIXV_PACK_DEFINITIONS)
+else()
+  set(ARIXV_PACK_DEFINITIONS ARIXV_PACK=0)
+  if(ARIXV_BUILD_RESEARCH_PACK)
+    message(FATAL_ERROR "ARIXV_BUILD_RESEARCH_PACK requires ARIXV_BUILD_PACK=ON")
+  endif()
+endif()
 
 function(arixv_apply_compile_options target)
   target_compile_features(${target} PRIVATE cxx_std_17)
@@ -81,6 +99,7 @@ if(BUILD_SHARED_LIBS)
   target_compile_definitions(arixv_shared
     PUBLIC
       ARIXV_SHARED
+      ${ARIXV_PACK_DEFINITIONS}
     PRIVATE
       ARIXV_BUILDING
       ARIXV_ENCODER=$<BOOL:${ARIXV_BUILD_ENCODER}>
@@ -136,6 +155,8 @@ else()
       ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
   target_compile_definitions(arixv_decoder
+    PUBLIC
+      ${ARIXV_PACK_DEFINITIONS}
     PRIVATE
       ARIXV_BUILDING
       ARIXV_ENCODER=$<BOOL:${ARIXV_BUILD_ENCODER}>
@@ -211,6 +232,7 @@ function(arixv_add_internal_lib target)
   target_compile_definitions(${target}
     PUBLIC
       ARIXV_ENCODER=1
+      ${ARIXV_PACK_DEFINITIONS}
       ${ARGN}
     PRIVATE
       ARIXV_BUILDING
@@ -247,6 +269,13 @@ if(ARIXV_BUILD_TOOLS AND ARIXV_BUILD_ENCODER)
   arixv_apply_compile_options(arixv_decode_bench)
   target_link_libraries(arixv_decode_bench PRIVATE arixv_internal_raw_residual)
 
+  if(ARIXV_BUILD_PACK)
+    find_package(Threads REQUIRED)
+    add_executable(arixv_pack_api_bench tools/bench/pack_api_bench.cpp)
+    arixv_apply_compile_options(arixv_pack_api_bench)
+    target_link_libraries(arixv_pack_api_bench PRIVATE arixv_internal Threads::Threads)
+  endif()
+
   add_executable(fuzz_roundtrip tools/fuzz/fuzz_roundtrip.cpp)
   arixv_apply_compile_options(fuzz_roundtrip)
   target_link_libraries(fuzz_roundtrip PRIVATE arixv_internal)
@@ -277,11 +306,15 @@ if(ARIXV_BUILD_LIBFUZZER AND ARIXV_BUILD_ENCODER)
       ${CMAKE_CURRENT_SOURCE_DIR}/include
       ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
+  # The fuzz library computes but does not enforce the ARXP header checksum,
+  # so mutated pack headers reach the structural validation behind it.
   target_compile_definitions(arixv_internal_lf
     PUBLIC
       ARIXV_ENCODER=1
+      ${ARIXV_PACK_DEFINITIONS}
     PRIVATE
       ARIXV_BUILDING
+      ARIXV_FUZZ_NO_PACK_CHECKSUM
   )
   target_compile_options(arixv_internal_lf PRIVATE ${_lf_flags})
 
@@ -297,13 +330,29 @@ if(ARIXV_BUILD_LIBFUZZER AND ARIXV_BUILD_ENCODER)
     target_link_options(${_lf_target} PRIVATE -fsanitize=fuzzer,address,undefined)
     target_link_libraries(${_lf_target} PRIVATE arixv_internal_lf)
   endforeach()
+  set(_lf_pack_modes)
+  set(_lf_pack_targets)
+  if(ARIXV_BUILD_PACK)
+    set(_lf_pack_modes RT DEC)
+    set(_lf_pack_targets fuzz_pack_rt_lf fuzz_pack_dec_lf)
+  endif()
+  foreach(_lf_mode ${_lf_pack_modes})
+    string(TOLOWER ${_lf_mode} _lf_lower)
+    set(_lf_target fuzz_pack_${_lf_lower}_lf)
+    add_executable(${_lf_target} tools/fuzz/fuzz_pack_cov.cpp)
+    arixv_apply_compile_options(${_lf_target})
+    target_compile_definitions(${_lf_target} PRIVATE ARIXV_PACK_FUZZ_${_lf_mode})
+    target_compile_options(${_lf_target} PRIVATE ${_lf_flags})
+    target_link_options(${_lf_target} PRIVATE -fsanitize=fuzzer,address,undefined)
+    target_link_libraries(${_lf_target} PRIVATE arixv_internal_lf)
+  endforeach()
 
   if(TARGET arixv_cli)
     add_custom_target(fuzz-smoke
       COMMAND ${CMAKE_COMMAND} -E env
         BUILD_DIR=$<TARGET_FILE_DIR:fuzz_roundtrip_lf>
         bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fuzz/smoke.sh"
-      DEPENDS fuzz_roundtrip_lf fuzz_decode_lf arixv_cli
+      DEPENDS fuzz_roundtrip_lf fuzz_decode_lf ${_lf_pack_targets} arixv_cli
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       USES_TERMINAL
     )
@@ -386,6 +435,17 @@ if(ARIXV_BUILD_TESTS)
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     )
 
+    if(ARIXV_BUILD_PACK)
+      add_executable(pack_test tests/pack_test.cpp)
+      arixv_apply_compile_options(pack_test)
+      target_link_libraries(pack_test PRIVATE arixv_internal Threads::Threads)
+      add_test(NAME pack_test
+        COMMAND pack_test
+          --golden-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/golden"
+          --fuzz-iters 300
+      )
+    endif()
+
     if(NOT TARGET arixv_internal_raw_residual)
       arixv_add_internal_lib(arixv_internal_raw_residual ARIXV_ENABLE_RAW_RESIDUAL)
     endif()
@@ -432,6 +492,66 @@ if(ARIXV_BUILD_TESTS)
         --grammar-dir "${_grammar_json_dir}"
         --check
     )
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Research-only multi-module sequence probes (Track B gate 1b). Opt-in, OFF by
+# default; nothing here changes the standard libraries, CLI, or tests. All
+# targets compile the model with ARIXV_RESEARCH_PACK and frozen default
+# tuning (see docs/development/multi-module-gate1b.md).
+# ---------------------------------------------------------------------------
+if(ARIXV_BUILD_RESEARCH_PACK AND ARIXV_BUILD_ENCODER)
+  arixv_add_internal_lib(arixv_internal_research ARIXV_RESEARCH_PACK)
+
+  add_executable(arixv_pack_probe tools/bench/pack_probe.cpp)
+  arixv_apply_compile_options(arixv_pack_probe)
+  target_link_libraries(arixv_pack_probe PRIVATE arixv_internal_research)
+
+  # Gate 2: per-instruction model-cost attribution (stats + gated hook).
+  arixv_add_internal_lib(arixv_internal_research_cost ARIXV_RESEARCH_PACK
+    ARIXV_ENABLE_STATS ARIXV_RESEARCH_INST_COST)
+  add_executable(arixv_structure_dump tools/bench/structure_dump.cpp)
+  arixv_apply_compile_options(arixv_structure_dump)
+  target_link_libraries(arixv_structure_dump PRIVATE arixv_internal_research_cost)
+
+  find_package(Threads REQUIRED)
+  add_executable(research_pack_test tests/research_pack_test.cpp)
+  arixv_apply_compile_options(research_pack_test)
+  target_link_libraries(research_pack_test PRIVATE arixv_internal_research
+                        Threads::Threads)
+  if(ARIXV_BUILD_TESTS)
+    add_test(NAME research_pack_test
+      COMMAND research_pack_test
+        --golden-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/golden"
+        --fuzz-iters 300
+    )
+  endif()
+
+  if(ARIXV_BUILD_LIBFUZZER)
+    set(_rlf_flags -O1 -g -fno-crash-diagnostics -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
+    add_library(arixv_internal_research_lf STATIC
+      ${ARIXV_DECODER_SOURCES} ${ARIXV_ENCODER_SOURCES})
+    arixv_apply_compile_options(arixv_internal_research_lf)
+    target_include_directories(arixv_internal_research_lf PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_definitions(arixv_internal_research_lf
+      PUBLIC ARIXV_ENCODER=1 ARIXV_RESEARCH_PACK
+      PRIVATE ARIXV_BUILDING)
+    target_compile_options(arixv_internal_research_lf PRIVATE ${_rlf_flags})
+    foreach(_rlf_mode RT DEC)
+      string(TOLOWER ${_rlf_mode} _rlf_lower)
+      set(_rlf_target fuzz_research_${_rlf_lower}_lf)
+      add_executable(${_rlf_target} tests/research_pack_test.cpp)
+      arixv_apply_compile_options(${_rlf_target})
+      target_compile_definitions(${_rlf_target} PRIVATE
+        ARIXV_RESEARCH_LIBFUZZER_${_rlf_mode})
+      target_compile_options(${_rlf_target} PRIVATE ${_rlf_flags})
+      target_link_options(${_rlf_target} PRIVATE -fsanitize=fuzzer,address,undefined)
+      target_link_libraries(${_rlf_target} PRIVATE arixv_internal_research_lf)
+    endforeach()
   endif()
 endif()
 

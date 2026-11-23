@@ -459,35 +459,79 @@ subcommand space clean for future Track B `pack` / `unpack`):
 
 ## Track B: Multi-Module / Shader-Pack Compression (Parallel Research)
 
-Runs on a separate branch (e.g. `research/multi-module`) after Phase 0 lands,
-tracked in its own development doc (e.g. `docs/development/multi-module.md`).
+Runs on a separate branch (e.g. `research/multi-module`) after Phase 0 lands.
+The initial research proposal, experiments, and decision gates are tracked in
+[`multi-module.md`](multi-module.md). The initial scope is full-set decode,
+with compression ratio as the priority and suitable shader groupings/use cases
+to be identified by the research. Finer-grained needs can use full-set decode
+and discard unwanted outputs, or single-module mode.
+
+### Decision after gate 1 (2026-11-21)
+
+Stop expanding cross-module adaptive-statistics transfer and refocus on repeated
+structure. The validated warm-start prototype saves about 4–6% over separate
+ARX2 blobs in the measured representative tiers, including framing; an identical
+second module still costs 89.1% of the first. These gains do not justify a new
+pack codec's complexity. Keep the prototype as a control and leave ordinary
+within-module adaptive coding unchanged. See the
+[decision and next bounded question](multi-module.md#decision-after-gate-1-close-statistics-transfer-investigate-repeated-structure).
 
 ### Motivation
-Real Vulkan applications ship shader packs / pipeline caches containing dozens
-to thousands of SPIR-V modules (permutations, uber-shader variants, shared UBO
-layouts, shared debug/type/helper declarations). Today, ARIX-V resets every
-adaptive model between files (median shader ~2.4 KB), paying cold-start every
-time and missing all cross-shader redundancy.
+
+Shader collections can repeat declarations, helper bodies, and instruction/
+operand sequences while assigning different IDs. The gate-1 generic baselines
+show substantial redundancy in some application and variant sets that probability
+transfer misses. This motivates a bounded structural-reuse probe; superiority
+over a generic wrapper remains unproven. This track studies collections of
+SPIR-V modules, not opaque driver pipeline-cache serialization.
 
 ### Research Questions & Milestones
-1. **Corpus & benchmark setup:** Assemble a realistic multi-shader evaluation
-   benchmark (both grouped subsets of the existing corpus by source/project and
-   real shader-permutation sets where available), measuring both **total pack
-   ratio** and **random-access / full-pack parallel decode throughput** vs
-   `tar + zstd -19`, `smol-v + tar + zstd -19`, and per-file `ARIX-V`.
-2. **Oracle analysis (before committing to a design):** Quantify where
-   cross-module savings actually come from:
-   - Warm-starting adaptive models (`ModelState` / `StringModel` / opcode &
-     enum CDFs) across modules in a group vs resetting per module.
-   - Cross-module string dictionary / history sharing.
-   - Similarity sorting + structural or byte-level delta / shared-block
-     deduplication (e.g., identical type/constant/decoration preambles).
-3. **Container & API design:**
-   - Distinct container magic (e.g. `ARXB` / `ARX3`), completely additive to
-     frozen single-module `ARX2` (1.0 decoders return
-     `ARIXV_STATUS_UNSUPPORTED_FORMAT` on newer `ARX?` magics).
-   - Design for **chunked / grouped blocks** (e.g. 8–32 related shaders per
-     independent block) so engines still get fast random access to individual
-     shaders *and* multi-core parallel decode across blocks.
-   - Maintain ARIX-V's core principle: purely adaptive / grammar-derived, no
-     corpus-trained shipped tables, hardened against hostile inputs.
+
+1. **Corpus and first size probes — completed:**
+   [gate 1a](multi-module-gate1a.md) supplies frozen classified packs, shared-header
+   ARX2 and per-file/solid generic baselines, and conditional-cost diagnostics.
+   [Gate 1b](multi-module-gate1b.md) supplies exact sequence round trips and the
+   statistics-transfer measurements. Retain the manifest and controls; further
+   probability-family and counter sweeps are closed.
+2. **Repeated-structure opportunity — completed, estimate
+   ([gate 2](multi-module-gate2.md)):** about −18% versus ARX2 on
+   duplicate-free collections, and below solid xz on Dota 2. This is pending
+   a validated gate-3 prototype. Original scope: separate exact-module dedup,
+   exact block/string reuse, and ID-abstracted instruction/operand similarity.
+   Begin in manifest order with a bounded prior-module search. Cost base/copy
+   selection, ID correspondence/restoration, residuals, escapes, and all pack
+   metadata. Coverage and free-metadata oracles remain diagnostics. Compare
+   identical member sets against exact dedup, standalone ARX2, its zero-modeling
+   wrapper, the warm-start control, and the strongest generic references.
+   Deliver a per-source/tier opportunity report and incremental-cost curves.
+   Agree a worthwhile-gain/complexity target after that evidence and before a
+   minimal round-trip structural matcher. Close Track B if the opportunity is
+   weak, costs erase it, or generic methods adequately serve the useful cases
+   without a compelling custom-codec advantage.
+3. **Validated structural prototype — completed
+   ([gate 3](multi-module-gate3.md)):** about −24% versus ARX2 on
+   duplicate-free collections, every representative pack below the best
+   generic method, and full-set decode about 1.2× independent ARX2. The
+   design decision is pending. Original scope: require exact
+   original bytes and worthwhile net size gains before format/API work. Only
+   then evaluate full-set decode time, memory, and the ratio cost of independent
+   blocks for parallel decode. Block sizes (including the original 8–32 shader
+   hypothesis) follow measurements; random access is outside the initial scope.
+   Any eventual pack format uses distinct magic, remains additive to frozen
+   single-module ARX2, follows the adaptive/grammar-derived knowledge policy,
+   and requires hostile-input hardening. Application recommendations remain
+   provisional until additional independent application sources validate them.
+   A generic wrapper, independent ARX2, or stopping this track are valid outcomes.
+4. **Use-case and design recommendation — design chosen
+   ([gate 4](multi-module-gate4.md),
+   [API proposal](multi-module-pack-api.md)):**
+   - Real application sets validate the gain: −47% to −79% versus ARX2.
+   - The design is two-stage blocks, with stateless calls scheduled by the
+     engine's job system. Large sets are 1.8–2.9× smaller than ARX2 at
+     1.3–1.6× its 16-worker latency at the default budget, and a
+     size/speed budget option trades toward solid.
+   - Done since: the hookable `CodeModule` (on `main`), deterministic
+     integer-cost planning, and the ARXP v1 format spec
+     ([format-arxp.md](../format-arxp.md)) with golden vectors.
+   - Remaining: the public C API implementation, the memory and performance
+     contract, and long fuzz campaigns. Not a 1.0 blocker.

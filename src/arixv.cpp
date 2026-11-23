@@ -275,6 +275,8 @@ const char* ARIXV_CALL arixv_status_string(arixv_status status) ARIXV_NOEXCEPT {
       return "out of memory";
     case ARIXV_STATUS_TOO_LARGE:
       return "output too large for platform";
+    case ARIXV_STATUS_DEPENDENCY_INCOMPLETE:
+      return "dependency incomplete";
   }
   return "unknown status";
 }

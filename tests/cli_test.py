@@ -42,12 +42,13 @@ def main() -> int:
     r = run(cli, ["--version"])
     require(r.returncode == 0, f"--version rc={r.returncode}")
     out = r.stdout.decode("utf-8")
-    require("arixv 1.0.0" in out and "ARX2" in out, f"unexpected --version: {out!r}")
+    has_pack = "ARXP" in out
+    require("arixv 1.1.0" in out and "ARX2" in out, f"unexpected --version: {out!r}")
 
     for flag in ("-h", "--help"):
         r = run(cli, [flag])
         require(r.returncode == 0, f"{flag} rc={r.returncode}")
-        require(b"arixv 1.0.0" in r.stdout and b"ARX2" in r.stdout and b"usage:" in r.stdout,
+        require(b"arixv 1.1.0" in r.stdout and b"ARX2" in r.stdout and b"usage:" in r.stdout,
                 f"{flag} missing version/magic/usage on stdout: {r.stdout!r}")
 
     # 2. Usage errors exit with code 2
@@ -62,6 +63,12 @@ def main() -> int:
         ["d", "--max-size", "not-a-num", "a", "b"],
         ["info"],
         ["info", "-", "-"],
+        *([["pack"],
+           ["pack", "only-out.arxp"],
+           ["pack", "--parallelism", "x", "o", "a"],
+           ["pack", "--latency-budget", "50", "o", "a"],
+           ["unpack", "a.arxp"],
+           ["unpack", "--bogus", "a.arxp", "d"]] if has_pack else [["pack", "o", "a"]]),
     ):
         r = run(cli, bad_args)
         require(r.returncode == 2, f"expected exit 2 for {bad_args}, got {r.returncode}")
@@ -256,6 +263,61 @@ def main() -> int:
         r = run(cli, ["roundtrip", str(tmp_path / "does_not_exist.spv")])
         require(r.returncode == 1 and b"FAIL" in r.stdout and len(r.stderr) > 0,
                 f"expected roundtrip failure with stderr: rc={r.returncode} out={r.stdout!r} err={r.stderr!r}")
+
+        # 8. pack / unpack / info on a pack (module order and bytes kept)
+        if not has_pack:
+            print("cli_test: all checks passed (packs not built)")
+            return 0
+        noise = tmp_path / "noise.bin"
+        noise.write_bytes(os.urandom(777))
+        empty = tmp_path / "empty.bin"
+        empty.write_bytes(b"")
+        inputs = [*spv_files, noise, spv_files[0], empty]
+        pack = tmp_path / "set.arxp"
+        for extra in ([], ["--parallelism", "1"], ["--parallelism", "4", "--fast-decode",
+                                                   "--latency-budget", "300",
+                                                   "--max-block-bytes", "100000"]):
+            r = run(cli, ["pack", "-v", *extra, str(pack), *map(str, inputs)])
+            require(r.returncode == 0, f"pack {extra} failed: {r.stderr!r}")
+            require(b"modules" in r.stderr, f"pack -v summary missing: {r.stderr!r}")
+            out_dir = tmp_path / f"unpacked{len(extra)}"
+            r = run(cli, ["unpack", str(pack), str(out_dir)])
+            require(r.returncode == 0, f"unpack failed: {r.stderr!r}")
+            got = sorted(out_dir.iterdir())
+            require(len(got) == len(inputs), f"unpack wrote {len(got)} files")
+            for i, src in enumerate(inputs):
+                spirv = src.suffix == ".spv"
+                want = out_dir / f"{i:05d}.{'spv' if spirv else 'bin'}"
+                require(want.read_bytes() == src.read_bytes(), f"unpack mismatch at {i}")
+        r = run(cli, ["info", str(pack), str(arx_files[0])])
+        require(r.returncode == 0, f"info on pack failed: {r.stderr!r}")
+        lines = r.stdout.decode("utf-8").splitlines()
+        require(len(lines) == 2 and "magic=ARXP" in lines[0] and
+                f"modules={len(inputs)}" in lines[0] and "fast_decode" in lines[0],
+                f"unexpected pack info: {lines!r}")
+        r = run(cli, ["d", str(pack), str(tmp_path / "x")])
+        require(r.returncode == 1 and b"unsupported format" in r.stderr,
+                f"d on a pack should report unsupported format: {r.stderr!r}")
+        # unpack never overwrites: not a second time, not through a symlink.
+        out_dir = tmp_path / "unpacked0"
+        r = run(cli, ["unpack", str(pack), str(out_dir)])
+        require(r.returncode == 1 and b"never overwrites" in r.stderr,
+                f"unpack over existing files must fail: {r.stderr!r}")
+        if hasattr(os, "symlink") and os.name != "nt":
+            victim = tmp_path / "victim.txt"
+            victim.write_bytes(b"keep me")
+            link_dir = tmp_path / "linked"
+            link_dir.mkdir()
+            (link_dir / "00000.spv").symlink_to(victim)
+            r = run(cli, ["unpack", str(pack), str(link_dir)])
+            require(r.returncode == 1 and victim.read_bytes() == b"keep me",
+                    "unpack followed an existing symlink")
+        bad = tmp_path / "bad.arxp"
+        bad.write_bytes(pack.read_bytes()[:-1])
+        r = run(cli, ["unpack", str(bad), str(tmp_path / "bad_out")])
+        require(r.returncode == 1 and len(r.stderr) > 0, "unpack of a truncated pack must fail")
+        r = run(cli, ["unpack", "--max-size", "10", str(pack), str(tmp_path / "cap_out")])
+        require(r.returncode == 1 and b"--max-size" in r.stderr, f"unpack --max-size: {r.stderr!r}")
 
     print("cli_test: all checks passed")
     return 0

@@ -1,6 +1,16 @@
 ARIXV_1.0 {
   global:
-    arixv_*;
+    arixv_version;
+    arixv_status_string;
+    arixv_inspect;
+    arixv_decode;
+    arixv_encode_bound;
+    arixv_encode;
   local:
     *;
 };
+
+ARIXV_1.1 {
+  global:
+    arixv_pack_*;
+} ARIXV_1.0;

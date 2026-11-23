@@ -205,6 +205,28 @@ bool WriteOutputPath(const fs::path& path, const std::vector<uint8_t>& data) {
   return static_cast<bool>(out);
 }
 
+#if ARIXV_HAS_PACK_
+// Creates `path` exclusively and writes `data`: fails if anything (file,
+// directory, or symlink, dangling or not) already exists there, so it never
+// follows a link or replaces an existing file such as the input.
+bool WriteNewFile(const fs::path& path, const std::vector<uint8_t>& data) {
+  std::FILE* f = std::fopen(path.string().c_str(), "wbx");
+  if (f == nullptr) {
+    return false;
+  }
+  size_t done = 0;
+  while (done < data.size()) {
+    const size_t n = std::min(kIoChunkBytes, data.size() - done);
+    if (std::fwrite(data.data() + done, 1, n, f) != n) {
+      std::fclose(f);
+      return false;
+    }
+    done += n;
+  }
+  return std::fclose(f) == 0;
+}
+#endif
+
 bool ResolveLinkTarget(const fs::path& p, fs::path* out_resolved) {
   fs::path cur = p;
   for (int hop = 0; hop < 32; ++hop) {
@@ -387,8 +409,12 @@ void PrintVersion(std::ostream& os) {
   const uint32_t major = (v >> 16) & 0xFFu;
   const uint32_t minor = (v >> 8) & 0xFFu;
   const uint32_t patch = v & 0xFFu;
-  os << "arixv " << major << "." << minor << "." << patch << " (format "
+  os << "arixv " << major << "." << minor << "." << patch << " (formats "
      << ARIXV_MAGIC_0 << ARIXV_MAGIC_1 << ARIXV_MAGIC_2 << ARIXV_MAGIC_3
+#if ARIXV_HAS_PACK_
+     << ", " << ARIXV_PACK_MAGIC_0 << ARIXV_PACK_MAGIC_1 << ARIXV_PACK_MAGIC_2
+     << ARIXV_PACK_MAGIC_3
+#endif
      << ")\n";
 }
 
@@ -402,13 +428,26 @@ void PrintUsage(std::ostream& os, const char* argv0) {
      << "  " << argv0 << " d [-q|-v] [--max-size <bytes>] <in> <out>\n"
      << "  " << argv0 << " info <files...>\n"
      << "  " << argv0 << " roundtrip [--force-coded] <files...>\n"
+#if ARIXV_HAS_PACK_
+     << "  " << argv0
+     << " pack [-q|-v] [--parallelism N] [--latency-budget PCT]\n"
+     << "       [--max-block-bytes N] [--fast-decode] <out.arxp> <files...>\n"
+     << "  " << argv0
+     << " unpack [-q|-v] [--max-size <bytes>] <in.arxp> <out-dir>\n"
+#endif
      << "  " << argv0 << " --version | --help\n"
      << "\n"
      << "notes:\n"
      << "  use '-' for stdin/stdout in single-file 'c', 'd', and 'info'.\n"
      << "  --out-dir writes <dir>/<filename>.arixv for each input file.\n"
      << "  --max-size caps decoded output size in bytes (default 512 MiB; 0 = platform max).\n"
-     << "  -v prints compression/decompression summaries to stderr; -q is quiet.\n";
+     << "  -v prints compression/decompression summaries to stderr; -q is quiet.\n"
+#if ARIXV_HAS_PACK_
+     << "  pack codes the files, in order, into one ARXP shader pack; unpack\n"
+     << "  writes <out-dir>/<index>.spv (SPIR-V) or <index>.bin per module and\n"
+     << "  never overwrites existing files.\n"
+#endif
+     ;
 }
 
 int RunCompress(const char* argv0, int argc, char** argv) {
@@ -742,6 +781,278 @@ int RunDecompress(const char* argv0, int argc, char** argv) {
   return kExitOk;
 }
 
+#if ARIXV_HAS_PACK_
+// Whole-pack inspection: the pack header can only be validated against the
+// complete file, so info reads it all (bounded by the CLI input limit).
+bool PrintPackInfo(const std::string& path, bool* all_ok) {
+  std::vector<uint8_t> data;
+  std::string err;
+  if (path == "-" || !ReadInput(path, data, &err)) {
+    std::cerr << "error: " << path << ": "
+              << (path == "-" ? "packs cannot be inspected from stdin" : err)
+              << "\n";
+    *all_ok = false;
+    return false;
+  }
+  arixv_pack_info info{};
+  info.struct_size = sizeof(info);
+  const arixv_status status = arixv_pack_inspect(data.data(), data.size(), &info);
+  if (status != ARIXV_STATUS_OK) {
+    std::cerr << "error: " << path << ": " << arixv_status_string(status)
+              << "\n";
+    *all_ok = false;
+    return false;
+  }
+  std::cout << path << "\tmagic=" << FormatMagic(info.magic)
+            << "\tmodules=" << info.module_count
+            << "\tstage1_blocks=" << info.stage1_block_count
+            << "\tstage2_blocks=" << info.stage2_block_count
+            << "\tscratch=" << info.scratch_size
+            << ((info.flags & ARIXV_PACK_INFO_FAST_DECODE) ? "\tfast_decode" : "")
+            << "\tcompressed=" << data.size()
+            << "\tuncompressed=" << info.total_output_size
+            << "\tratio=" << FormatRatio(data.size(), info.total_output_size)
+            << "\n";
+  return true;
+}
+
+bool ParseUint32Arg(const std::string& s, uint32_t* value) {
+  uint64_t v = 0;
+  if (!ParseSizeArg(s, &v) || v > UINT32_MAX) return false;
+  *value = static_cast<uint32_t>(v);
+  return true;
+}
+
+int RunPack(const char* argv0, int argc, char** argv) {
+  bool verbose = false;
+  arixv_pack_encode_options opts{};
+  opts.struct_size = sizeof(opts);
+  std::vector<std::string> positional;
+  bool end_of_opts = false;
+  for (int i = 2; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (!end_of_opts && arg == "--") {
+      end_of_opts = true;
+      continue;
+    }
+    if (!end_of_opts && arg.size() > 1 && arg[0] == '-') {
+      const bool has_next = i + 1 < argc;
+      if (arg == "-h" || arg == "--help") {
+        PrintUsage(std::cout, argv0);
+        return kExitOk;
+      } else if (arg == "-v" || arg == "--verbose") {
+        verbose = true;
+      } else if (arg == "-q" || arg == "--quiet") {
+        verbose = false;
+      } else if (arg == "--fast-decode") {
+        opts.flags |= ARIXV_PACK_ENCODE_FAST_DECODE;
+      } else if (arg == "--parallelism") {
+        if (!has_next || !ParseUint32Arg(argv[++i], &opts.parallelism)) {
+          std::cerr << "error: --parallelism requires a count\n";
+          return kExitUsage;
+        }
+      } else if (arg == "--latency-budget") {
+        if (!has_next || !ParseUint32Arg(argv[++i], &opts.latency_budget_pct) ||
+            (opts.latency_budget_pct != 0 &&
+             (opts.latency_budget_pct < 100 ||
+              opts.latency_budget_pct > 100000))) {
+          std::cerr << "error: --latency-budget requires 0 or 100..100000\n";
+          return kExitUsage;
+        }
+      } else if (arg == "--max-block-bytes") {
+        uint64_t v = 0;
+        if (!has_next || !ParseSizeArg(argv[++i], &v)) {
+          std::cerr << "error: --max-block-bytes requires a byte count\n";
+          return kExitUsage;
+        }
+        opts.max_block_bytes = v;
+      } else {
+        std::cerr << "error: unknown option '" << arg << "' for 'pack'\n";
+        PrintUsage(std::cerr, argv0);
+        return kExitUsage;
+      }
+    } else {
+      positional.push_back(arg);
+    }
+  }
+  if (positional.size() < 2) {
+    PrintUsage(std::cerr, argv0);
+    return kExitUsage;
+  }
+  const size_t count = positional.size() - 1;
+  if (count > (size_t{1} << 20)) {
+    std::cerr << "error: too many modules for one pack (limit 1048576)\n";
+    return kExitUsage;
+  }
+  std::vector<std::vector<uint8_t>> modules(count);
+  std::vector<const void*> ptrs(count);
+  std::vector<size_t> sizes(count);
+  for (size_t k = 0; k < count; ++k) {
+    const std::string& path = positional[k + 1];
+    std::string err;
+    if (path == "-" || !ReadInput(path, modules[k], &err)) {
+      std::cerr << "error: failed to read " << path;
+      if (path == "-") std::cerr << ": pack inputs must be files";
+      if (!err.empty()) std::cerr << ": " << err;
+      std::cerr << "\n";
+      return kExitError;
+    }
+    ptrs[k] = modules[k].empty() ? nullptr : modules[k].data();
+    sizes[k] = modules[k].size();
+  }
+  const uint32_t n = static_cast<uint32_t>(count);
+  size_t cap = arixv_pack_encode_bound(sizes.data(), n, &opts);
+  if (cap == 0) {
+    std::cerr << "error: inputs exceed the pack limits\n";
+    return kExitError;
+  }
+  std::vector<uint8_t> out(cap);
+  const arixv_status status =
+      arixv_pack_encode(ptrs.data(), sizes.data(), n, out.data(), &cap, &opts);
+  if (status != ARIXV_STATUS_OK) {
+    std::cerr << "error: pack failed: " << arixv_status_string(status) << "\n";
+    return kExitError;
+  }
+  out.resize(cap);
+  if (!WriteOutput(positional[0], out)) {
+    std::cerr << "error: failed to write " << positional[0] << "\n";
+    return kExitError;
+  }
+  if (verbose) {
+    uint64_t total = 0;
+    for (size_t sz : sizes) total += sz;
+    arixv_pack_info info{};
+    info.struct_size = sizeof(info);
+    (void)arixv_pack_inspect(out.data(), out.size(), &info);
+    std::cerr << positional[0] << ": " << count << " modules, " << total
+              << " -> " << out.size() << " bytes ("
+              << FormatPercent(out.size(), total) << "), blocks "
+              << info.stage1_block_count << " + " << info.stage2_block_count
+              << "\n";
+  }
+  return kExitOk;
+}
+
+int RunUnpack(const char* argv0, int argc, char** argv) {
+  bool verbose = false;
+  uint64_t max_output_bytes = kDefaultMaxDecodeBytes;
+  std::vector<std::string> positional;
+  bool end_of_opts = false;
+  for (int i = 2; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (!end_of_opts && arg == "--") {
+      end_of_opts = true;
+      continue;
+    }
+    if (!end_of_opts && arg.size() > 1 && arg[0] == '-') {
+      if (arg == "-h" || arg == "--help") {
+        PrintUsage(std::cout, argv0);
+        return kExitOk;
+      } else if (arg == "-v" || arg == "--verbose") {
+        verbose = true;
+      } else if (arg == "-q" || arg == "--quiet") {
+        verbose = false;
+      } else if (arg == "--max-size") {
+        if (i + 1 >= argc || !ParseSizeArg(argv[++i], &max_output_bytes)) {
+          std::cerr << "error: --max-size requires a non-negative byte count\n";
+          return kExitUsage;
+        }
+      } else {
+        std::cerr << "error: unknown option '" << arg << "' for 'unpack'\n";
+        PrintUsage(std::cerr, argv0);
+        return kExitUsage;
+      }
+    } else {
+      positional.push_back(arg);
+    }
+  }
+  if (positional.size() != 2 || positional[1].empty()) {
+    PrintUsage(std::cerr, argv0);
+    return kExitUsage;
+  }
+  std::vector<uint8_t> input;
+  std::string read_err;
+  if (!ReadInput(positional[0], input, &read_err)) {
+    std::cerr << "error: failed to read " << positional[0];
+    if (!read_err.empty()) std::cerr << ": " << read_err;
+    std::cerr << "\n";
+    return kExitError;
+  }
+  arixv_pack_info info{};
+  info.struct_size = sizeof(info);
+  const uint8_t empty = 0;
+  const void* in = input.empty() ? static_cast<const void*>(&empty)
+                                 : static_cast<const void*>(input.data());
+  arixv_status status = arixv_pack_inspect(in, input.size(), &info);
+  if (status != ARIXV_STATUS_OK) {
+    std::cerr << "error: " << positional[0] << ": "
+              << arixv_status_string(status) << "\n";
+    return kExitError;
+  }
+  const uint64_t limit = max_output_bytes && max_output_bytes < kMaxCliBytes
+                             ? max_output_bytes
+                             : kMaxCliBytes;
+  if (info.total_output_size > limit) {
+    std::cerr << "error: declared output size (" << info.total_output_size
+              << " bytes) exceeds --max-size limit (" << limit
+              << " bytes); pass --max-size <bytes> to override\n";
+    return kExitError;
+  }
+  std::vector<arixv_pack_module_info> mods(info.module_count);
+  status = arixv_pack_inspect_modules(input.data(), input.size(), mods.data(),
+                                      info.module_count);
+  if (status != ARIXV_STATUS_OK) {
+    std::cerr << "error: " << arixv_status_string(status) << "\n";
+    return kExitError;
+  }
+  std::vector<std::vector<uint8_t>> data(info.module_count);
+  std::vector<void*> outs(info.module_count);
+  std::vector<size_t> caps(info.module_count);
+  for (uint32_t i = 0; i < info.module_count; ++i) {
+    data[i].resize(static_cast<size_t>(mods[i].size));
+    outs[i] = data[i].data();
+    caps[i] = data[i].size();
+  }
+  const arixv_pack_outputs outputs = {sizeof(arixv_pack_outputs),
+                                      info.module_count, outs.data(),
+                                      caps.data()};
+  status = arixv_pack_decode(input.data(), input.size(), &outputs, nullptr);
+  if (status != ARIXV_STATUS_OK) {
+    std::cerr << "error: unpack failed: " << arixv_status_string(status)
+              << "\n";
+    return kExitError;
+  }
+  std::error_code ec;
+  const fs::path dir(positional[1]);
+  fs::create_directories(dir, ec);
+  if (ec || !fs::is_directory(dir, ec) || ec) {
+    std::cerr << "error: cannot create directory " << positional[1] << "\n";
+    return kExitError;
+  }
+  for (uint32_t i = 0; i < info.module_count; ++i) {
+    const std::vector<uint8_t>& m = data[i];
+    const bool spirv =
+        m.size() >= 4 && ((m[0] == 0x03 && m[1] == 0x02 && m[2] == 0x23 &&
+                           m[3] == 0x07) ||
+                          (m[0] == 0x07 && m[1] == 0x23 && m[2] == 0x02 &&
+                           m[3] == 0x03));
+    char name[32];
+    std::snprintf(name, sizeof name, "%05u.%s", i, spirv ? "spv" : "bin");
+    if (!WriteNewFile(dir / name, m)) {
+      std::cerr << "error: cannot create " << (dir / name).string()
+                << " (unpack never overwrites existing files)\n";
+      return kExitError;
+    }
+  }
+  if (verbose) {
+    std::cerr << positional[0] << " -> " << positional[1] << ": "
+              << info.module_count << " modules, " << input.size() << " -> "
+              << info.total_output_size << " bytes\n";
+  }
+  return kExitOk;
+}
+#endif  // ARIXV_HAS_PACK_
+
 int RunInfo(const char* argv0, int argc, char** argv) {
   std::vector<std::string> positional;
   bool end_of_opts = false;
@@ -831,6 +1142,12 @@ int RunInfo(const char* argv0, int argc, char** argv) {
       }
     }
 
+#if ARIXV_HAS_PACK_
+    if (header_bytes >= 4 && std::memcmp(header_buf, "ARXP", 4) == 0) {
+      PrintPackInfo(path, &all_ok);
+      continue;
+    }
+#endif
     arixv_header_info info{};
     info.struct_size = sizeof(info);
     const arixv_status status = arixv_inspect(header_buf, header_bytes, &info);
@@ -962,6 +1279,14 @@ int RunMain(int argc, char** argv) {
   if (cmd == "roundtrip") {
     return RunRoundtrip(argv[0], argc, argv);
   }
+#if ARIXV_HAS_PACK_
+  if (cmd == "pack") {
+    return RunPack(argv[0], argc, argv);
+  }
+  if (cmd == "unpack") {
+    return RunUnpack(argv[0], argc, argv);
+  }
+#endif
 
   std::cerr << "error: unknown command '" << cmd << "'\n";
   PrintUsage(std::cerr, argv[0]);

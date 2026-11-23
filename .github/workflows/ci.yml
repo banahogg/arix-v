@@ -119,7 +119,7 @@ jobs:
           cmake --build build/dec-shared -j
           ctest --test-dir build/dec-shared --output-on-failure
           exported=$(nm -D --defined-only build/dec-shared/libarixv_decoder.so | awk '$2 != "A" {print $3}' | sort)
-          expected=$(printf '%s\n' arixv_decode@@ARIXV_1.0 arixv_inspect@@ARIXV_1.0 arixv_status_string@@ARIXV_1.0 arixv_version@@ARIXV_1.0)
+          expected=$(printf '%s\n' arixv_decode@@ARIXV_1.0 arixv_inspect@@ARIXV_1.0 arixv_status_string@@ARIXV_1.0 arixv_version@@ARIXV_1.0 arixv_pack_decode@@ARIXV_1.1 arixv_pack_decode_stage1@@ARIXV_1.1 arixv_pack_decode_stage2@@ARIXV_1.1 arixv_pack_inspect@@ARIXV_1.1 arixv_pack_inspect_modules@@ARIXV_1.1 arixv_pack_reset_scratch@@ARIXV_1.1 | sort)
           if [ "$exported" != "$expected" ]; then
             echo "ERROR: Unexpected exported symbols in decoder-only libarixv_decoder.so:"
             echo "$exported"
@@ -127,6 +127,20 @@ jobs:
           fi
           readelf -d build/dec-shared/libarixv_decoder.so | grep -q 'SONAME.*\[libarixv_decoder\.so\.1\]'
           cmake --install build/dec-shared --prefix "$PWD/build/install-dec-shared"
+
+          # ARIXV_BUILD_PACK=OFF: the 1.0-sized decoder exports exactly the 1.0 set.
+          cmake -S . -B build/dec-nopack -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON -DARIXV_BUILD_PACK=OFF \
+            -DARIXV_BUILD_ENCODER=OFF -DARIXV_BUILD_CLI=OFF -DARIXV_BUILD_TOOLS=OFF
+          cmake --build build/dec-nopack -j
+          ctest --test-dir build/dec-nopack --output-on-failure
+          exported=$(nm -D --defined-only build/dec-nopack/libarixv_decoder.so | awk '$2 != "A" {print $3}' | sort)
+          expected=$(printf '%s\n' arixv_decode@@ARIXV_1.0 arixv_inspect@@ARIXV_1.0 arixv_status_string@@ARIXV_1.0 arixv_version@@ARIXV_1.0 | sort)
+          if [ "$exported" != "$expected" ]; then
+            echo "ERROR: Unexpected exported symbols in ARIXV_BUILD_PACK=OFF libarixv_decoder.so:"
+            echo "$exported"
+            exit 1
+          fi
 
           for kind in static shared; do
             for lang in C CXX; do
@@ -163,13 +177,13 @@ jobs:
             done
           done
 
-          # Shared build + CTest + verify ONLY ARIXV_1.0 C arixv_* symbols are exported
+          # Shared build + CTest + verify ONLY the ARIXV_1.0/1.1 C arixv_* symbols are exported
           cmake -S . -B build/shared -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=ON
           cmake --build build/shared -j
           ctest --test-dir build/shared --output-on-failure
           exported=$(nm -D --defined-only build/shared/libarixv.so | awk '$2 != "A" {print $3}' | sort)
-          expected=$(printf '%s\n' arixv_decode@@ARIXV_1.0 arixv_encode@@ARIXV_1.0 arixv_encode_bound@@ARIXV_1.0 arixv_inspect@@ARIXV_1.0 arixv_status_string@@ARIXV_1.0 arixv_version@@ARIXV_1.0)
+          expected=$(printf '%s\n' arixv_decode@@ARIXV_1.0 arixv_encode@@ARIXV_1.0 arixv_encode_bound@@ARIXV_1.0 arixv_inspect@@ARIXV_1.0 arixv_status_string@@ARIXV_1.0 arixv_version@@ARIXV_1.0 arixv_pack_decode@@ARIXV_1.1 arixv_pack_decode_stage1@@ARIXV_1.1 arixv_pack_decode_stage2@@ARIXV_1.1 arixv_pack_inspect@@ARIXV_1.1 arixv_pack_inspect_modules@@ARIXV_1.1 arixv_pack_reset_scratch@@ARIXV_1.1 arixv_pack_encode@@ARIXV_1.1 arixv_pack_encode_bound@@ARIXV_1.1 | sort)
           if [ "$exported" != "$expected" ]; then
             echo "ERROR: Unexpected exported symbols in libarixv.so:"
             echo "$exported"
@@ -296,7 +310,7 @@ jobs:
           cmake --build build/shared -j
           ctest --test-dir build/shared --output-on-failure
           exported=$(nm -gU build/shared/libarixv.dylib | awk '{print $3}' | sort)
-          expected=$(printf '%s\n' _arixv_decode _arixv_encode _arixv_encode_bound _arixv_inspect _arixv_status_string _arixv_version)
+          expected=$(printf '%s\n' _arixv_decode _arixv_encode _arixv_encode_bound _arixv_inspect _arixv_status_string _arixv_version _arixv_pack_decode _arixv_pack_decode_stage1 _arixv_pack_decode_stage2 _arixv_pack_encode _arixv_pack_encode_bound _arixv_pack_inspect _arixv_pack_inspect_modules _arixv_pack_reset_scratch | sort)
           if [ "$exported" != "$expected" ]; then
             echo "ERROR: Unexpected exported symbols in libarixv.dylib:"
             echo "$exported"
@@ -398,7 +412,7 @@ jobs:
               if ($_ -match '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)') { $Matches[1] }
             } | Sort-Object
           )
-          $expected = @("arixv_decode", "arixv_encode", "arixv_encode_bound", "arixv_inspect", "arixv_status_string", "arixv_version")
+          $expected = @(@("arixv_decode", "arixv_encode", "arixv_encode_bound", "arixv_inspect", "arixv_status_string", "arixv_version", "arixv_pack_decode", "arixv_pack_decode_stage1", "arixv_pack_decode_stage2", "arixv_pack_encode", "arixv_pack_encode_bound", "arixv_pack_inspect", "arixv_pack_inspect_modules", "arixv_pack_reset_scratch") | Sort-Object)
           if (($exported -join ",") -ne ($expected -join ",")) {
             throw "Unexpected DLL exports: $($exported -join ', ')"
           }

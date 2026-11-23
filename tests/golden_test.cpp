@@ -8,6 +8,11 @@
 // decoder-only, shared, static, -fno-exceptions). When the encoder is enabled,
 // also verifies that re-encoding each decoded payload produces byte-identical
 // ARX2 output.
+//
+// Also checks the ARXP v1 pack vectors in tests/golden/pack through the
+// public pack API: each decodes (single-call and two-stage) to its recorded
+// inputs, and, with the encoder, packs encodable through the public options
+// re-encode byte for byte.
 
 #include <array>
 #include <cstddef>
@@ -171,6 +176,99 @@ constexpr GoldenVector kVectors[] = {
 
 }  // namespace
 
+#if ARIXV_HAS_PACK_
+struct PackGoldenCase {
+  const char* file;
+  int inputs;
+  uint32_t parallelism, budget;
+  bool reverse, warm, fast;
+  size_t size;
+  uint64_t file_fnv, input_fnv;
+  uint32_t modules, s1, s2, stored;
+};
+
+constexpr PackGoldenCase kPackGoldens[] = {
+#include "golden/pack/expected.inc"
+};
+
+uint64_t Fnv1a(const uint8_t* p, size_t n,
+               uint64_t h = 0xcbf29ce484222325ull) {
+  for (size_t i = 0; i < n; ++i) {
+    h ^= p[i];
+    h *= 0x100000001b3ull;
+  }
+  return h;
+}
+
+void CheckPackGolden(const std::filesystem::path& dir,
+                     const PackGoldenCase& c) {
+  std::vector<uint8_t> pack;
+  CHECK(ReadFile(dir / "pack" / c.file, pack));
+  CHECK(pack.size() == c.size);
+  CHECK(Fnv1a(pack.data(), pack.size()) == c.file_fnv);
+  arixv_pack_info info{};
+  info.struct_size = sizeof(info);
+  CHECK(arixv_pack_inspect(pack.data(), pack.size(), &info) == ARIXV_STATUS_OK);
+  CHECK(info.module_count == c.modules && info.stage1_block_count == c.s1 &&
+        info.stage2_block_count == c.s2);
+  CHECK(((info.flags & ARIXV_PACK_INFO_FAST_DECODE) != 0) == c.fast);
+  std::vector<arixv_pack_module_info> mods(info.module_count);
+  CHECK(arixv_pack_inspect_modules(pack.data(), pack.size(), mods.data(),
+                                   info.module_count) == ARIXV_STATUS_OK);
+  for (int path = 0; path < 2; ++path) {
+    std::vector<std::vector<uint8_t>> data(info.module_count);
+    std::vector<void*> outs(info.module_count);
+    std::vector<size_t> caps(info.module_count);
+    for (uint32_t i = 0; i < info.module_count; ++i) {
+      data[i].assign(static_cast<size_t>(mods[i].size), 0xAB);
+      outs[i] = data[i].data();
+      caps[i] = data[i].size();
+    }
+    const arixv_pack_outputs o = {sizeof(o), info.module_count, outs.data(),
+                                  caps.data()};
+    if (path == 0) {
+      CHECK(arixv_pack_decode(pack.data(), pack.size(), &o, nullptr) ==
+            ARIXV_STATUS_OK);
+    } else {
+      std::vector<uint8_t> scratch(static_cast<size_t>(info.scratch_size));
+      void* sp = scratch.empty() ? nullptr : scratch.data();
+      CHECK(arixv_pack_reset_scratch(pack.data(), pack.size(), sp,
+                                     scratch.size()) == ARIXV_STATUS_OK);
+      for (uint32_t b = 0; b < info.stage1_block_count; ++b) {
+        CHECK(arixv_pack_decode_stage1(pack.data(), pack.size(), b, &o, sp,
+                                       scratch.size(), nullptr) ==
+              ARIXV_STATUS_OK);
+      }
+      for (uint32_t b = 0; b < info.stage2_block_count; ++b) {
+        CHECK(arixv_pack_decode_stage2(pack.data(), pack.size(), b, &o, sp,
+                                       scratch.size(), nullptr) ==
+              ARIXV_STATUS_OK);
+      }
+    }
+    uint64_t fnv = 0xcbf29ce484222325ull;
+    for (const auto& d : data) fnv = Fnv1a(d.data(), d.size(), fnv);
+    CHECK(fnv == c.input_fnv);
+#if ARIXV_ENCODER
+    if (path == 0 && c.warm && !c.reverse) {
+      std::vector<const void*> ptrs(info.module_count);
+      for (uint32_t i = 0; i < info.module_count; ++i) {
+        ptrs[i] = data[i].empty() ? nullptr : data[i].data();
+      }
+      const arixv_pack_encode_options eo = {
+          sizeof(eo), c.fast ? uint32_t{ARIXV_PACK_ENCODE_FAST_DECODE} : 0u,
+          c.parallelism, c.budget, 0};
+      size_t n = arixv_pack_encode_bound(caps.data(), info.module_count, &eo);
+      std::vector<uint8_t> again(n);
+      CHECK(arixv_pack_encode(ptrs.data(), caps.data(), info.module_count,
+                              again.data(), &n, &eo) == ARIXV_STATUS_OK);
+      again.resize(n);
+      CHECK(again == pack);
+    }
+#endif
+  }
+}
+#endif  // ARIXV_HAS_PACK_
+
 int main(int argc, char** argv) {
   std::filesystem::path dir = "tests/golden";
   if (argc >= 3 && std::string(argv[1]) == "--dir") {
@@ -238,8 +336,15 @@ int main(int argc, char** argv) {
 #endif
   }
 
-  std::printf("golden_test: %zu vectors passed (encoder=%d)\n",
-              sizeof(kVectors) / sizeof(kVectors[0]),
+#if ARIXV_HAS_PACK_
+  for (const PackGoldenCase& c : kPackGoldens) CheckPackGolden(dir, c);
+  const size_t pack_vectors = sizeof(kPackGoldens) / sizeof(kPackGoldens[0]);
+#else
+  const size_t pack_vectors = 0;
+#endif
+
+  std::printf("golden_test: %zu ARX2 + %zu ARXP vectors passed (encoder=%d)\n",
+              sizeof(kVectors) / sizeof(kVectors[0]), pack_vectors,
               static_cast<int>(ARIXV_ENCODER));
   return 0;
 }

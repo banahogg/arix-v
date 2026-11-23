@@ -20,10 +20,21 @@
 #include <unordered_map>
 #include <vector>
 
+#include "container.h"
 #include "grammar_tables.h"
+#if ARIXV_HAS_PACK_
+#include "pack.h"
+#endif
 #include "platform.h"
 #include "prob.h"
 #include "range_coder.h"
+#ifdef ARIXV_RESEARCH_PACK
+#include "research_pack.h"
+#endif
+#if defined(ARIXV_RESEARCH_INST_COST) && \
+    (!defined(ARIXV_RESEARCH_PACK) || !defined(ARIXV_ENABLE_STATS))
+#error "ARIXV_RESEARCH_INST_COST requires ARIXV_RESEARCH_PACK and ARIXV_ENABLE_STATS"
+#endif
 #include "tracker.h"
 #include "tuning.h"
 
@@ -3450,6 +3461,375 @@ arixv_status DecodeModuleRawResidual(const uint8_t* payload,
   return ARIXV_STATUS_OK;
 }
 #endif
+
+#if ARIXV_HAS_PACK_
+// ARXP shader-pack block codec (docs/format-arxp.md).
+#include "pack_block.inc"
+#endif
+
+#ifdef ARIXV_RESEARCH_PACK
+// ===========================================================================
+// RESEARCH ONLY (Track B gate 1b): multi-module sequence hook. Compiled only
+// into the opt-in ARIXV_BUILD_RESEARCH_PACK targets; see src/research_pack.h
+// and docs/development/multi-module-gate1b.md (state-lifetime inventory).
+//
+// Every module starts from a fresh ModelState. The allowlisted families are
+// then copied *by value* from the previous module's final state into
+// destination-owned arena contexts, keyed by their grammar-derived table
+// index (section x class, core-instruction index, value-enum ordinal x slot,
+// operand kind, instruction class). No tracker/ID/type/import state, operand
+// caches, previous-ID/word-count predictors, ID-slot handles, literal or
+// string state, or raw arena pointers cross the boundary. A context the
+// previous module never created stays uncreated, so it is later built with
+// its constructor/lazy priors exactly as in a standalone module; with no
+// families selected the destination is bit-for-bit a fresh model.
+// ===========================================================================
+namespace {
+namespace research_transfer {
+
+// The keyed walk, copy visitor and age caps are the production ARXP ones
+// (src/pack_block.inc); research adds age policies and the inspector.
+using pack_transfer::AgeCaps;
+using pack_transfer::CopyVisitor;
+using pack_transfer::ProbAge;
+using pack_transfer::Walk;
+static_assert(research::kFamilyOpcode == pack_transfer::kFamilyOpcode &&
+                  research::kFamilyCount == pack_transfer::kFamilyCount &&
+                  research::kFamilyEnum == pack_transfer::kFamilyEnum &&
+                  research::kFamilyAll == pack_transfer::kFamilyAll,
+              "research families mirror the production ones");
+
+AgeCaps CapsFor(research::AgePolicy age) {
+  switch (age) {
+    case research::AgePolicy::kReset:
+      return {0, 0, 0};
+    case research::AgePolicy::kIntermediate:
+      return {research::kIntermediateProbAge, research::kIntermediateCdfAge,
+              research::kIntermediateOrder1Count};
+    case research::AgePolicy::kCarry:
+      break;
+  }
+  return {0xffffu, 0xffffu, 0xffffffffu};
+}
+
+// `dst` must be freshly constructed (no context created yet).
+void Transfer(ModelState& dst, const ModelState& src,
+              const research::SequencePolicy& policy) {
+  CopyVisitor v{CapsFor(policy.age)};
+  Walk(v, dst, src, policy.families);
+}
+
+std::unique_ptr<ModelState> NextModel(const std::unique_ptr<ModelState>& prev,
+                                      const research::SequencePolicy& policy) {
+  auto model = std::make_unique<ModelState>();
+  if (prev && policy.families != research::kFamilyNone) {
+    Transfer(*model, *prev, policy);
+  }
+  return model;
+}
+
+#if defined(ARIXV_ENCODER) && (ARIXV_ENCODER != 0)
+// Test inspector: compares a transferred destination with its source.
+struct CheckVisitor {
+  AgeCaps c;
+  research::TransferReport* r;
+  template <typename T>
+  bool Ctx(Arena&, ArenaPtr<T>& d, const ArenaPtr<T>& s) {
+    return Presence(static_cast<bool>(d), static_cast<bool>(s));
+  }
+  template <typename T>
+  bool Ctx(std::unique_ptr<T>& d, const std::unique_ptr<T>& s) {
+    return Presence(static_cast<bool>(d), static_cast<bool>(s));
+  }
+  bool Presence(bool d, bool s) {
+    if (d != s) ++r->presence_mismatches;
+    if (s) ++r->contexts;
+    return d && s;
+  }
+  void P(Prob& d, const Prob& s) {
+    ++r->probs;
+    const uint16_t age = ProbAge(s);
+    if (age != 0) ++r->probs_with_age;
+    if (age > c.prob) ++r->probs_age_above_cap;
+    if (d.value() != s.value()) ++r->value_mismatches;
+    if (ProbAge(d) != (age < c.prob ? age : c.prob)) ++r->age_mismatches;
+  }
+  void C(SymbolCdf& d, const SymbolCdf& s) {
+    ++r->cdfs;
+    if (s.d[0] != 0) ++r->cdfs_with_age;
+    if (s.d[0] > c.cdf) ++r->cdfs_age_above_cap;
+    if (std::memcmp(d.d + 1, s.d + 1, sizeof(d.d) - sizeof(d.d[0])) != 0) {
+      ++r->value_mismatches;
+    }
+    if (d.d[0] != (s.d[0] < c.cdf ? s.d[0] : c.cdf)) ++r->age_mismatches;
+  }
+  void Order1(uint32_t& d, uint32_t s) {
+    if (d != (s < c.order1 ? s : c.order1)) ++r->age_mismatches;
+  }
+  void Size(std::vector<Prob>& d, const std::vector<Prob>& s) {
+    if (d.size() != s.size()) ++r->presence_mismatches;
+  }
+};
+
+template <typename T>
+bool AllNull(const std::vector<T>& v) {
+  for (const auto& p : v) {
+    if (p) return false;
+  }
+  return true;
+}
+
+template <typename T>
+bool SameBytes(const T& a, const T& b) {
+  static_assert(std::is_trivially_copyable_v<T>, "byte comparison");
+  return std::memcmp(&a, &b, sizeof(T)) == 0;
+}
+
+// Independent of the walk: every member outside the allowlist must equal a
+// freshly constructed model (spot checks over each non-transferred group).
+bool FreshInstGroup(const InstGroup& g) {
+  const InstGroup f{};
+  return std::memcmp(g.id_slot, f.id_slot, sizeof(f.id_slot)) == 0 &&
+         std::memcmp(g.last_id, f.last_id, sizeof(f.last_id)) == 0 &&
+         std::memcmp(g.last_id_list, f.last_id_list, sizeof(f.last_id_list)) ==
+             0 &&
+         std::memcmp(g.last_literal, f.last_literal, sizeof(f.last_literal)) ==
+             0 &&
+         std::memcmp(g.last_id_state, f.last_id_state,
+                     sizeof(f.last_id_state)) == 0 &&
+         std::memcmp(g.last_literal_valid, f.last_literal_valid,
+                     sizeof(f.last_literal_valid)) == 0 &&
+         g.last_word_count == f.last_word_count &&
+         SameBytes(g.result_type_choice.tables, f.result_type_choice.tables);
+}
+
+bool NonAllowlistedFresh(const ModelState& m, uint8_t families) {
+  const auto fresh_model = std::make_unique<ModelState>();
+  const ModelState& fresh = *fresh_model;
+  bool ok = m.tracker.max_seen_id() == 0 && m.id_slots.empty() &&
+            m.prev_result_id == 0 && m.last_id_operand_type == 0 &&
+            m.cur_op0_list == 0 && m.cur_prev_res_id == 0 &&
+            SameBytes(m.swapped_flag, fresh.swapped_flag) &&
+            SameBytes(m.version_canonical, fresh.version_canonical) &&
+            SameBytes(m.version_major, fresh.version_major) &&
+            SameBytes(m.generator_id.root, fresh.generator_id.root) &&
+            !m.generator_id_escape && SameBytes(m.schema_zero, fresh.schema_zero) &&
+            SameBytes(m.bound_matches, fresh.bound_matches) &&
+            SameBytes(m.var_sc_matches, fresh.var_sc_matches) &&
+            !m.bound_value && !m.operand_bytes &&
+            SameBytes(m.result_next, fresh.result_next) &&
+            SameBytes(m.result_in_run, fresh.result_in_run) &&
+            SameBytes(m.result_run_rank, fresh.result_run_rank) &&
+            SameBytes(m.result_delta, fresh.result_delta) &&
+            m.type_in_list.size() == fresh.type_in_list.size() &&
+            AllNull(m.type_escape) && AllNull(m.integer_values) &&
+            !m.enum_literals && !m.context_number && !m.context_int &&
+            !m.int_const_cache && SameBytes(m.float_zero, fresh.float_zero) &&
+            !m.float_exp && !m.float_mant && !m.spec_constant_op &&
+            AllNull(m.ext_inst_nums) && !m.ext_inst_unknown &&
+            SameBytes(m.string_match, fresh.string_match) &&
+            SameBytes(m.string_rank, fresh.string_rank) &&
+            m.strings->history.empty() && !m.strings->match &&
+            SameBytes(m.strings->order0.root, fresh.strings->order0.root) &&
+            m.recent_string_pool.empty() && m.recent_string_count == 0;
+  for (size_t i = 0; ok && i < m.type_in_list.size(); ++i) {
+    ok = SameBytes(m.type_in_list[i], fresh.type_in_list[i]) &&
+         SameBytes(m.type_rank[i], fresh.type_rank[i]);
+  }
+  for (const auto& row : m.id_escape) {
+    for (const auto& p : row) ok = ok && !p;
+  }
+  // Per-instruction contexts exist only through the count family, and then
+  // only has_optional may differ from first-use state.
+  for (const auto& ctx : m.inst_contexts) {
+    if (!ctx) continue;
+    if (!(families & research::kFamilyCount)) return false;
+    ok = ok && FreshInstGroup(ctx->group);
+  }
+  if (!(families & research::kFamilyOpcode)) {
+    ok = ok && SameBytes(m.known_opcode, fresh.known_opcode) &&
+         AllNull(m.opcode_index_trees) && AllNull(m.opcode_contexts) &&
+         !m.unknown_opcode_tree;
+  }
+  if (!(families & research::kFamilyCount)) {
+    ok = ok && SameBytes(m.word_count_consistent, fresh.word_count_consistent) &&
+         AllNull(m.class_count_models) && !m.raw_known_count &&
+         !m.raw_unknown_count;
+  }
+  if (!(families & research::kFamilyEnum)) {
+    ok = ok && AllNull(m.value_enums) && AllNull(m.bit_enums);
+  }
+  return ok;
+}
+#endif
+
+}  // namespace research_transfer
+}  // namespace
+
+namespace research {
+
+#if defined(ARIXV_ENCODER) && (ARIXV_ENCODER != 0)
+TransferReport InspectTransfer(const ModuleView& source,
+                               const SequencePolicy& policy) {
+  auto src = std::make_unique<ModelState>();
+  {
+    std::vector<uint8_t> sink;
+    RangeEncoder range(sink);
+    BitEncoder bits(range);
+    EncodeIO io(source.data, source.size);
+    (void)CodeModule(*src, bits, io, source.size / 4);
+    bits.Flush();
+  }
+  auto dst = research_transfer::NextModel(src, policy);
+  TransferReport report;
+  research_transfer::CheckVisitor v{research_transfer::CapsFor(policy.age),
+                                    &report};
+  // Walk every family so non-selected ones count as presence mismatches
+  // only where the source created contexts (they must stay uncreated).
+  for (uint8_t f : {kFamilyOpcode, kFamilyCount, kFamilyEnum}) {
+    TransferReport family;
+    research_transfer::CheckVisitor fv{v.c, &family};
+    research_transfer::Walk(fv, *dst, *src, f);
+    if (policy.families & f) {
+      report.Add(family);
+    } else {
+      report.unselected_source_contexts += family.contexts;
+    }
+  }
+  report.non_allowlisted_fresh =
+      research_transfer::NonAllowlistedFresh(*dst, policy.families);
+  return report;
+}
+
+void EncodeSequencePayloads(const ModuleView* modules, size_t count,
+                            const SequencePolicy& policy,
+                            std::vector<std::vector<uint8_t>>& payloads) {
+  std::unique_ptr<ModelState> prev;
+  if (policy.framing == Framing::kContinuous) {
+    payloads.emplace_back();
+    RangeEncoder range(payloads.back());
+    BitEncoder bits(range);
+    for (size_t k = 0; k < count; ++k) {
+      auto model = research_transfer::NextModel(prev, policy);
+      model->tracker.Reserve(modules[k].size / 4);
+      EncodeIO io(modules[k].data, modules[k].size);
+      (void)CodeModule(*model, bits, io, modules[k].size / 4);
+      prev = std::move(model);
+    }
+    bits.Flush();
+    return;
+  }
+  for (size_t k = 0; k < count; ++k) {
+    auto model = research_transfer::NextModel(prev, policy);
+    payloads.emplace_back();
+    model->tracker.Reserve(modules[k].size / 4);
+    RangeEncoder range(payloads.back());
+    BitEncoder bits(range);
+    EncodeIO io(modules[k].data, modules[k].size);
+    (void)CodeModule(*model, bits, io, modules[k].size / 4);
+    bits.Flush();
+    prev = std::move(model);
+  }
+}
+#endif
+
+arixv_status DecodeSequencePayloads(const uint8_t* const* payloads,
+                              const size_t* payload_sizes,
+                              const size_t* module_sizes, uint8_t* const* outs,
+                              size_t count, const SequencePolicy& policy) {
+  for (size_t k = 0; k < count; ++k) {
+    if (module_sizes[k] < 20 || (module_sizes[k] % 4) != 0 ||
+        outs[k] == nullptr) {
+      return ARIXV_STATUS_BAD_CONTAINER;
+    }
+  }
+  std::unique_ptr<ModelState> prev;
+  if (policy.framing == Framing::kContinuous) {
+    RangeDecoder range(payloads[0], payload_sizes[0]);
+    BitDecoder bits(range);
+    for (size_t k = 0; k < count; ++k) {
+      auto model = research_transfer::NextModel(prev, policy);
+      model->tracker.Reserve(
+          CappedDecodeReserve(payload_sizes[0], module_sizes[k]) / 4);
+      DecodeIO io(outs[k], module_sizes[k]);
+      // CodeModule only reports exhaustion; whole-stream termination is
+      // checked once after the last module, never per module.
+      const arixv_status st = CodeModule(*model, bits, io, module_sizes[k] / 4);
+      if (st != ARIXV_STATUS_OK) return st;
+      if (!io.Complete()) return ARIXV_STATUS_TRUNCATED;
+      prev = std::move(model);
+    }
+    return bits.ConsumedExactly() ? ARIXV_STATUS_OK : ARIXV_STATUS_BAD_CONTAINER;
+  }
+  for (size_t k = 0; k < count; ++k) {
+    auto model = research_transfer::NextModel(prev, policy);
+    model->tracker.Reserve(
+        CappedDecodeReserve(payload_sizes[k], module_sizes[k]) / 4);
+    RangeDecoder range(payloads[k], payload_sizes[k]);
+    BitDecoder bits(range);
+    DecodeIO io(outs[k], module_sizes[k]);
+    const arixv_status st = CodeModule(*model, bits, io, module_sizes[k] / 4);
+    if (st != ARIXV_STATUS_OK) return st;
+    if (!io.Complete()) return ARIXV_STATUS_TRUNCATED;
+    if (!bits.ConsumedExactly()) return ARIXV_STATUS_BAD_CONTAINER;
+    prev = std::move(model);
+  }
+  return ARIXV_STATUS_OK;
+}
+
+// Gate 3 structural pack prototype (AXST).
+#include "research_struct.inc"
+
+#ifdef ARIXV_RESEARCH_INST_COST
+namespace {
+// Records the cumulative encoder entropy (bits) before every body
+// instruction: an active CodeModule hook that consumes nothing.
+struct InstCostHook {
+  static constexpr bool kActive = true;
+  static constexpr bool kRecordRoles = false;
+  std::vector<double>* out = nullptr;
+  void Begin(bool) {}
+  void Role(size_t, uint8_t) {}
+  template <class Bits, class IO>
+  int BeforeInstruction(ModelState&, Bits&, IO&, size_t, size_t&,
+                        InstructionCarry&) {
+    double total = 0;
+    for (double b : g_stat_bits) total += b;
+    out->push_back(total);
+    return 0;
+  }
+  void AfterInstruction(size_t, size_t) {}
+};
+}  // namespace
+
+bool EncodeModuleInstCosts(const uint8_t* data, size_t size,
+                           std::vector<uint8_t>& payload,
+                           std::vector<double>& cumulative_bits) {
+  if (!StatsEnabled()) return false;
+  cumulative_bits.clear();
+  double start = 0;
+  for (double b : g_stat_bits) start += b;
+  cumulative_bits.push_back(start);
+  const auto model = std::make_unique<ModelState>();
+  model->tracker.Reserve(size / 4);
+  RangeEncoder range(payload);
+  BitEncoder bits(range);
+  EncodeIO io(data, size);
+  InstCostHook hook;
+  hook.out = &cumulative_bits;
+  const arixv_status status = CodeModule(*model, bits, io, size / 4, hook);
+  (void)status;
+  g_stat_cat = -1;
+  bits.Flush();
+  double end = 0;
+  for (double b : g_stat_bits) end += b;
+  cumulative_bits.push_back(end);
+  return true;
+}
+#endif
+
+}  // namespace research
+#endif  // ARIXV_RESEARCH_PACK
 
 }  // namespace v1
 }  // namespace arixv

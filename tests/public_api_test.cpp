@@ -39,7 +39,7 @@ void TestVersionAndStatus() {
       (static_cast<uint32_t>(ARIXV_VERSION_MINOR) << 8) |
       static_cast<uint32_t>(ARIXV_VERSION_PATCH);
   CHECK(arixv_version() == expected);
-  for (arixv_status st = ARIXV_STATUS_OK; st <= ARIXV_STATUS_TOO_LARGE; ++st) {
+  for (arixv_status st = ARIXV_STATUS_OK; st <= ARIXV_STATUS_DEPENDENCY_INCOMPLETE; ++st) {
     const char* s = arixv_status_string(st);
     CHECK(s != nullptr && s[0] != '\0');
   }
@@ -207,6 +207,61 @@ void TestEncode() {
 }
 #endif
 
+#if ARIXV_HAS_PACK_
+// Pack API through the shipped library (exports, struct sizes, round trip).
+void TestPackSurface() {
+  static_assert(sizeof(arixv_pack_info) == ARIXV_PACK_INFO_V1_SIZE, "");
+  static_assert(sizeof(arixv_pack_module_info) == 16, "");
+  static_assert(sizeof(arixv_pack_outputs) == ARIXV_PACK_OUTPUTS_V1_SIZE, "");
+  static_assert(sizeof(arixv_pack_decode_options) ==
+                    ARIXV_PACK_DECODE_OPTIONS_V1_SIZE, "");
+  arixv_pack_info info{};
+  info.struct_size = sizeof(info);
+  CHECK(arixv_pack_inspect(kMinimalArx2, sizeof(kMinimalArx2), &info) ==
+        ARIXV_STATUS_BAD_CONTAINER);
+  CHECK(arixv_pack_inspect(nullptr, 0, &info) == ARIXV_STATUS_INVALID_ARGUMENT);
+  const uint8_t future[] = {'A', 'R', 'X', 'P', 2};
+  CHECK(arixv_pack_inspect(future, sizeof(future), &info) ==
+        ARIXV_STATUS_UNSUPPORTED_FORMAT);
+  CHECK(arixv_pack_reset_scratch(future, sizeof(future), nullptr, 0) ==
+        ARIXV_STATUS_UNSUPPORTED_FORMAT);
+  CHECK(arixv_pack_decode(future, sizeof(future), nullptr, nullptr) ==
+        ARIXV_STATUS_INVALID_ARGUMENT);
+#if ARIXV_HAS_ENCODER_
+  static_assert(sizeof(arixv_pack_encode_options) ==
+                    ARIXV_PACK_ENCODE_OPTIONS_V1_SIZE, "");
+  const uint8_t bytes[] = {1, 2, 3};
+  const void* mods[] = {kMinimalSpv, bytes, kMinimalSpv, nullptr};
+  const size_t sizes[] = {sizeof(kMinimalSpv), sizeof(bytes),
+                          sizeof(kMinimalSpv), 0};
+  size_t n = arixv_pack_encode_bound(sizes, 4, nullptr);
+  CHECK(n > 0);
+  // A size beyond the addressable span is rejected, never wrapped (ILP32).
+  if (sizeof(size_t) == 4) {
+    const size_t huge = UINT32_MAX;
+    CHECK(arixv_pack_encode_bound(&huge, 1, nullptr) == 0);
+  }
+  std::vector<uint8_t> pack(n);
+  CHECK(arixv_pack_encode(mods, sizes, 4, pack.data(), &n, nullptr) ==
+        ARIXV_STATUS_OK);
+  pack.resize(n);
+  CHECK(arixv_pack_inspect(pack.data(), pack.size(), &info) == ARIXV_STATUS_OK);
+  CHECK(info.module_count == 4 && info.total_output_size == 2 * 20 + 3);
+  std::vector<uint8_t> a(20), b(3), c(20);
+  void* outs[] = {a.data(), b.data(), c.data(), nullptr};
+  const arixv_pack_outputs o = {sizeof(o), 4, outs, sizes};
+  CHECK(arixv_pack_decode(pack.data(), pack.size(), &o, nullptr) ==
+        ARIXV_STATUS_OK);
+  CHECK(std::memcmp(a.data(), kMinimalSpv, 20) == 0 &&
+        std::memcmp(b.data(), bytes, 3) == 0 &&
+        std::memcmp(c.data(), kMinimalSpv, 20) == 0);
+  size_t q = 0;
+  CHECK(arixv_decode(pack.data(), pack.size(), nullptr, &q, nullptr) ==
+        ARIXV_STATUS_UNSUPPORTED_FORMAT);
+#endif
+}
+#endif  // ARIXV_HAS_PACK_
+
 }  // namespace
 
 int main() {
@@ -214,6 +269,9 @@ int main() {
   TestInspectAndDecode();
 #if ARIXV_HAS_ENCODER_
   TestEncode();
+#endif
+#if ARIXV_HAS_PACK_
+  TestPackSurface();
 #endif
   return 0;
 }

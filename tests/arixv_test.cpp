@@ -480,7 +480,7 @@ void CApiContractTests() {
         ((static_cast<uint32_t>(ARIXV_VERSION_MAJOR) << 16) |
          (static_cast<uint32_t>(ARIXV_VERSION_MINOR) << 8) |
          static_cast<uint32_t>(ARIXV_VERSION_PATCH)));
-  for (arixv_status st = ARIXV_STATUS_OK; st <= ARIXV_STATUS_TOO_LARGE; ++st) {
+  for (arixv_status st = ARIXV_STATUS_OK; st <= ARIXV_STATUS_DEPENDENCY_INCOMPLETE; ++st) {
     const char* s = arixv_status_string(st);
     CHECK(s != nullptr && s[0] != '\0');
   }

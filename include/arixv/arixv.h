@@ -24,7 +24,7 @@
 #include <stdint.h>
 
 #define ARIXV_VERSION_MAJOR 1
-#define ARIXV_VERSION_MINOR 0
+#define ARIXV_VERSION_MINOR 1
 #define ARIXV_VERSION_PATCH 0
 
 #define ARIXV_MAGIC_0 'A'
@@ -78,6 +78,21 @@
 #define ARIXV_HAS_ENCODER_ 0
 #endif
 
+/* Shader-pack declarations (arixv_pack_*, 1.1) are on by default. Builds
+ * configured with ARIXV_BUILD_PACK=OFF (which omit the pack code) propagate
+ * `ARIXV_PACK=0`; as with ARIXV_ENCODER, an empty or zero definition turns
+ * the declarations off.
+ */
+#if defined(ARIXV_PACK)
+#if (ARIXV_PACK + 0) != 0
+#define ARIXV_HAS_PACK_ 1
+#else
+#define ARIXV_HAS_PACK_ 0
+#endif
+#else
+#define ARIXV_HAS_PACK_ 1
+#endif
+
 #ifdef __cplusplus
 #define ARIXV_NOEXCEPT noexcept
 extern "C" {
@@ -97,7 +112,8 @@ enum {
   ARIXV_STATUS_BUFFER_TOO_SMALL = 4,    /* out != NULL and *out_size < required (*out_size updated) */
   ARIXV_STATUS_INVALID_ARGUMENT = 5,    /* null required pointer, invalid opts, or size > limit */
   ARIXV_STATUS_OUT_OF_MEMORY = 6,       /* internal allocation failed (exceptions-enabled builds) */
-  ARIXV_STATUS_TOO_LARGE = 7            /* valid container exceeds this platform's addressable limit */
+  ARIXV_STATUS_TOO_LARGE = 7,           /* valid container exceeds this platform's addressable limit */
+  ARIXV_STATUS_DEPENDENCY_INCOMPLETE = 8 /* (1.1) pack stage 2 before every stage-1 block published */
 };
 
 /* Container payload modes reported in arixv_header_info::mode. */
@@ -230,6 +246,201 @@ ARIXV_API arixv_status ARIXV_CALL arixv_encode(const void* in, size_t in_size,
                                                void* out, size_t* out_size,
                                                const arixv_encode_options* opts) ARIXV_NOEXCEPT;
 #endif
+
+#if ARIXV_HAS_PACK_
+/* ==========================================================================
+ * Shader packs (1.1): the ARXP container (docs/format-arxp.md).
+ *
+ * A pack holds an ordered set of modules (SPIR-V or arbitrary bytes) coded
+ * together, so modules can borrow from each other. It decodes in at most two
+ * stages of independent blocks. The library starts no threads and takes no
+ * callbacks: the caller's job system runs the blocks.
+ *
+ *   inspect -> allocate outputs (and scratch if scratch_size > 0)
+ *   -> reset scratch -> every stage-1 block (any order, concurrently)
+ *   -> every stage-2 block (any order, concurrently)
+ *
+ * Every call is stateless and validates the whole pack header
+ * (O(module_count)) before using it. `arixv_pack_decode` runs both stages on
+ * the calling thread. `arixv_decode` reports a pack as
+ * ARIXV_STATUS_UNSUPPORTED_FORMAT.
+ * ========================================================================== */
+
+#define ARIXV_PACK_MAGIC_0 'A'
+#define ARIXV_PACK_MAGIC_1 'R'
+#define ARIXV_PACK_MAGIC_2 'X'
+#define ARIXV_PACK_MAGIC_3 'P'
+
+/* Frozen v1 prefix sizes of the versioned pack structs. */
+#define ARIXV_PACK_INFO_V1_SIZE 40u
+#define ARIXV_PACK_DECODE_OPTIONS_V1_SIZE 8u
+#define ARIXV_PACK_OUTPUTS_V1_SIZE \
+  ((uint32_t)(offsetof(arixv_pack_outputs, caps) + sizeof(const size_t*)))
+
+/* arixv_pack_info::flags */
+enum { ARIXV_PACK_INFO_FAST_DECODE = 1u << 0 }; /* encoded with FAST_DECODE */
+
+/* arixv_pack_module_info::stage */
+enum { ARIXV_PACK_STAGE_1 = 1, ARIXV_PACK_STAGE_2 = 2 };
+
+typedef struct arixv_pack_info {
+  uint32_t struct_size;         /* caller sets (v1: 40); same rules as arixv_header_info */
+  uint32_t magic;               /* little-endian 4CC: 0x50585241 ("ARXP") */
+  uint32_t flags;               /* ARIXV_PACK_INFO_* */
+  uint32_t module_count;        /* >= 1 */
+  uint32_t stage1_block_count;  /* 0 for solid and plain-block packs */
+  uint32_t stage2_block_count;  /* >= 1; stage1 + stage2 <= module_count */
+  uint64_t total_output_size;   /* sum of the module sizes (untrusted) */
+  uint64_t scratch_size;        /* scratch the two-stage path needs; 0 iff no stage 1 */
+} arixv_pack_info;
+
+/* Array element of arixv_pack_inspect_modules: fixed 16-byte layout. */
+typedef struct arixv_pack_module_info {
+  uint64_t size;         /* decoded bytes */
+  uint32_t block_index;  /* index within its stage */
+  uint8_t stage;         /* ARIXV_PACK_STAGE_1 or ARIXV_PACK_STAGE_2 */
+  uint8_t reserved;      /* 0 */
+  uint16_t flags;        /* 0 in 1.1; test bits, never compare the whole field */
+} arixv_pack_module_info;
+
+/* Output descriptor: plain caller data, shared by every job of a decode.
+ * outs[i] and caps[i] are indexed by original module index. A call reads
+ * only its own block's entries, so other entries may be NULL or unset. An
+ * output may be NULL only when its module is 0 bytes; outputs need no
+ * alignment (Vulkan callers use uint32_t-aligned storage). */
+typedef struct arixv_pack_outputs {
+  uint32_t struct_size;   /* caller sets (ARIXV_PACK_OUTPUTS_V1_SIZE or sizeof) */
+  uint32_t module_count;  /* must equal arixv_pack_info::module_count */
+  void* const* outs;      /* [module_count] */
+  const size_t* caps;     /* [module_count]: capacity of each output */
+} arixv_pack_outputs;
+
+typedef struct arixv_pack_decode_options {
+  uint32_t struct_size;  /* caller sets (v1: 8); same rules as arixv_decode_options */
+  uint32_t flags;        /* reserved; must be 0 */
+} arixv_pack_decode_options;
+
+/* Validates the whole header and reports counts and sizes. On OK they are
+ * mutually consistent and every module belongs to exactly one block, but
+ * they are still the pack's own claims: check module_count,
+ * total_output_size and scratch_size against your budget (and against
+ * SIZE_MAX on 32-bit targets) before allocating. Reports full 64-bit sizes
+ * and never returns TOO_LARGE. `*out_info` is untouched on error. */
+ARIXV_API arixv_status ARIXV_CALL arixv_pack_inspect(
+    const void* in, size_t in_size, arixv_pack_info* out_info) ARIXV_NOEXCEPT;
+
+/* Per-module size, stage and block, in original module order (same
+ * validation). `count` must equal module_count; `out_modules` is untouched
+ * on error. */
+ARIXV_API arixv_status ARIXV_CALL arixv_pack_inspect_modules(
+    const void* in, size_t in_size, arixv_pack_module_info* out_modules,
+    uint32_t count) ARIXV_NOEXCEPT;
+
+/* Starts a decode attempt on `scratch`: required once per attempt before any
+ * stage-1 call when scratch_size > 0, after every call of an earlier attempt
+ * on the same buffer has returned. Touches only a small prefix. When the
+ * pack needs no scratch it is an OK no-op, and (NULL, 0) or any buffer is
+ * accepted. Scratch needs no particular alignment. */
+ARIXV_API arixv_status ARIXV_CALL arixv_pack_reset_scratch(
+    const void* in, size_t in_size, void* scratch,
+    size_t scratch_size) ARIXV_NOEXCEPT;
+
+/* Stage 1: block_index in [0, stage1_block_count). Decodes the block into
+ * its modules' outputs and publishes shared data into its own part of
+ * `scratch`. Calls with distinct indices may run concurrently. Lower indices
+ * are larger blocks, so issue them first. */
+ARIXV_API arixv_status ARIXV_CALL arixv_pack_decode_stage1(
+    const void* in, size_t in_size, uint32_t block_index,
+    const arixv_pack_outputs* outputs, void* scratch, size_t scratch_size,
+    const arixv_pack_decode_options* opts) ARIXV_NOEXCEPT;
+
+/* Stage 2: block_index in [0, stage2_block_count). Precondition: every
+ * stage-1 call of this attempt returned OK, with a happens-before edge to
+ * this call. Reads `scratch` only. Calls with distinct indices may run
+ * concurrently. Returns ARIXV_STATUS_DEPENDENCY_INCOMPLETE if a stage-1
+ * block has not published in this attempt (a diagnostic, not a
+ * synchronization mechanism). */
+ARIXV_API arixv_status ARIXV_CALL arixv_pack_decode_stage2(
+    const void* in, size_t in_size, uint32_t block_index,
+    const arixv_pack_outputs* outputs, const void* scratch,
+    size_t scratch_size, const arixv_pack_decode_options* opts) ARIXV_NOEXCEPT;
+
+/* Decodes every block on the calling thread, allocating any scratch
+ * internally. Checks every output before writing any. */
+ARIXV_API arixv_status ARIXV_CALL arixv_pack_decode(
+    const void* in, size_t in_size, const arixv_pack_outputs* outputs,
+    const arixv_pack_decode_options* opts) ARIXV_NOEXCEPT;
+
+/* Pack decode errors (every call checks in this order, writing nothing until
+ * step 6):
+ *   1. INVALID_ARGUMENT: NULL `in` or `outputs`, NULL outs/caps, a bad
+ *      struct_size or options, or NULL scratch with nonzero scratch_size.
+ *   2. BAD_CONTAINER / UNSUPPORTED_FORMAT / TRUNCATED: header validation.
+ *   3. INVALID_ARGUMENT: module_count mismatch, block_index out of range, or
+ *      NULL scratch when scratch is needed; TOO_LARGE: needed scratch or an
+ *      own output beyond this platform's addressable span.
+ *   4. BUFFER_TOO_SMALL: short scratch; then for the block's own modules a
+ *      NULL output with nonzero size (INVALID_ARGUMENT) and, after all of
+ *      those, a short capacity (BUFFER_TOO_SMALL). Required sizes are not
+ *      written back; they come from inspection.
+ *   5. DEPENDENCY_INCOMPLETE (stage 2 only).
+ *   6. BAD_CONTAINER / TRUNCATED: corrupt payload. The block's outputs (and
+ *      a stage-1 block's scratch part) are then unspecified; other blocks
+ *      are unaffected. If stage 1 failed, that status is the root cause. */
+
+#if ARIXV_HAS_ENCODER_
+#define ARIXV_PACK_ENCODE_OPTIONS_V1_SIZE 24u
+
+/* arixv_pack_encode_options::flags */
+enum {
+  /* Copied instructions skip probability training: faster decode, slightly
+   * larger packs. */
+  ARIXV_PACK_ENCODE_FAST_DECODE = 1u << 0
+};
+
+typedef struct arixv_pack_encode_options {
+  uint32_t struct_size;         /* caller sets (v1: 24); same rules as arixv_encode_options */
+  uint32_t flags;               /* ARIXV_PACK_ENCODE_*; other bits 0 */
+  uint32_t parallelism;         /* decode-width hint: 0 = library default (8 in 1.1),
+                                   1 = solid, N = aim for N workers */
+  uint32_t latency_budget_pct;  /* 0 = default (150), else 100..100000: see below */
+  uint64_t max_block_bytes;     /* 0 = none: close a block before it would exceed this */
+} arixv_pack_encode_options;
+
+/* Encoder layout semantics (heuristics, not decode-time guarantees):
+ * - `parallelism` is a hint for the decode width, not a block count; values
+ *   above the module count act as the module count.
+ * - `latency_budget_pct` trades size for decode latency: the allowed
+ *   critical path (stage 1 plus stage 2) as a percent of an ideal estimate
+ *   for `parallelism` workers, modelling decode time as proportional to
+ *   decoded bytes. 100 means no stage 1 and the most, smallest blocks;
+ *   larger values buy larger blocks and a shared stage 1. Measured decode
+ *   times depend on content and hardware and may exceed the budget.
+ * - Exact duplicates are coded as references where reachable; zero-byte,
+ *   header-only and non-SPIR-V modules are accepted; incompressible blocks
+ *   are stored.
+ * - Output is deterministic for the same inputs, options and library
+ *   version; layout may change between library versions. */
+
+/* Worst-case output size for these module sizes and options (every block
+ * stored, worst-case header). Returns 0 for NULL `sizes`, count == 0 or
+ * above 2^20, a size above UINT32_MAX, invalid options, or overflow. */
+ARIXV_API size_t ARIXV_CALL arixv_pack_encode_bound(
+    const size_t* sizes, uint32_t count,
+    const arixv_pack_encode_options* opts) ARIXV_NOEXCEPT;
+
+/* Encodes `count` modules into one pack (stateless, thread-safe,
+ * single-threaded; allocates internally). modules[i] may be NULL only when
+ * sizes[i] == 0; modules may alias each other but not `out`. `out`,
+ * `out_size`, and BUFFER_TOO_SMALL follow arixv_encode. count == 0 or above
+ * 2^20, a size above UINT32_MAX, or invalid `opts` -> INVALID_ARGUMENT.
+ * Decode outputs are indexed by the input order. */
+ARIXV_API arixv_status ARIXV_CALL arixv_pack_encode(
+    const void* const* modules, const size_t* sizes, uint32_t count,
+    void* out, size_t* out_size,
+    const arixv_pack_encode_options* opts) ARIXV_NOEXCEPT;
+#endif /* ARIXV_HAS_ENCODER_ */
+#endif /* ARIXV_HAS_PACK_ */
 
 #ifdef __cplusplus
 }  /* extern "C" */
