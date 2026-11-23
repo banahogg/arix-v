@@ -34,8 +34,9 @@ if [ ! -f "$GRAMMAR" ]; then
 fi
 
 LIB_SRCS="src/arixv.cpp src/arixv_encode.cpp src/model.cpp src/tracker.cpp \
-  src/operand_cursor.cpp src/grammar_tables.cpp"
-COMMON_FLAGS="-std=c++17 -Iinclude -Isrc -DARIXV_ENCODER=1"
+  src/operand_cursor.cpp src/grammar_tables.cpp \
+  src/arixv_pack.cpp src/arixv_pack_encode.cpp"
+COMMON_FLAGS="-std=c++17 -pthread -Iinclude -Isrc -DARIXV_ENCODER=1"
 
 # Optional command prefix for hosts that need to wrap sanitizer processes.
 # For example: RUN_WRAP="setarch $(uname -m) -R" scripts/fuzz/overnight.sh
