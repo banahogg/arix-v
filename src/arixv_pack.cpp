@@ -92,20 +92,28 @@ struct Record {
   uint32_t reserved;  // 0; no indeterminate padding bytes
 };
 
+struct ModMeta {
+  uint32_t size = 0;   // validated <= UINT32_MAX
+  uint32_t block = 0;  // global block index
+};
+
+struct BlockMeta {
+  uint64_t payload_off = 0;  // absolute
+  uint64_t payload_len = 0;
+  uint64_t slice_off = 0;    // stage-1 only, from aligned base
+  uint32_t first = 0;        // offset into members
+  uint32_t count = 0;
+  uint8_t stored = 0;
+};
+
 struct Header {
   uint32_t m = 0, s1 = 0, s2 = 0;
   size_t header_len = 0;
   uint64_t checksum = 0;
   uint8_t codec = 0;
-  std::vector<uint64_t> size;         // per module
-  std::vector<uint32_t> block;        // per module (global block index)
-  std::vector<uint32_t> first;        // per block: offset into members
-  std::vector<uint32_t> count;        // per block
-  std::vector<uint32_t> members;      // block-major, coding order
-  std::vector<uint64_t> payload_off;  // per block, absolute
-  std::vector<uint64_t> payload_len;
-  std::vector<uint8_t> stored;        // per block: payload is verbatim bytes
-  std::vector<uint64_t> slice_off;    // per stage-1 block, from aligned base
+  std::vector<ModMeta> mods;      // per module
+  std::vector<BlockMeta> blocks;  // per block (s1 + s2)
+  std::vector<uint32_t> members;  // block-major, coding order
   uint64_t total = 0, scratch_size = 0;
   uint64_t stage1_modules = 0;
 };
@@ -172,9 +180,8 @@ arixv_status Parse(const void* in_v, size_t n, Header* h) {
   h->s1 = static_cast<uint32_t>(s1);
   h->s2 = static_cast<uint32_t>(s2);
   const size_t nb = static_cast<size_t>(nb64);
-  h->size.resize(h->m);
-  h->block.resize(h->m);
-  h->count.assign(nb, 0);
+  h->mods.resize(h->m);
+  h->blocks.assign(nb, BlockMeta{});
   h->total = 0;
   for (uint32_t i = 0; i < h->m; ++i) {
     uint64_t sz = 0, b = 0;
@@ -183,43 +190,39 @@ arixv_status Parse(const void* in_v, size_t n, Header* h) {
       return VarStatus(v);
     }
     if (b >= nb || sz > UINT32_MAX) return ARIXV_STATUS_BAD_CONTAINER;
-    h->size[i] = sz;
-    h->block[i] = static_cast<uint32_t>(b);
-    ++h->count[b];
+    h->mods[i] = {static_cast<uint32_t>(sz), static_cast<uint32_t>(b)};
+    ++h->blocks[b].count;
     h->total += sz;  // <= 2^20 * 2^32
   }
-  h->first.resize(nb);
   uint32_t acc = 0;
   for (size_t b = 0; b < nb; ++b) {
-    if (h->count[b] == 0) return ARIXV_STATUS_BAD_CONTAINER;  // empty block
-    h->first[b] = acc;
-    acc += h->count[b];
+    if (h->blocks[b].count == 0) return ARIXV_STATUS_BAD_CONTAINER;  // empty
+    h->blocks[b].first = acc;
+    acc += h->blocks[b].count;
   }
   h->members.assign(h->m, UINT32_MAX);
   if (implicit) {
-    std::vector<uint32_t> fill(nb, 0);
+    for (size_t b = 0; b < nb; ++b) h->blocks[b].count = 0;
     for (uint32_t i = 0; i < h->m; ++i) {
-      const uint32_t b = h->block[i];
-      h->members[h->first[b] + fill[b]++] = i;
+      BlockMeta& blk = h->blocks[h->mods[i].block];
+      h->members[blk.first + blk.count++] = i;
     }
   } else {
     for (uint32_t i = 0; i < h->m; ++i) {
       uint64_t order = 0;
       if ((v = ReadVar(in, n, &pos, &order)) != Var::kOk) return VarStatus(v);
-      const uint32_t b = h->block[i];
-      if (order >= h->count[b]) return ARIXV_STATUS_BAD_CONTAINER;
-      uint32_t& slot = h->members[h->first[b] + order];
+      const BlockMeta& blk = h->blocks[h->mods[i].block];
+      if (order >= blk.count) return ARIXV_STATUS_BAD_CONTAINER;
+      uint32_t& slot = h->members[blk.first + order];
       if (slot != UINT32_MAX) return ARIXV_STATUS_BAD_CONTAINER;  // repeated
       slot = i;
     }
   }
-  h->payload_len.resize(nb);
-  h->stored.resize(nb);
   for (size_t b = 0; b < nb; ++b) {
     uint64_t lv = 0;
     if ((v = ReadVar(in, n, &pos, &lv)) != Var::kOk) return VarStatus(v);
-    h->payload_len[b] = lv >> 1;
-    h->stored[b] = static_cast<uint8_t>(lv & 1);
+    h->blocks[b].payload_len = lv >> 1;
+    h->blocks[b].stored = static_cast<uint8_t>(lv & 1);
   }
   if (n - pos < 8) return ARIXV_STATUS_TRUNCATED;
   h->header_len = pos + 8;
@@ -227,32 +230,32 @@ arixv_status Parse(const void* in_v, size_t n, Header* h) {
 #ifndef ARIXV_FUZZ_NO_PACK_CHECKSUM
   if (LoadLe64(in + pos) != h->checksum) return ARIXV_STATUS_BAD_CONTAINER;
 #endif
-  h->payload_off.resize(nb);
   uint64_t off = h->header_len;
   for (size_t b = 0; b < nb; ++b) {
-    if (h->payload_len[b] > n - off) return ARIXV_STATUS_TRUNCATED;
-    if (h->stored[b]) {
+    BlockMeta& blk = h->blocks[b];
+    if (blk.payload_len > n - off) return ARIXV_STATUS_TRUNCATED;
+    if (blk.stored) {
       uint64_t sum = 0;
-      for (uint32_t j = 0; j < h->count[b]; ++j) {
-        sum += h->size[h->members[h->first[b] + j]];
+      for (uint32_t j = 0; j < blk.count; ++j) {
+        sum += h->mods[h->members[blk.first + j]].size;
       }
-      if (sum != h->payload_len[b]) return ARIXV_STATUS_BAD_CONTAINER;
+      if (sum != blk.payload_len) return ARIXV_STATUS_BAD_CONTAINER;
     }
-    h->payload_off[b] = off;
-    off += h->payload_len[b];
+    blk.payload_off = off;
+    off += blk.payload_len;
   }
   if (off != n) return ARIXV_STATUS_BAD_CONTAINER;  // trailing bytes
   // Library-derived scratch layout.
-  h->slice_off.resize(h->s1);
   uint64_t so = kRecordStride * uint64_t{h->s1};
   h->stage1_modules = 0;
   for (uint32_t b = 0; b < h->s1; ++b) {
-    h->slice_off[b] = so;
+    BlockMeta& blk = h->blocks[b];
+    blk.slice_off = so;
     uint64_t slice = 0;
-    for (uint32_t j = 0; j < h->count[b]; ++j) {
-      slice += MemberBytes(h->size[h->members[h->first[b] + j]]);
+    for (uint32_t j = 0; j < blk.count; ++j) {
+      slice += MemberBytes(h->mods[h->members[blk.first + j]].size);
     }
-    h->stage1_modules += h->count[b];
+    h->stage1_modules += blk.count;
     so += Align64(slice);
   }
   h->scratch_size = h->s1 ? so + 63 : 0;
@@ -307,8 +310,9 @@ arixv_status CheckBlocks(const Header& h, uint32_t b0, uint32_t b1,
     if (!scratch) return ARIXV_STATUS_INVALID_ARGUMENT;
   }
   for (uint32_t b = b0; b < b1; ++b) {
-    for (uint32_t j = 0; j < h.count[b]; ++j) {
-      if (h.size[h.members[h.first[b] + j]] > kMaxSpan) {
+    const BlockMeta& blk = h.blocks[b];
+    for (uint32_t j = 0; j < blk.count; ++j) {
+      if (uint64_t{h.mods[h.members[blk.first + j]].size} > kMaxSpan) {
         return ARIXV_STATUS_TOO_LARGE;
       }
     }
@@ -318,17 +322,21 @@ arixv_status CheckBlocks(const Header& h, uint32_t b0, uint32_t b1,
     return ARIXV_STATUS_BUFFER_TOO_SMALL;
   }
   for (uint32_t b = b0; b < b1; ++b) {
-    for (uint32_t j = 0; j < h.count[b]; ++j) {
-      const uint32_t mod = h.members[h.first[b] + j];
-      if (!out->outs[mod] && h.size[mod] > 0) {
+    const BlockMeta& blk = h.blocks[b];
+    for (uint32_t j = 0; j < blk.count; ++j) {
+      const uint32_t mod = h.members[blk.first + j];
+      if (!out->outs[mod] && h.mods[mod].size > 0) {
         return ARIXV_STATUS_INVALID_ARGUMENT;
       }
     }
   }
   for (uint32_t b = b0; b < b1; ++b) {
-    for (uint32_t j = 0; j < h.count[b]; ++j) {
-      const uint32_t mod = h.members[h.first[b] + j];
-      if (out->caps[mod] < h.size[mod]) return ARIXV_STATUS_BUFFER_TOO_SMALL;
+    const BlockMeta& blk = h.blocks[b];
+    for (uint32_t j = 0; j < blk.count; ++j) {
+      const uint32_t mod = h.members[blk.first + j];
+      if (out->caps[mod] < h.mods[mod].size) {
+        return ARIXV_STATUS_BUFFER_TOO_SMALL;
+      }
     }
   }
   return ARIXV_STATUS_OK;
@@ -339,29 +347,32 @@ arixv_status CheckBlocks(const Header& h, uint32_t b0, uint32_t b1,
 arixv_status DecodeOne(const uint8_t* in, const Header& h, uint32_t b,
                        const SharedMember* shared, size_t ns,
                        std::vector<DecodedMember>* mods) {
-  if (h.stored[b]) {
-    mods->assign(h.count[b], {});
-    const uint8_t* p = in + h.payload_off[b];
-    for (uint32_t j = 0; j < h.count[b]; ++j) {
-      const size_t n = static_cast<size_t>(h.size[h.members[h.first[b] + j]]);
+  const BlockMeta& blk = h.blocks[b];
+  if (blk.stored) {
+    mods->clear();
+    mods->resize(blk.count);
+    const uint8_t* p = in + blk.payload_off;
+    for (uint32_t j = 0; j < blk.count; ++j) {
+      const size_t n = h.mods[h.members[blk.first + j]].size;
       (*mods)[j].bytes.assign(p, p + n);
       p += n;
     }
     return ARIXV_STATUS_OK;
   }
-  std::vector<uint64_t> sizes(h.count[b]);
-  for (uint32_t j = 0; j < h.count[b]; ++j) {
-    sizes[j] = h.size[h.members[h.first[b] + j]];
+  std::vector<uint64_t> sizes(blk.count);
+  for (uint32_t j = 0; j < blk.count; ++j) {
+    sizes[j] = h.mods[h.members[blk.first + j]].size;
   }
-  return DecodeBlock(in + h.payload_off[b],
-                     static_cast<size_t>(h.payload_len[b]), h.codec,
-                     sizes.data(), h.count[b], shared, ns, mods);
+  return DecodeBlock(in + blk.payload_off,
+                     static_cast<size_t>(blk.payload_len), h.codec,
+                     sizes.data(), blk.count, shared, ns, mods);
 }
 
 void WriteOutputs(const Header& h, uint32_t b, const arixv_pack_outputs* out,
-                  const std::vector<DecodedMember>& mods) {
-  for (uint32_t j = 0; j < h.count[b]; ++j) {
-    const uint32_t mod = h.members[h.first[b] + j];
+                  const DecodedMember* mods) {
+  const BlockMeta& blk = h.blocks[b];
+  for (uint32_t j = 0; j < blk.count; ++j) {
+    const uint32_t mod = h.members[blk.first + j];
     if (mods[j].size()) {
       std::memcpy(out->outs[mod], mods[j].data(), mods[j].size());
     }
@@ -391,10 +402,11 @@ arixv_status Stage1(const uint8_t* in, const Header& h, uint32_t block_index,
   std::vector<DecodedMember> mods;
   const arixv_status st = DecodeOne(in, h, block_index, nullptr, 0, &mods);
   if (st != ARIXV_STATUS_OK) return st;
-  WriteOutputs(h, block_index, outputs, mods);
+  WriteOutputs(h, block_index, outputs, mods.data());
   // Slice: members in coding order, at offsets derived from sizes only.
-  uint8_t* p = base + h.slice_off[block_index];
-  for (uint32_t j = 0; j < h.count[block_index]; ++j) {
+  const BlockMeta& blk = h.blocks[block_index];
+  uint8_t* p = base + blk.slice_off;
+  for (uint32_t j = 0; j < blk.count; ++j) {
     const DecodedMember& dm = mods[j];
     const uint64_t size = dm.size();
     const uint64_t w = size / 4;
@@ -432,10 +444,10 @@ arixv_status Stage2(const uint8_t* in, const Header& h, uint32_t block_index,
     }
   }
   std::vector<DecodedMember> mods;
-  if (h.stored[b]) {
+  if (h.blocks[b].stored) {
     const arixv_status st = DecodeOne(in, h, b, nullptr, 0, &mods);
     if (st != ARIXV_STATUS_OK) return st;
-    WriteOutputs(h, b, outputs, mods);
+    WriteOutputs(h, b, outputs, mods.data());
     return ARIXV_STATUS_OK;
   }
   // In-place views of the stage-1 slices (shared index order), with a
@@ -443,9 +455,10 @@ arixv_status Stage2(const uint8_t* in, const Header& h, uint32_t block_index,
   std::vector<SharedMember> view(static_cast<size_t>(h.stage1_modules));
   size_t vi = 0;
   for (uint32_t i = 0; i < h.s1; ++i) {
-    const uint8_t* p = base + h.slice_off[i];
-    for (uint32_t j = 0; j < h.count[i]; ++j, ++vi) {
-      const uint64_t size = h.size[h.members[h.first[i] + j]];
+    const BlockMeta& blk = h.blocks[i];
+    const uint8_t* p = base + blk.slice_off;
+    for (uint32_t j = 0; j < blk.count; ++j, ++vi) {
+      const uint64_t size = h.mods[h.members[blk.first + j]].size;
       const MemberDesc d = Load<MemberDesc>(p);
       const uint64_t w = size / 4;
       if (d.size != size) return ARIXV_STATUS_DEPENDENCY_INCOMPLETE;
@@ -469,12 +482,12 @@ arixv_status Stage2(const uint8_t* in, const Header& h, uint32_t block_index,
   }
   const arixv_status st = DecodeOne(in, h, b, view.data(), view.size(), &mods);
   if (st != ARIXV_STATUS_OK) return st;
-  WriteOutputs(h, b, outputs, mods);
+  WriteOutputs(h, b, outputs, mods.data());
   return ARIXV_STATUS_OK;
 }
 
-arixv_status InspectImpl(const void* in, size_t in_size,
-                         arixv_pack_info* info) {
+ARIXV_NOINLINE arixv_status InspectImpl(const void* in, size_t in_size,
+                                        arixv_pack_info* info) {
   if (!in || !info || info->struct_size < ARIXV_PACK_INFO_V1_SIZE ||
       info->struct_size > kMaxOptionsStructSize) {
     return ARIXV_STATUS_INVALID_ARGUMENT;
@@ -497,18 +510,19 @@ arixv_status InspectImpl(const void* in, size_t in_size,
   return ARIXV_STATUS_OK;
 }
 
-arixv_status InspectModulesImpl(const void* in, size_t in_size,
-                                arixv_pack_module_info* modules,
-                                uint32_t count) {
+ARIXV_NOINLINE arixv_status InspectModulesImpl(const void* in, size_t in_size,
+                                               arixv_pack_module_info* modules,
+                                               uint32_t count) {
   if (!in || !modules) return ARIXV_STATUS_INVALID_ARGUMENT;
   Header h;
   const arixv_status st = Parse(in, in_size, &h);
   if (st != ARIXV_STATUS_OK) return st;
   if (count != h.m) return ARIXV_STATUS_INVALID_ARGUMENT;
   for (uint32_t i = 0; i < h.m; ++i) {
-    const bool s1 = h.block[i] < h.s1;
-    modules[i].size = h.size[i];
-    modules[i].block_index = s1 ? h.block[i] : h.block[i] - h.s1;
+    const ModMeta& mm = h.mods[i];
+    const bool s1 = mm.block < h.s1;
+    modules[i].size = mm.size;
+    modules[i].block_index = s1 ? mm.block : mm.block - h.s1;
     modules[i].stage = s1 ? ARIXV_PACK_STAGE_1 : ARIXV_PACK_STAGE_2;
     modules[i].reserved = 0;
     modules[i].flags = 0;
@@ -516,8 +530,9 @@ arixv_status InspectModulesImpl(const void* in, size_t in_size,
   return ARIXV_STATUS_OK;
 }
 
-arixv_status ResetScratchImpl(const void* in, size_t in_size, void* scratch,
-                              size_t scratch_size) {
+ARIXV_NOINLINE arixv_status ResetScratchImpl(const void* in, size_t in_size,
+                                             void* scratch,
+                                             size_t scratch_size) {
   if (!in || (!scratch && scratch_size)) return ARIXV_STATUS_INVALID_ARGUMENT;
   Header h;
   const arixv_status st = Parse(in, in_size, &h);
@@ -533,10 +548,11 @@ arixv_status ResetScratchImpl(const void* in, size_t in_size, void* scratch,
   return ARIXV_STATUS_OK;
 }
 
-arixv_status Stage1Impl(const void* in, size_t in_size, uint32_t block_index,
-                        const arixv_pack_outputs* outputs, void* scratch,
-                        size_t scratch_size,
-                        const arixv_pack_decode_options* opts) {
+ARIXV_NOINLINE arixv_status Stage1Impl(const void* in, size_t in_size,
+                                       uint32_t block_index,
+                                       const arixv_pack_outputs* outputs,
+                                       void* scratch, size_t scratch_size,
+                                       const arixv_pack_decode_options* opts) {
   arixv_status st = CheckArgs(in, outputs, scratch, scratch_size, opts);
   if (st != ARIXV_STATUS_OK) return st;
   Header h;
@@ -551,10 +567,11 @@ arixv_status Stage1Impl(const void* in, size_t in_size, uint32_t block_index,
                 scratch);
 }
 
-arixv_status Stage2Impl(const void* in, size_t in_size, uint32_t block_index,
-                        const arixv_pack_outputs* outputs, const void* scratch,
-                        size_t scratch_size,
-                        const arixv_pack_decode_options* opts) {
+ARIXV_NOINLINE arixv_status Stage2Impl(const void* in, size_t in_size,
+                                       uint32_t block_index,
+                                       const arixv_pack_outputs* outputs,
+                                       const void* scratch, size_t scratch_size,
+                                       const arixv_pack_decode_options* opts) {
   arixv_status st = CheckArgs(in, outputs, scratch, scratch_size, opts);
   if (st != ARIXV_STATUS_OK) return st;
   Header h;
@@ -571,9 +588,9 @@ arixv_status Stage2Impl(const void* in, size_t in_size, uint32_t block_index,
 
 // Single-thread decode: stage-1 members stay in memory and stage 2 reads
 // them directly, so no scratch buffer is built.
-arixv_status DecodeImpl(const void* in, size_t in_size,
-                        const arixv_pack_outputs* outputs,
-                        const arixv_pack_decode_options* opts) {
+ARIXV_NOINLINE arixv_status DecodeImpl(const void* in, size_t in_size,
+                                       const arixv_pack_outputs* outputs,
+                                       const arixv_pack_decode_options* opts) {
   arixv_status st = CheckArgs(in, outputs, nullptr, 0, opts);
   if (st != ARIXV_STATUS_OK) return st;
   Header h;
@@ -582,23 +599,28 @@ arixv_status DecodeImpl(const void* in, size_t in_size,
   st = CheckBlocks(h, 0, h.s1 + h.s2, outputs, nullptr, 0, false);
   if (st != ARIXV_STATUS_OK) return st;
   const uint8_t* p = static_cast<const uint8_t*>(in);
-  std::vector<std::vector<DecodedMember>> stage1(h.s1);
+  std::vector<DecodedMember> stage1;
+  stage1.reserve(static_cast<size_t>(h.stage1_modules));
   std::vector<SharedMember> view;
   view.reserve(static_cast<size_t>(h.stage1_modules));
+  std::vector<DecodedMember> mods;
   for (uint32_t b = 0; b < h.s1; ++b) {
-    if ((st = DecodeOne(p, h, b, nullptr, 0, &stage1[b])) != ARIXV_STATUS_OK) {
+    if ((st = DecodeOne(p, h, b, nullptr, 0, &mods)) != ARIXV_STATUS_OK) {
       return st;
     }
-    WriteOutputs(h, b, outputs, stage1[b]);
-    for (const DecodedMember& d : stage1[b]) view.push_back(ViewOf(d));
+    WriteOutputs(h, b, outputs, mods.data());
+    for (DecodedMember& d : mods) {
+      stage1.push_back(std::move(d));
+      view.push_back(ViewOf(stage1.back()));
+    }
   }
-  std::vector<DecodedMember> mods;
   for (uint32_t j = 0; j < h.s2; ++j) {
     const uint32_t b = h.s1 + j;
-    st = h.stored[b] ? DecodeOne(p, h, b, nullptr, 0, &mods)
-                     : DecodeOne(p, h, b, view.data(), view.size(), &mods);
+    st = h.blocks[b].stored
+             ? DecodeOne(p, h, b, nullptr, 0, &mods)
+             : DecodeOne(p, h, b, view.data(), view.size(), &mods);
     if (st != ARIXV_STATUS_OK) return st;
-    WriteOutputs(h, b, outputs, mods);
+    WriteOutputs(h, b, outputs, mods.data());
   }
   return ARIXV_STATUS_OK;
 }
