@@ -247,26 +247,25 @@ using pack::Copy;
 using pack::SharedMember;
 
 // Probability-update-only coder with encoder semantics: identical model
-// updates to BitEncoder, no output. With kAdapt false (FAST_DECODE) it
-// updates nothing: only the tracker/ID state the step maintains outside the
-// probability tables advances.
-template <bool kAdapt>
-class TrainBitsT {
+// updates to BitEncoder, no output. Used for adapt-mode train-through of
+// copied instructions; FAST_DECODE uses the dedicated TrackInstruction below
+// so no second CodeInstruction / model-helper template tree is instantiated.
+class TrainBits {
  public:
   static constexpr bool kEncoding = true;
   static constexpr bool kRawResidual = false;
   bool CodeBit(Prob& p, bool bit) {
-    if constexpr (kAdapt) p.UpdateFromRaw(p.raw(), bit ? 1 : 0);
+    p.UpdateFromRaw(p.raw(), bit ? 1 : 0);
     return bit;
   }
   uint32_t CodeBitsDirect(uint32_t value, int) { return value; }
   template <int kN, int kRateCap>
   uint32_t CodeSymbol(SymbolCdf& t, uint32_t s) {
-    if constexpr (kAdapt) SymbolCdfUpdate<kN, kRateCap>(t, static_cast<int>(s));
+    SymbolCdfUpdate<kN, kRateCap>(t, static_cast<int>(s));
     return s;
   }
   struct SymbolSession {
-    TrainBitsT& coder;
+    TrainBits& coder;
     template <int kN, int kRateCap>
     ARIXV_FORCE_INLINE uint32_t First(SymbolCdf& t, uint32_t s) {
       return coder.template CodeSymbol<kN, kRateCap>(t, s);
@@ -280,8 +279,6 @@ class TrainBitsT {
   void SetCostSink(double*) {}
   bool exhausted() const { return false; }
 };
-using TrainBits = TrainBitsT<true>;
-using TrackBits = TrainBitsT<false>;
 
 #if defined(ARIXV_ENCODER) && (ARIXV_ENCODER != 0)
 // Encoder cost arithmetic is integer fixed point (Q16: 1/65536 bit), so
@@ -544,6 +541,447 @@ struct CopyMap {
   uint32_t delta = 0;
 };
 
+// FAST_DECODE (no-adapt) string state update: mirrors CodeString with a
+// no-op coder, updating recent_string_pool, StringModel history/order0, and
+// returning the consumed word span without instantiating CodeString.
+ARIXV_NOINLINE uint32_t TrackString(ModelState& model,
+                                    const uint32_t* hint_words,
+                                    uint32_t remaining) {
+  uint32_t span = 0;
+  bool found_nul = false;
+  while (span < remaining && !found_nul) {
+    const uint32_t word = hint_words[span++];
+    if (WordHasNulByte(word)) {
+      found_nul = true;
+    }
+  }
+  if (!found_nul) span = remaining;
+  std::string raw = RawStringBytes(hint_words, span);
+  const uint32_t out_span = static_cast<uint32_t>((raw.size() + 3u) / 4u);
+  const int rank = FindRecentString(model, raw);
+  if (rank >= 0 && rank < 64) {
+    PushStringHistory(*model.strings, raw);
+    PromoteRecentString(model, static_cast<uint32_t>(rank));
+    return out_span == 0 ? 1u : out_span;
+  }
+  StringModel& sm = *model.strings;
+  const bool canonical = IsCanonicalStringBytes(raw);
+  const int dict = canonical ? FindGrammarString(raw) : -1;
+  if (dict >= 0 || !canonical) {
+    PushStringHistory(sm, raw);
+  } else {
+    uint8_t prev = 0;
+    size_t match = 0;
+    if (remaining > 0) (void)sm.Table();
+    const size_t limit = static_cast<size_t>(remaining) * 4u;
+    for (size_t i = 0; i < limit; ++i) {
+      const uint8_t b = static_cast<uint8_t>(raw[i]);
+      if (match == 0 && i > 0) match = sm.Lookup();
+      if (match != 0 && sm.At(match) == b) {
+        ++match;
+      } else {
+        match = 0;
+        Arena& arena = sm.bytes.arena;
+        ArenaPtr<ByteTree>& tree = sm.bytes.tree[prev];
+        if (!tree) {
+          tree.Make(arena);
+          tree->root = sm.order0.root;
+        }
+        const uint32_t high = (b >> 4) & 15u;
+        ArenaPtr<SymbolCdf>& leaf0 = sm.order0.leaf[high];
+        SymbolCdf& order0_leaf =
+            leaf0 ? *leaf0 : MakeStringOrder0Leaf(arena, leaf0, high);
+        ArenaPtr<SymbolCdf>& leaf = tree->leaf[high];
+        if (!leaf) {
+          leaf.Make(arena);
+          *leaf = order0_leaf;
+        }
+        SymbolCdfUpdate<16, kByteSymbolRateCap>(sm.order0.root,
+                                                static_cast<int>(high));
+        SymbolCdfUpdate<16, kByteSymbolRateCap>(order0_leaf,
+                                                static_cast<int>(b & 15u));
+      }
+      sm.Push(b);
+      prev = b;
+      if (b == 0) break;
+    }
+  }
+  TouchString(model, std::move(raw));
+  return out_span == 0 ? 1u : out_span;
+}
+
+// FAST_DECODE (no-adapt) copied-instruction replay: advances tracker, ID/
+// literal/string/order-1-opcode state and records ID roles identically to
+// CodeInstruction with a no-op coder, while skipping all probability updates
+// and dead encoder searches (BuildDeferredResultTypeCandidates, FindEnumerant,
+// CodeUint, etc.) and avoiding a second CodeInstruction template tree.
+ARIXV_NOINLINE void TrackInstruction(ModelState& model, const uint32_t* target,
+                                     size_t body_words, size_t& body_pos,
+                                     InstructionCarry& c, uint8_t* roles) {
+  const uint32_t* const body = target + 5;
+  const uint32_t word0 = body[body_pos];
+  const uint16_t opcode = static_cast<uint16_t>(word0 & 0xffffu);
+  const uint32_t count_hint = (word0 >> 16) & 0xffffu;
+  const InstructionDesc* desc = FindInstruction(opcode);
+  uint16_t inst_index = NumCoreInstructions();
+  if (desc != nullptr) {
+    const int found = FindInstructionIndex(opcode);
+    assert(found >= 0);
+    inst_index = static_cast<uint16_t>(found);
+    const uint16_t* prior =
+        GetOpcodeSectionPrior(static_cast<uint8_t>(model.tracker.section()));
+    const uint16_t prev_key = PreviousOpcodeKey(model.tracker);
+    ArenaPtr<OpcodeCtx>& order1_slot = model.opcode_contexts[prev_key];
+    if (!order1_slot) {
+      order1_slot.Make(model.arena);
+      order1_slot->tree.SetPrior(prior);
+    }
+    if (order1_slot->count < kOpcodeOrder1MinCount) {
+      order1_slot->tree.Train(model.arena, inst_index, prior);
+      ++order1_slot->count;
+    }
+    model.EnsureInstContext(inst_index);
+  }
+
+  const size_t remaining_body = body_words - body_pos;
+  bool opaque = true;
+  bool deferred_word_count = false;
+  bool fixed_layout = false;
+  uint32_t declared_count = count_hint;
+  if (desc != nullptr) {
+    const bool use_grammar_implied =
+        HasInstructionFlag(desc, kInstGrammarImpliedWordCount);
+    const bool use_ext_inst = HasInstructionFlag(desc, kInstExtInst);
+    const bool use_optional_tail = HasInstructionFlag(desc, kInstOptionalTail);
+    const bool single_optional =
+        use_optional_tail && desc->min_word_count == desc->num_operands;
+    bool consistent = false;
+    if (desc->fixed_word_count) {
+      consistent = (count_hint == desc->min_word_count);
+    } else if (use_grammar_implied) {
+      consistent = ValidateGrammarImplied(desc, body + body_pos, count_hint,
+                                          remaining_body, model.tracker);
+    } else if (use_ext_inst) {
+      consistent = ValidateExtInstConsistent(desc, body + body_pos, count_hint,
+                                             remaining_body, model.tracker);
+    } else if (use_optional_tail) {
+      if (count_hint < desc->min_word_count) {
+        consistent = false;
+      } else if (count_hint == desc->min_word_count) {
+        consistent = true;
+      } else if (single_optional) {
+        const OperandSlotDesc& tail =
+            GetOperandSlots(*desc)[desc->num_operands - 1];
+        consistent = IsFixedOneWordKind(tail.kind)
+                         ? (count_hint == desc->min_word_count + 1u)
+                         : ValidateGrammarImplied(desc, body + body_pos,
+                                                  count_hint, remaining_body,
+                                                  model.tracker);
+      } else {
+        consistent = true;
+      }
+    } else {
+      consistent = (count_hint >= desc->min_word_count);
+    }
+    if (consistent) {
+      opaque = false;
+      if (desc->fixed_word_count) {
+        fixed_layout = true;
+        declared_count = desc->min_word_count;
+      } else if (use_grammar_implied || use_ext_inst) {
+        deferred_word_count = true;
+        declared_count = 0;
+      } else if (use_optional_tail) {
+        if (count_hint == desc->min_word_count) {
+          fixed_layout = true;
+          declared_count = desc->min_word_count;
+        } else if (single_optional) {
+          const OperandSlotDesc& tail =
+              GetOperandSlots(*desc)[desc->num_operands - 1];
+          if (IsFixedOneWordKind(tail.kind)) {
+            fixed_layout = true;
+            declared_count = desc->min_word_count + 1u;
+          } else {
+            deferred_word_count = true;
+            declared_count = 0;
+          }
+        } else {
+          model.inst_group(inst_index).last_word_count = count_hint;
+        }
+      } else {
+        model.inst_group(inst_index).last_word_count = count_hint;
+      }
+    }
+  }
+
+  const bool patch_word0 = deferred_word_count;
+  c.inst_words.clear();
+  uint32_t operand_words =
+      deferred_word_count
+          ? static_cast<uint32_t>(std::min<size_t>(
+                remaining_body > 0 ? remaining_body - 1 : 0, 0xfffeu))
+          : (declared_count == 0
+                 ? 0
+                 : static_cast<uint32_t>(std::min<size_t>(
+                       declared_count - 1,
+                       remaining_body > 0 ? remaining_body - 1 : 0)));
+  c.inst_words.push_back(word0);
+
+  model.tracker.OnInstructionStart(opcode, desc, declared_count);
+  model.cur_prev_res_id = model.tracker.in_block() ? c.prev_inst_result_id : 0u;
+  model.cur_prev_res_list = c.prev_inst_result_list;
+  c.prev_inst_result_id = 0;
+  c.prev_inst_result_list = ModelState::kUnresolvedList;
+
+  const OperandSlotDesc* fixed_slots =
+      fixed_layout ? GetOperandSlots(*desc) : nullptr;
+  if (!fixed_layout) {
+    c.cursor.Begin(desc,
+                   deferred_word_count ? operand_words + 1u : declared_count,
+                   opaque);
+  }
+
+  uint32_t consumed = 0;
+  uint32_t current_result_type = 0;
+  const ExtInstSetDesc* current_ext_set = nullptr;
+  bool has_last_enum = false;
+  uint32_t last_enum = 0;
+  const bool defer_result_type =
+      desc != nullptr && !opaque && desc->has_result_type &&
+      !HasInstructionFlag(desc, kInstConstantNumber) &&
+      !HasInstructionFlag(desc, kInstVariable);
+  bool result_type_deferred = false;
+  uint32_t result_type_hint = 0;
+  uint32_t first_id_operand = 0;
+  uint32_t op0_type = 0;
+  int num_id_operands = 0;
+
+  while (consumed < operand_words) {
+    const uint32_t remaining = operand_words - consumed;
+    OperandCursor::Field cursor_field;
+    OperandCursor::Field field;
+    if (fixed_layout) {
+      const OperandSlotDesc& slot = fixed_slots[consumed];
+      const OperandKindDesc& kind = GetOperandKind(slot.kind);
+      field = {OperandCursor::FieldType::kOperand, slot.kind, kind.category,
+               static_cast<uint8_t>(consumed < 15 ? consumed : 15), false,
+               false, remaining};
+    } else {
+      cursor_field = c.cursor.Next();
+      field = cursor_field;
+      if (field.type == OperandCursor::FieldType::kEnd ||
+          (deferred_word_count &&
+           field.type == OperandCursor::FieldType::kOpaqueWord)) {
+        if (deferred_word_count) break;
+        field.type = OperandCursor::FieldType::kOpaqueWord;
+      }
+    }
+
+    const uint32_t hint0 = body[body_pos + 1 + consumed];
+    uint32_t span = 1;
+
+    if (field.type != OperandCursor::FieldType::kOpaqueWord) {
+      switch (field.category) {
+        case OperandCategory::kIdResult:
+          roles[body_pos + 1 + consumed] = 1;
+          model.tracker.OnResultId(hint0);
+          model.prev_result_id = hint0;
+          c.prev_inst_result_id = hint0;
+          break;
+        case OperandCategory::kIdResultType:
+          roles[body_pos + 1 + consumed] = 2;
+          if (defer_result_type && !result_type_deferred) {
+            result_type_deferred = true;
+            result_type_hint = hint0;
+          } else {
+            model.tracker.OnResultTypeUse(hint0);
+            current_result_type = hint0;
+          }
+          break;
+        case OperandCategory::kIdRef:
+        case OperandCategory::kIdScope:
+        case OperandCategory::kIdMemorySemantics: {
+          roles[body_pos + 1 + consumed] = 2;
+          InstGroup& group = model.inst_group(inst_index);
+          const size_t key = Slot16(field.slot);
+          const uint8_t state = group.last_id_state[key];
+          const bool have_last = (state & 1u) != 0;
+          const uint32_t own_last = have_last ? group.last_id_list[key] : 0u;
+          const uint32_t prev_op_type = model.last_id_operand_type;
+          uint32_t chosen_list = own_last;
+          if (num_id_operands == 0) {
+            if (!have_last) {
+              chosen_list = PrevResList(model);
+            } else if ((state & 0x20u) != 0u) {
+              const uint32_t prl = PrevResList(model);
+              if (prl != 0u) chosen_list = prl;
+            }
+          } else if (!have_last) {
+            chosen_list =
+                InitialIdListForSlot(model, num_id_operands, op0_type);
+          } else {
+            switch ((state >> 1) & 7u) {
+              case 0: chosen_list = own_last; break;
+              case 1: chosen_list = model.cur_op0_list; break;
+              case 2: chosen_list = model.cur_prev_op_list; break;
+              case 3:
+                chosen_list = ElemValuesList(model.tracker, prev_op_type);
+                break;
+              case 4: chosen_list = PrevResList(model); break;
+              default: chosen_list = own_last; break;
+            }
+            if (chosen_list == 0u) chosen_list = own_last;
+          }
+          const RecencyList* typed = model.tracker.TypedList(chosen_list);
+          const bool coded =
+              typed != nullptr && typed->size() > 0 && typed->Find(hint0) >= 0;
+          group.last_id[key] = hint0;
+          const Tracker::IdUse use =
+              model.tracker.OnIdUse(hint0, /*touch_recent_ids=*/!coded);
+          model.last_id_operand_type = use.result_type;
+          uint8_t next_state = static_cast<uint8_t>(state | 1u);
+          if (num_id_operands == 0) {
+            if (!have_last) {
+              next_state = static_cast<uint8_t>((state & ~0x30u) | 0x11u);
+            } else if (use.type_list != 0u && model.cur_prev_res_id != 0u &&
+                       (use.type_list != chosen_list ||
+                        ((state >> 4) & 3u) == 1u)) {
+              next_state =
+                  UpdateOp0ListSource(model, own_last, use.type_list, state);
+            }
+            model.cur_op0_list = use.type_list;
+            first_id_operand = hint0;
+            op0_type = use.result_type;
+          } else if (use.type_list != 0u &&
+                     (!have_last || use.type_list != chosen_list)) {
+            next_state = UpdateGt0ListSource(model, own_last, prev_op_type,
+                                             use.type_list, state);
+          }
+          model.cur_prev_op_list = use.type_list;
+          group.last_id_state[key] = next_state;
+          group.last_id_list[key] = use.type_list;
+          ++num_id_operands;
+          if (desc && desc->opcode == 12 && field.slot == 2) {
+            current_ext_set = model.tracker.ExtInstSetOf(hint0);
+            c.cursor.SetExtInstSet(current_ext_set);
+          }
+          break;
+        }
+        case OperandCategory::kValueEnum:
+          has_last_enum = true;
+          last_enum = hint0;
+          break;
+        case OperandCategory::kLiteralInteger:
+          if (has_last_enum) {
+            EnumLiteralCache& cache =
+                EnsureContext(model.arena, model.enum_literals);
+            const uint64_t cache_key =
+                (uint64_t{1} << 63) |
+                (static_cast<uint64_t>(inst_index) << 36) |
+                (static_cast<uint64_t>(Slot16(field.slot)) << 32) | last_enum;
+            const uint32_t mix =
+                static_cast<uint32_t>(cache_key ^ (cache_key >> 32)) *
+                0x9E3779B1u;
+            EnumLiteralCache::Entry& entry =
+                cache.entries[mix >> (32 - EnumLiteralCache::kBits)];
+            const uint32_t prev = entry.key == cache_key ? entry.last : 0u;
+            entry.key = cache_key;
+            entry.stride = hint0 - prev;
+            entry.last = hint0;
+          } else {
+            InstGroup& group = model.inst_group(inst_index);
+            const size_t key = Slot16(field.slot);
+            group.last_literal_valid[key] = 1;
+            group.last_literal[key] = hint0;
+          }
+          break;
+        case OperandCategory::kLiteralContextDependentNumber: {
+          if (deferred_word_count &&
+              HasInstructionFlag(desc, kInstConstantNumber) &&
+              model.tracker.TypeWidth(current_result_type) == 0) {
+            span = 1;
+          } else {
+            span = SpanForField(field, desc, current_result_type, model.tracker,
+                                c.inst_words.data(),
+                                static_cast<uint32_t>(c.inst_words.size()),
+                                remaining);
+          }
+          span = std::max<uint32_t>(1, std::min(span, remaining));
+          if (span == 1 && current_result_type != 0) {
+            const Tracker::IdInfo* ti = model.tracker.Find(current_result_type);
+            if (ti != nullptr && ti->type_class == Tracker::TypeClass::kInt) {
+              IntConstCache& cache =
+                  EnsureContext(model.arena, model.int_const_cache);
+              size_t slot = IntConstCache::kSize;
+              for (size_t i = 0; i < IntConstCache::kSize; ++i) {
+                if (cache.type_id[i] == current_result_type) {
+                  slot = i;
+                  break;
+                }
+              }
+              if (slot == IntConstCache::kSize) {
+                slot = cache.next_evict++ & (IntConstCache::kSize - 1);
+                cache.type_id[slot] = current_result_type;
+              }
+              cache.last[slot] = hint0;
+            }
+          }
+          break;
+        }
+        case OperandCategory::kLiteralExtInstInteger:
+          if (deferred_word_count && HasInstructionFlag(desc, kInstExtInst)) {
+            const InstructionDesc* ext_inst =
+                current_ext_set ? FindExtInstruction(*current_ext_set, hint0)
+                                : nullptr;
+            if (!ext_inst || !ext_inst->fixed_word_count) {
+              model.inst_group(inst_index).last_word_count = count_hint;
+              uint32_t tgt =
+                  count_hint > 0
+                      ? static_cast<uint32_t>(std::min<size_t>(
+                            count_hint - 1, remaining_body - 1))
+                      : 0u;
+              if (tgt < consumed + 1) tgt = consumed + 1;
+              operand_words = tgt;
+              c.cursor.SetRemaining(operand_words - consumed);
+              deferred_word_count = false;
+            }
+          }
+          break;
+        case OperandCategory::kLiteralString:
+          span = TrackString(model, body + body_pos + 1 + consumed, remaining);
+          if (span > remaining) span = remaining;
+          break;
+        case OperandCategory::kBitEnum:
+        case OperandCategory::kLiteralSpecConstantOpInteger:
+        case OperandCategory::kComposite:
+        case OperandCategory::kUnknown:
+          break;
+      }
+    }
+
+    for (uint32_t i = 0; i < span; ++i) {
+      c.inst_words.push_back(body[body_pos + 1 + consumed + i]);
+    }
+    if (!fixed_layout) {
+      c.cursor.Consume(cursor_field, span, hint0);
+    }
+    consumed += span;
+  }
+
+  if (patch_word0) {
+    const uint32_t final_count =
+        static_cast<uint32_t>(c.inst_words.size()) & 0xffffu;
+    c.inst_words.data()[0] = (final_count << 16) | opcode;
+  }
+  if (result_type_deferred && c.inst_words.size() > 1) {
+    model.tracker.OnResultTypeUse(result_type_hint);
+  }
+  c.prev_inst_result_list = model.tracker.OnInstructionEnd(
+      c.inst_words.data(), static_cast<uint32_t>(c.inst_words.size()),
+      inst_index, num_id_operands > 0 ? first_id_operand : 0);
+  body_pos += 1 + consumed;
+}
+
 // CodeModule hook (src/model.cpp NoModuleHook interface), shared by encoder
 // (Bits::kEncoding) and decoder: consumes copied runs before instructions
 // and records frames and ID roles for later copies from this member.
@@ -624,9 +1062,9 @@ struct Hook {
   // 0: code the next instruction literally; 1: a copy was coded and its
   // instructions trained; -1: invalid stream (or, encoding, plan).
   template <class IO>
-  int BeforeInstruction(ModelState& model, Bits& bits, IO& io,
-                        size_t body_words, size_t& body_pos,
-                        InstructionCarry& c) {
+  ARIXV_NOINLINE int BeforeInstruction(ModelState& model, Bits& bits, IO& io,
+                                       size_t body_words, size_t& body_pos,
+                                       InstructionCarry& c) {
     if (!copies_allowed) return 0;
     const Copy* want = nullptr;
     if constexpr (Bits::kEncoding) {
@@ -666,7 +1104,6 @@ struct Hook {
                                    Bits::kEncoding ? want->len : 0u);
     if (len == 0 || len > n - pos) return -1;
     TrainBits train;
-    TrackBits track;
     TrainIO tio(target);
     CopyMap& cm = (*maps)[base];
     if (cm.stamp != k + 1) cm = CopyMap{k + 1, 0};
@@ -693,7 +1130,7 @@ struct Hook {
       if (adapt) {
         CodeInstruction(model, train, tio, body_words, body_pos, c, *this);
       } else {
-        CodeInstruction(model, track, tio, body_words, body_pos, c, *this);
+        TrackInstruction(model, target, body_words, body_pos, c, roles.data());
       }
       // The copied instruction must frame identically in the target.
       if (body_pos != start + f.nwords) return -1;
