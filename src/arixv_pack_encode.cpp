@@ -11,7 +11,7 @@
 #include <cstring>
 #include <new>
 #include <numeric>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "arixv/arixv.h"
@@ -141,48 +141,63 @@ arixv_status Encode(const ModuleView* modules, size_t count,
     Plan whole;
     PlanBlock(modules, count, nullptr, 0, &whole);
     std::vector<uint64_t> copied(count, 0);
-    std::unordered_map<uint32_t, uint64_t> from;
+    std::vector<uint32_t> from_stamp(count, 0);
+    std::vector<uint64_t> from_val(count, 0);
+    std::vector<uint32_t> touched;
     for (size_t t = 0; t < whole.size(); ++t) {
-      from.clear();
+      touched.clear();
+      const uint32_t stamp = static_cast<uint32_t>(t + 1);
       for (const Copy& c : whole[t]) {
         copied[c.base] += c.len;
-        from[c.base] += c.len;
+        if (from_stamp[c.base] != stamp) {
+          from_stamp[c.base] = stamp;
+          from_val[c.base] = 0;
+          touched.push_back(c.base);
+        }
+        from_val[c.base] += c.len;
       }
       // Most-copied base, ties to the lowest index (order-independent).
       uint64_t best = 0;
-      for (const auto& f : from) {
-        if (f.second > best ||
-            (f.second == best && best && f.first < parent[t])) {
-          best = f.second;
-          parent[t] = f.first;
+      for (uint32_t base : touched) {
+        const uint64_t v = from_val[base];
+        if (v > best || (v == best && best && base < parent[t])) {
+          best = v;
+          parent[t] = base;
         }
       }
     }
     // Exact duplicates: parent = first occurrence, credited with an
     // instruction-count estimate (about 16 bytes per instruction).
-    std::unordered_map<uint64_t, std::vector<uint32_t>> by_hash;
+    std::vector<std::pair<uint64_t, uint32_t>> hashed(count);
     for (uint32_t k = 0; k < count; ++k) {
       const uint64_t hsh = Fnv1a(modules[k].data, modules[k].size) ^
                            (uint64_t{modules[k].size} << 1);
-      auto& bucket = by_hash[hsh];
-      bool dup = false;
-      for (uint32_t j : bucket) {
-        if (modules[j].size == modules[k].size &&
-            (modules[k].size == 0 ||
-             std::memcmp(modules[j].data, modules[k].data, modules[k].size) ==
-                 0)) {
-          parent[k] = j;
-          copied[j] += std::max<uint64_t>(1, modules[k].size / 16);
-          dup = true;
-          break;
+      hashed[k] = {hsh, k};
+    }
+    std::sort(hashed.begin(), hashed.end());
+    for (size_t run = 0; run < count;) {
+      size_t end = run + 1;
+      while (end < count && hashed[end].first == hashed[run].first) ++end;
+      for (size_t a = run + 1; a < end; ++a) {
+        const uint32_t k = hashed[a].second;
+        for (size_t b = run; b < a; ++b) {
+          const uint32_t j = hashed[b].second;
+          if (modules[j].size == modules[k].size &&
+              (modules[k].size == 0 ||
+               std::memcmp(modules[j].data, modules[k].data, modules[k].size) ==
+                   0)) {
+            parent[k] = j;
+            copied[j] += std::max<uint64_t>(1, modules[k].size / 16);
+            break;
+          }
         }
       }
-      if (!dup) bucket.push_back(k);
+      run = end;
     }
     std::vector<uint32_t> idx(count);
     std::iota(idx.begin(), idx.end(), 0u);
-    std::stable_sort(idx.begin(), idx.end(), [&](uint32_t a, uint32_t b) {
-      return copied[a] > copied[b];
+    std::sort(idx.begin(), idx.end(), [&](uint32_t a, uint32_t b) {
+      return copied[a] != copied[b] ? copied[a] > copied[b] : a < b;
     });
     uint64_t want = std::max<uint64_t>(par / 2, 1);
     want = std::min<uint64_t>(want, count / 4);
@@ -283,12 +298,24 @@ arixv_status Encode(const ModuleView* modules, size_t count,
     for (uint32_t k : b) s += modules[k].size;
     return s;
   };
-  auto by_size = [&](const std::vector<uint32_t>& a,
-                     const std::vector<uint32_t>& b) {
-    return bytes_of(a) > bytes_of(b);
+  auto sort_blocks = [&](std::vector<std::vector<uint32_t>>& blks) {
+    const size_t n = blks.size();
+    std::vector<uint64_t> sz(n);
+    std::vector<uint32_t> order(n);
+    for (size_t i = 0; i < n; ++i) {
+      sz[i] = bytes_of(blks[i]);
+      order[i] = static_cast<uint32_t>(i);
+    }
+    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+      return sz[a] != sz[b] ? sz[a] > sz[b] : a < b;
+    });
+    std::vector<std::vector<uint32_t>> sorted;
+    sorted.reserve(n);
+    for (uint32_t i : order) sorted.push_back(std::move(blks[i]));
+    blks = std::move(sorted);
   };
-  std::stable_sort(s1_blocks.begin(), s1_blocks.end(), by_size);
-  std::stable_sort(s2_blocks.begin(), s2_blocks.end(), by_size);
+  sort_blocks(s1_blocks);
+  sort_blocks(s2_blocks);
 
   // Code every block. Stage-1 blocks are decoded back so stage-2 blocks see
   // the shared members exactly as the decoder will (stored blocks share
