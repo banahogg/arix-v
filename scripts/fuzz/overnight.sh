@@ -161,6 +161,13 @@ launch() { # <name> <command...>
   echo "$! $name" >>"$OUT/pids"
 }
 
+# Keep crashes away from apport (kernel.core_pattern pipes to it, and each
+# packaged binary that crashes, e.g. spirv-opt, becomes a desktop popup).
+# A core limit of 0 still invokes the pipe; exactly 1 byte makes the kernel
+# skip it. Every job launched below inherits this.
+prlimit --pid $$ --core=1:1 2>/dev/null ||
+  echo "warning: prlimit failed; tool crashes may reach apport" >&2
+
 # AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: kernel.core_pattern pipes to apport
 # and we have no sudo to change it; crashes still surface via the forkserver.
 AFL_ENV=(AFL_AUTORESUME=1 AFL_SKIP_CPUFREQ=1 AFL_NO_UI=1

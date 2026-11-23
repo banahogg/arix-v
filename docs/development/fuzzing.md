@@ -59,7 +59,18 @@ ninja -C build spirv-fuzz && cp build/tools/spirv-fuzz ~/.local/bin/
 ```
 
 `spirv-fuzz` occasionally crashes on a corpus module (an upstream bug); the
-loop then falls back to `spirv-opt` for that iteration.
+loop then falls back to `spirv-opt` for that iteration. `spirv-opt` crashes
+on some modules too. The loop copies every input that crashes either tool to
+`fuzz-out/spirvgen/tool-crashes/` and logs a `TOOL CRASH` line with the passes
+or seed, so you can report them upstream.
+
+On Ubuntu, `kernel.core_pattern` pipes crashes to apport, so every crash of a
+packaged binary such as `spirv-opt` would otherwise appear as a desktop popup.
+With uutils `timeout`, you would also get a second report that blames
+`timeout`. `overnight.sh` and `spirv_gen_loop.sh` therefore set
+`RLIMIT_CORE` to 1 byte with `prlimit`. A limit of 0 is not enough: the kernel
+still runs the pipe, and apport files a report anyway. A limit of exactly 1 is
+the kernel's special value for skipping piped core dumps.
 
 Some sanitizer environments need custom process wrapping. For example,
 `RUN_WRAP="setarch $(uname -m) -R" scripts/fuzz/overnight.sh` (or the same

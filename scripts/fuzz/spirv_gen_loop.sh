@@ -13,8 +13,19 @@
 # Usage: spirv_gen_loop.sh <worker-id> <corpus-dir> <cli-binary> <out-dir>
 #   out-dir gets queue/ (AFL -F sync), failures/, and gen.log.
 # Honors $RUN_WRAP (e.g. "setarch x86_64 -R") as a prefix for the CLI binary.
+# spirv-opt / spirv-fuzz crashes on an input are saved to tool-crashes/.
 
 set -u
+
+# spirv-opt and spirv-fuzz segfault on some inputs. With kernel.core_pattern
+# piped to apport, each crash becomes a /var/crash report and a desktop popup
+# (and, with uutils timeout, a second report blaming timeout itself). A core
+# limit of 0 does not help: the kernel still invokes the pipe and apport files
+# the report anyway. A limit of exactly 1 byte is the kernel's documented
+# "skip piped core dumps" value, so set that for this shell and its children.
+# bash's ulimit -c counts 1 KiB blocks, hence prlimit.
+prlimit --pid $$ --core=1:1 2>/dev/null ||
+  echo "warning: prlimit failed; tool crashes may reach apport" >&2
 
 worker=$1
 corpus_dir=$2
@@ -23,7 +34,8 @@ out=$4
 
 queue="$out/queue"
 failures="$out/failures"
-mkdir -p "$queue" "$failures"
+tool_crashes="$out/tool-crashes"
+mkdir -p "$queue" "$failures" "$tool_crashes"
 log="$out/gen-$worker.log"
 
 mapfile -t corpus < <(find "$corpus_dir" -name '*.spv' -size -256k)
@@ -54,6 +66,20 @@ opt_passes=(
   --convert-local-access-chains
 )
 
+# Record a crash of an upstream mutation tool (exit 128+signal, as passed
+# through by timeout; 124 is timeout's own expiry). These are spirv-tools
+# bugs, not arix-v ones, but worth keeping for upstream reports.
+note_tool_crash() { # <status> <tool> <src> <args...>
+  local status=$1 tool=$2 src=$3
+  shift 3
+  [ "$status" -gt 128 ] && [ "$status" -ne 124 ] || return 0
+  local keep
+  keep="$tool_crashes/$tool-sig$((status - 128))-$(basename "$src")"
+  [ -e "$keep" ] || cp "$src" "$keep"
+  echo "=== TOOL CRASH worker=$worker iter=$iter tool=$tool status=$status" \
+    "src=$src args=$* -> $keep" >>"$log"
+}
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 donors="$tmp/donors.txt"
@@ -74,6 +100,7 @@ while :; do
     done
     timeout 30 spirv-fuzz "$src" -o "$mutant" --donors="$donors" \
       --seed="$seed" >>"$log" 2>&1
+    note_tool_crash $? spirv-fuzz "$src" --donors="$donors" --seed="$seed"
   fi
   # spirv-opt path, also taken when spirv-fuzz rejected the input.
   if [ ! -s "$mutant" ]; then
@@ -83,6 +110,7 @@ while :; do
       picks+=("${opt_passes[RANDOM % ${#opt_passes[@]}]}")
     done
     timeout 30 spirv-opt "$src" -o "$mutant" "${picks[@]}" >>"$log" 2>&1
+    note_tool_crash $? spirv-opt "$src" "${picks[@]}"
   fi
   # Mutation failures (unsupported extensions, timeouts) are expected; skip.
   [ -s "$mutant" ] || { iter=$((iter + 1)); continue; }
