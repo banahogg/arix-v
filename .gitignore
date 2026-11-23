@@ -8,3 +8,5 @@ corpus/spv/
 corpus/manifest.tsv
 corpus/duplicates.tsv
 corpus/sources.tsv
+corpus/packs/
+corpus/research/

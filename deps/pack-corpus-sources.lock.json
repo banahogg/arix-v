@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "purpose": "On-demand sources for the non-distributed shader-pack corpus: real application shader sets kept whole, one directory per set, for multi-module (ARXP) benchmarks. Built by scripts/build_pack_corpus.py into corpus/packs/. Provenance and selection: docs/benchmark-corpus.md.",
+  "sources": [
+    {
+      "name": "wicked",
+      "kind": "archive",
+      "url": "https://github.com/turanszkij/WickedEngine/releases/download/v0.72.139/Wicked.Engine.zip",
+      "size": 341439123,
+      "sha256": "120863c74ac8c35e2d348a7014c7be1d37a213d305904be79536511a35e388f9",
+      "extract": "wicked_zstd_carve",
+      "member": "Editor_Linux",
+      "license": "MIT",
+      "note": "Wicked Engine v0.72.139 release; the Linux editor binary embeds its DXC shader dump as zstd frames."
+    },
+    {
+      "name": "0ad",
+      "kind": "archive",
+      "url": "https://releases.wildfiregames.com/0ad-0.28.0-unix-data.tar.xz",
+      "size": 1415012652,
+      "extract": "0ad_mod_zip",
+      "member": "binaries/data/mods/mod/mod.zip",
+      "member_sha256": "8dad8b95d913501d11ed8628cc2e4f07680c43f071e0a6a2aee45f0daff0c809",
+      "license": "GPL-2.0-or-later",
+      "note": "0 A.D. 0.28.0 shipped Vulkan SPIR-V (shaders/spirv in mod.zip, content-hash named, with the XML program/permutation maps). Only mod.zip is kept from the 1.4 GB stream."
+    },
+    {
+      "name": "sascha",
+      "kind": "git",
+      "url": "https://github.com/SaschaWillems/Vulkan.git",
+      "revision": "d2d49bf7f2d8469ad9fee47b2a43b430d7e10e1b",
+      "paths": ["shaders"],
+      "extract": "copy_spv",
+      "license": "MIT",
+      "note": "Sascha Willems' Vulkan examples, committed .spv for the same examples from glslang, DXC and Slang."
+    },
+    {
+      "name": "xenia",
+      "kind": "git",
+      "url": "https://github.com/xenia-project/xenia.git",
+      "revision": "95a5c3ee250f80c3b9d139658649d9ffb6db3eec",
+      "paths": ["src/xenia/gpu/shaders/bytecode/vulkan_spirv"],
+      "extract": "c_uint32_arrays",
+      "license": "BSD-3-Clause",
+      "note": "Xenia emulator Vulkan shaders, committed as C headers of uint32 words."
+    },
+    {
+      "name": "angle",
+      "kind": "git",
+      "url": "https://chromium.googlesource.com/angle/angle",
+      "revision": "b7a90a6cc08e52857a6addc2bc2e569b7b01e9df",
+      "paths": ["src/libANGLE/renderer/vulkan/shaders/gen"],
+      "extract": "angle_gzip_inc",
+      "license": "BSD-3-Clause",
+      "note": "ANGLE Vulkan back-end internal shader permutations, committed as gzip-compressed C byte arrays."
+    },
+    {
+      "name": "quake3e",
+      "kind": "git",
+      "url": "https://github.com/ec-/Quake3e.git",
+      "revision": "dec793de9677bc9c16c7027e8905c2d4f4643a19",
+      "paths": ["code/renderervk/shaders/spirv"],
+      "extract": "c_byte_arrays",
+      "license": "GPL-2.0-only",
+      "note": "Quake3e Vulkan renderer shader permutations, committed as C byte arrays in shader_data.c."
+    },
+    {
+      "name": "lumos",
+      "kind": "git",
+      "url": "https://github.com/jmorton06/Lumos.git",
+      "revision": "50ac714464ee0576a6b741c31ac607231edc5a2c",
+      "paths": ["Lumos/Assets/Shaders/CompiledSPV"],
+      "extract": "copy_spv",
+      "license": "MIT",
+      "note": "Lumos engine committed shaderc output."
+    },
+    {
+      "name": "skia",
+      "kind": "git",
+      "url": "https://skia.googlesource.com/skia",
+      "revision": "4802f18c7cd248700dd6f813d5299e9b8759f1e9",
+      "paths": ["tests/sksl"],
+      "extract": "spirv_as",
+      "spirv_as_args": ["--target-env", "spv1.3"],
+      "license": "BSD-3-Clause",
+      "note": "SkSL compiler SPIR-V goldens (*.asm.*), assembled with spirv-as; the assembler stamps generator 0x70000, so with a pinned target environment the output does not depend on the assembler version. Goldens that do not assemble are skipped."
+    }
+  ],
+  "sets": [
+    {"name": "wicked", "source": "wicked", "dir": "wicked"},
+    {"name": "0ad", "source": "0ad", "dir": "0ad"},
+    {"name": "sascha_glsl", "source": "sascha", "dir": "sascha/glsl"},
+    {"name": "sascha_hlsl", "source": "sascha", "dir": "sascha/hlsl"},
+    {"name": "sascha_slang", "source": "sascha", "dir": "sascha/slang"},
+    {"name": "xenia", "source": "xenia", "dir": "xenia"},
+    {"name": "angle", "source": "angle", "dir": "angle"},
+    {"name": "quake3e", "source": "quake3e", "dir": "quake3e"},
+    {"name": "lumos", "source": "lumos", "dir": "lumos"},
+    {"name": "skia", "source": "skia", "dir": "skia"}
+  ]
+}

@@ -11,6 +11,8 @@ by this phase). Everything builds only with `ARIXV_BUILD_RESEARCH_PACK=ON`.
 > framing, the ARXP research mirror, `arixv_struct_probe` and
 > `arixv_struct_parallel` were removed then; check out commit `99df5ed` to
 > rerun the commands below. `arixv_pack_api_bench` remains, on the public API.
+> The raw results cited as `build/gate4/...` were kept, uncommitted, in
+> `corpus/research/gate4/` of the original checkout.
 
 Status, 2026-11-22:
 
@@ -248,9 +250,11 @@ Findings:
 ## 4. New independent application corpora
 
 A separate agent searched for real SPIR-V sets. Its full report is
-`build/corpus-search/report.md`, which is not committed. It covers sources,
-revisions, licenses and dead ends, and the staged data is in
-`build/corpus-search/raw/`. No repository was found that commits a large,
+[`pack-corpus-search.md`](pack-corpus-search.md). It covers sources,
+revisions, licenses and dead ends. The sets used here are now pinned and
+rebuilt byte-identically into `corpus/packs/` by
+`scripts/build_pack_corpus.py` ([benchmark corpus](../benchmark-corpus.md)).
+They were staged under `build/corpus-search/raw/` at the time. No repository was found that commits a large,
 complete, application-derived `.spv` set. The best sources are:
 
 - release artifacts: Wicked Engine (zstd frames carved from the Linux
@@ -423,6 +427,7 @@ python3 scripts/bench/multi_module_structure.py parallel --tool build/research-r
   --lists build/gate3/results/packs --packs coll:smolv/dota2 'coll:smolv/dota2#unique' coll:smolv/blender \
   coll:vks/mobile_nerf/glsl --out build/gate4/parallel
 # new corpora: list files named sha256("new:<name>")[:16].list under build/gate4/newcorpus
+# (today: python3 scripts/build_pack_corpus.py, then corpus/packs/<set>.list)
 python3 scripts/bench/multi_module_structure.py parallel --tool build/research-release/arixv_struct_parallel \
   --lists build/gate4/newcorpus --packs new:0ad new:sascha_glsl new:xenia new:wicked --runs 3 --out build/gate4/parallel-new
 ```
